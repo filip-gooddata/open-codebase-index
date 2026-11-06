@@ -348,6 +348,69 @@ describe("indexer clearIndex force rebuild", () => {
     }
   });
 
+  it("treats embedding-only rows as empty and symbol-only rows as stored index data", async () => {
+    const dbPath = path.join(tempDir, ".opencode", "index", "codebase.db");
+    expect((await createIndexer(tempDir, 8).getStatus()).compatibility?.compatible).toBe(true);
+
+    const db = trackDb(new Database(dbPath));
+    db.setMetadata("index.pathStorageVersion", "1");
+    db.upsertEmbedding("orphan-embedding", Buffer.from(new Float32Array(8).buffer), "orphan", "test-model");
+    expect(db.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: false, hasEmbeddings: true });
+
+    const getStatsSpy = vi.spyOn(Database.prototype, "getStats");
+    try {
+      const embeddingOnlyStatus = await createIndexer(tempDir, 8).getStatus();
+      expect(embeddingOnlyStatus.compatibility?.compatible).toBe(true);
+
+      db.upsertSymbol({
+        id: "sym_only",
+        filePath: "src/only.ts",
+        name: "onlySymbol",
+        kind: "function",
+        startLine: 1,
+        startCol: 0,
+        endLine: 2,
+        endCol: 0,
+        language: "typescript",
+      });
+      expect(db.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: true, hasEmbeddings: true });
+
+      const symbolOnlyStatus = await createIndexer(tempDir, 8).getStatus();
+      expect(symbolOnlyStatus.compatibility?.compatible).toBe(false);
+      expect(symbolOnlyStatus.compatibility?.reason).toContain("Path storage format mismatch");
+      expect(getStatsSpy).not.toHaveBeenCalled();
+    } finally {
+      getStatsSpy.mockRestore();
+    }
+  });
+
+  it("reloads a structural index and searches without full database stats", async () => {
+    const config = parseConfig({
+      embeddingProvider: "custom",
+      customProvider: { baseUrl: "http://localhost:11434/v1", model: "mock-8d", dimensions: 8 },
+      indexing: { mode: "structural", watchFiles: false, retries: 0, retryDelayMs: 1 },
+    });
+    const writer = new Indexer(tempDir, config);
+    await writer.index();
+    await writer.close();
+
+    const getStatsSpy = vi.spyOn(Database.prototype, "getStats");
+    const presenceSpy = vi.spyOn(Database.prototype, "getIndexPresence");
+    const restarted = new Indexer(tempDir, config);
+    try {
+      const status = await restarted.getStatus();
+      expect(status.compatibility?.compatible).toBe(true);
+      expect(status.indexedChunkCount).toBeGreaterThan(0);
+      await restarted.search("hello", 5);
+      expect(presenceSpy).toHaveBeenCalled();
+      expect(getStatsSpy).not.toHaveBeenCalled();
+    } finally {
+      await restarted.close();
+      getStatsSpy.mockRestore();
+      presenceSpy.mockRestore();
+    }
+  });
+
   it("marks legacy absolute path storage as incompatible until force rebuild", async () => {
     const indexer = createIndexer(tempDir, 8);
     await indexer.index();

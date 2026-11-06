@@ -1,0 +1,23 @@
+CHANGELOG.md
+  s_fc8e5f91b42ce0::t_ab3861be59ccf1 20
+src/indexer/index.ts
+  s_fc8e5f91b42ce0::t_831a220e00a9bb 5425-5430,5504-5505,6474-6478
+tests/branch-seeding.test.ts
+  s_fc8e5f91b42ce0::t_a20ccf6030037e 557-603
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c43faaa6b6141f3fa80eda9333c49822362fec2f",
+  "prompts": {},
+  "sessions": {
+    "s_fc8e5f91b42ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4e4692e9-4266-4dc9-8f6f-f3b76dbe1661",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

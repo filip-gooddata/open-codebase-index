@@ -1,24 +1,26 @@
-native/src/bindings/database.rs
-  s_6552c4469b29dc::t_f1e45c95b24b36 58-64,579-599
-native/src/db.rs
-  s_6552c4469b29dc::t_f7038a158b8f6e 1277-1308,2231-2299
-src/indexer/index.ts
-  s_6552c4469b29dc::t_2fc8bc476b9e0d 3710,3718,3721,3724,3736,4068,4071,4075,4083,4111-4112,4117,4418-4420,6968
-src/native/database.ts
-  s_6552c4469b29dc::t_05b4f10e0465fa 9,257-266
-src/native/index.ts
-  s_6552c4469b29dc::t_320ce9da4fde6b 16
 src/native/types.ts
   s_6552c4469b29dc::t_ba893467e27cd1 297-302
 tests/database.test.ts
   s_6552c4469b29dc::t_cf8d9eb16abcdf 31-32,112-113,663-697
+src/indexer/index.ts
+  s_6552c4469b29dc::t_2fc8bc476b9e0d 3710,3718,3721,3724,3736,4068,4071,4075,4083,4111-4112,4117,4418-4420,6968
 tests/indexer-clear-index.test.ts
   s_6552c4469b29dc::t_ba34d79cca91d5 311-350
+src/native/database.ts
+  s_6552c4469b29dc::t_05b4f10e0465fa 9,257-266
+native/src/bindings/database.rs
+  s_6552c4469b29dc::t_f1e45c95b24b36 58-64,579-599
+native/src/db.rs
+  s_6552c4469b29dc::t_f7038a158b8f6e 1277-1308,2231-2299
+src/native/index.ts
+  s_6552c4469b29dc::t_320ce9da4fde6b 16
+CHANGELOG.md
+  s_6552c4469b29dc::t_56f8b47d8a46f7 25
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.7.5",
-  "base_commit_sha": "0cf86c8b21fd8576d81fd47ae62ed08219ccbda5",
+  "base_commit_sha": "d438cc393d5b0f4c0a97d738202ff7b7a0070d91",
   "prompts": {},
   "sessions": {
     "s_6552c4469b29dc": {

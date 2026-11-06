@@ -188,9 +188,75 @@ describe("knowledge-base reuse across branches", () => {
       .filter((symbol) => symbol.filePath.startsWith(canonicalKnowledgeBase))
       .map((symbol) => symbol.id)
       .sort()).toEqual(mainKbSymbolIds);
-    expect(mainProjectEdge).toBeDefined();
+    expect(mainProjectEdge).toBe("sendRequest:unresolved");
     expect(projectToKnowledgeBaseEdge(featureDb, "feature")).toBe(mainProjectEdge);
     expect(knowledgeBaseGraph(featureDb, "main")).toEqual(mainGraph);
+  });
+
+  it("keeps a resolved cross-file knowledge-base edge identical with and without reuse", async () => {
+    fs.writeFileSync(path.join(knowledgeBase, "greet.go"), [
+      `// ${KB_MARKER} greet`,
+      "package sdk",
+      "",
+      "func Greet() string {",
+      "\treturn helper()",
+      "}",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(knowledgeBase, "helper.go"), [
+      `// ${KB_MARKER} helper`,
+      "package sdk",
+      "",
+      "func helper() string {",
+      "\treturn \"hello\"",
+      "}",
+      "",
+    ].join("\n"));
+    const goEdge = (db: Database, branch: string): { from?: string; to?: string; target?: string } => {
+      const symbols = db.getSymbolsForBranch(branch);
+      const greet = symbols.find((symbol) => symbol.name === "Greet");
+      const helper = symbols.find((symbol) => symbol.name === "helper");
+      const edge = greet ? db.getCallees(greet.id, branch).find((callee) => callee.targetName === "helper") : undefined;
+      return { from: greet?.filePath, to: edge?.toSymbolId, target: helper ? `${helper.filePath}:${helper.id}` : undefined };
+    };
+
+    const mainDb = await indexCurrentBranch();
+    expect(new Set(knowledgeBaseParses()).size).toBe(4);
+    const mainGraph = knowledgeBaseGraph(mainDb, "main");
+    const mainEdge = goEdge(mainDb, "main");
+    const helperSymbol = mainDb.getSymbolsForBranch("main").find((symbol) => symbol.name === "helper");
+    expect(mainEdge.from).toBe(path.join(canonicalKnowledgeBase, "greet.go"));
+    expect(helperSymbol?.filePath).toBe(path.join(canonicalKnowledgeBase, "helper.go"));
+    expect(mainEdge.to).toBe(helperSymbol?.id);
+    expect(mainGraph).toContain(`Greet->helper:${helperSymbol?.id}`);
+    expect(projectToKnowledgeBaseEdge(mainDb, "main")).toBe("sendRequest:unresolved");
+
+    git(repo, ["checkout", "-b", "feature"]);
+    fs.writeFileSync(path.join(repo, "src", "app.ts"), [
+      "import { sendRequest } from \"../../sdk/client\";",
+      "export function runApp(): string {",
+      "  return sendRequest(\"feature\");",
+      "}",
+      "",
+    ].join("\n"));
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-m", "feature"]);
+    const featureDb = await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([]);
+    expect(knowledgeBaseCallExtractions()).toBe(0);
+    expect(nativeSpies.parsedPaths.some((filePath) => filePath.endsWith(path.join("src", "app.ts")))).toBe(true);
+    expect(goEdge(featureDb, "feature")).toEqual(mainEdge);
+    expect(knowledgeBaseGraph(featureDb, "feature")).toEqual(mainGraph);
+    expect(projectToKnowledgeBaseEdge(featureDb, "feature")).toBe("sendRequest:unresolved");
+
+    const cachePath = path.join(repo, ".opencode", "index", "knowledge-base-files.json");
+    fs.rmSync(cachePath);
+    git(repo, ["checkout", "-b", "without-reuse"]);
+    const freshDb = await indexCurrentBranch();
+    expect(new Set(knowledgeBaseParses()).size).toBe(4);
+    expect(goEdge(freshDb, "without-reuse")).toEqual(mainEdge);
+    expect(knowledgeBaseGraph(freshDb, "without-reuse")).toEqual(mainGraph);
+    expect(projectToKnowledgeBaseEdge(freshDb, "without-reuse")).toBe("sendRequest:unresolved");
   });
 
   it("reprocesses the whole knowledge-base root when one of its files changes", async () => {

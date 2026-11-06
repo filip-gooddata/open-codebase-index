@@ -1,0 +1,19 @@
+native/src/call_extractor.rs
+  s_3a65c17216e84b::t_a0ba6122c0933b 582-669
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "33e6b6ce32e7f86b7bdad0a7c49813da0c5f2ccc",
+  "prompts": {},
+  "sessions": {
+    "s_3a65c17216e84b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b032-b6f0-7483-8b18-95099bb64c75",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

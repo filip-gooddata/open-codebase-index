@@ -523,8 +523,10 @@ pub fn upsert_call_edges_batch_for_branch(
     })
 }
 
-/// Copy `from_branch`'s recorded edge targets to `to_branch`, replacing any
-/// stale rows `to_branch` kept for callers it no longer contains.
+/// Give `to_branch` exactly `from_branch`'s targets for every edge whose caller
+/// `from_branch` contains, including dropping `to_branch` rows where
+/// `from_branch` reads the legacy target, and remove `to_branch` rows for
+/// callers it no longer contains.
 pub(crate) fn copy_branch_call_edge_targets(
     conn: &Connection,
     from_branch: &str,
@@ -534,6 +536,18 @@ pub(crate) fn copy_branch_call_edge_targets(
         return Ok(0);
     }
     delete_unreachable_branch_call_edges(conn, Some(to_branch))?;
+    conn.execute(
+        r#"
+        DELETE FROM branch_call_edges
+        WHERE branch = ?2
+          AND edge_id IN (
+            SELECT ce.id
+            FROM call_edges ce
+            INNER JOIN branch_symbols bs ON bs.branch = ?1 AND bs.symbol_id = ce.from_symbol_id
+          )
+        "#,
+        params![from_branch, to_branch],
+    )?;
     let copied = conn.execute(
         r#"
         INSERT INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved)
@@ -1345,6 +1359,12 @@ pub fn clear_branch_symbols(conn: &Connection, branch: &str) -> DbResult<usize> 
         "DELETE FROM branch_symbols WHERE branch = ?",
         params![branch],
     )?;
+    if has_branch_call_edges(conn)? {
+        conn.execute(
+            "DELETE FROM branch_call_edges WHERE branch = ?",
+            params![branch],
+        )?;
+    }
     Ok(count)
 }
 

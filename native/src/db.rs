@@ -2971,6 +2971,52 @@ mod tests {
     }
 
     #[test]
+    fn seed_retry_replaces_stale_branch_call_edge_targets() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature"]);
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "feature",
+            &[String::from("target_a"), String::from("target_b")],
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("feature"),
+        )
+        .unwrap();
+        conn.execute("DELETE FROM branch_call_edges WHERE branch = 'main'", [])
+            .unwrap();
+        conn.execute("UPDATE call_edges SET to_symbol_id = 'target_a' WHERE id = 'edge'", [])
+            .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+
+        copy_branch_catalog(&mut conn, "feature", "seeded").unwrap();
+        assert_eq!(callee_target(&conn, "caller", "seeded").as_deref(), Some("target_b"));
+        clear_branch(&conn, "seeded").unwrap();
+        clear_branch_symbols(&conn, "seeded").unwrap();
+        assert!(overlay_rows(&conn).iter().all(|row| row.0 != "seeded"));
+
+        copy_branch_catalog(&mut conn, "feature", "retried").unwrap();
+        clear_branch(&conn, "retried").unwrap();
+        conn.execute("DELETE FROM branch_symbols WHERE branch = 'retried'", [])
+            .unwrap();
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "retried",
+            &[String::from("caller"), String::from("target_a"), String::from("target_b")],
+        )
+        .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "retried").as_deref(), Some("target_b"));
+
+        copy_branch_catalog(&mut conn, "main", "retried").unwrap();
+        assert_eq!(callee_target(&conn, "caller", "retried").as_deref(), Some("target_a"));
+        assert!(overlay_rows(&conn).iter().all(|row| row.0 != "retried"));
+    }
+
+    #[test]
     fn branch_symbol_deletes_scope_branch_call_edge_targets() {
         let (_temp_dir, mut conn) = setup_test_db();
         seed_divergent_graph(&mut conn, &["main", "feature"]);
@@ -3005,13 +3051,22 @@ mod tests {
             .unwrap();
         }
 
-        clear_branch_symbols(&conn, "feature").unwrap();
+        conn.execute("DELETE FROM branch_symbols WHERE branch = 'feature'", [])
+            .unwrap();
         assert_eq!(overlay_rows(&conn).len(), 2);
         gc_orphan_call_edges(&conn).unwrap();
         let remaining: Vec<String> = overlay_rows(&conn).into_iter().map(|row| row.0).collect();
         assert_eq!(remaining, vec![String::from("main")]);
         assert_eq!(callee_target(&conn, "caller", "main"), None);
 
+        clear_branch_symbols(&conn, "main").unwrap();
+        assert!(overlay_rows(&conn).is_empty());
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", None)],
+            Some("feature"),
+        )
+        .unwrap();
         clear_all_indexed_data(&conn).unwrap();
         assert!(overlay_rows(&conn).is_empty());
     }

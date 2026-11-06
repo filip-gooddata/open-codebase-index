@@ -1,5 +1,6 @@
 use super::{DbResult, SQL_BIND_PARAM_BATCH_SIZE};
 use rusqlite::{params, Connection, OptionalExtension};
+use xxhash_rust::xxh3::Xxh3;
 
 // ============================================================================
 // Symbol Operations (Call Graph)
@@ -657,6 +658,54 @@ pub fn get_callees(
     let mut results = Vec::new();
     for row in rows {
         results.push(row?);
+    }
+    Ok(results)
+}
+
+/// Fingerprint the resolved call edges of every file on a branch, as
+/// (file path, fingerprint) pairs ordered by file path. Call edge rows are
+/// shared by every branch whose caller symbol is identical, so a branch can
+/// compare these against the fingerprints it recorded to detect rows that
+/// another branch has since rewritten.
+pub fn get_call_edge_fingerprints_for_branch(
+    conn: &Connection,
+    branch: &str,
+) -> DbResult<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT s.file_path, ce.id, COALESCE(ce.to_symbol_id, '')
+        FROM branch_symbols bs
+        INNER JOIN symbols s ON s.id = bs.symbol_id
+        INNER JOIN call_edges ce ON ce.from_symbol_id = s.id
+        WHERE bs.branch = ?1
+        ORDER BY s.file_path, ce.id
+        "#,
+    )?;
+    let mut rows = stmt.query(params![branch])?;
+    let mut results: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, Xxh3)> = None;
+    while let Some(row) = rows.next()? {
+        let file_path: String = row.get(0)?;
+        let edge_id: String = row.get(1)?;
+        let to_symbol_id: String = row.get(2)?;
+        if current
+            .as_ref()
+            .map(|(path, _)| path != &file_path)
+            .unwrap_or(true)
+        {
+            if let Some((path, hasher)) = current.take() {
+                results.push((path, format!("{:016x}", hasher.digest())));
+            }
+            current = Some((file_path, Xxh3::new()));
+        }
+        let (_, hasher) = current.as_mut().expect("current file is set");
+        hasher.update(edge_id.as_bytes());
+        hasher.update(b"=");
+        hasher.update(to_symbol_id.as_bytes());
+        hasher.update(b"\n");
+    }
+    if let Some((path, hasher)) = current {
+        results.push((path, format!("{:016x}", hasher.digest())));
     }
     Ok(results)
 }

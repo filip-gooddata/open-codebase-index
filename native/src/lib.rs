@@ -408,6 +408,12 @@ pub struct CallEdgeData {
 }
 
 #[napi(object)]
+pub struct CallEdgeFingerprintData {
+    pub file_path: String,
+    pub fingerprint: String,
+}
+
+#[napi(object)]
 pub struct PathHopData {
     pub symbol_id: String,
     pub symbol_name: String,

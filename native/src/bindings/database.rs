@@ -1,6 +1,6 @@
 use crate::{
-    community, db, CallEdgeData, CentralityData, CommunityCouplingData, CommunityData,
-    CommunityRelationshipData, PathHopData, ReachabilityData, SymbolData,
+    community, db, CallEdgeData, CallEdgeFingerprintData, CentralityData, CommunityCouplingData,
+    CommunityData, CommunityRelationshipData, PathHopData, ReachabilityData, SymbolData,
 };
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi_derive::napi;
@@ -404,6 +404,33 @@ impl Database {
         self.with_conn_mut(|conn| {
             db::add_chunks_to_branch_batch(conn, &branch, &chunk_ids)
                 .map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn copy_branch_catalog(&self, from_branch: String, to_branch: String) -> Result<Vec<u32>> {
+        self.with_conn_mut(|conn| {
+            let (chunks, symbols) = db::copy_branch_catalog(conn, &from_branch, &to_branch)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(vec![chunks as u32, symbols as u32])
+        })
+    }
+
+    #[napi]
+    pub fn get_call_edge_fingerprints_for_branch(
+        &self,
+        branch: String,
+    ) -> Result<Vec<CallEdgeFingerprintData>> {
+        self.with_conn(|conn| {
+            let rows = db::get_call_edge_fingerprints_for_branch(conn, &branch)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(rows
+                .into_iter()
+                .map(|(file_path, fingerprint)| CallEdgeFingerprintData {
+                    file_path,
+                    fingerprint,
+                })
+                .collect())
         })
     }
 

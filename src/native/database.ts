@@ -159,6 +159,18 @@ export class Database {
     this.inner.addChunksToBranchBatch(branch, chunkIds);
   }
 
+  copyBranchCatalog(fromBranch: string, toBranch: string): { chunks: number; symbols: number } {
+    this.throwIfClosed();
+    const [chunks = 0, symbols = 0] = this.inner.copyBranchCatalog(fromBranch, toBranch);
+    return { chunks, symbols };
+  }
+
+  /** Returns file path to call-edge fingerprint for every file with call edges on the branch. */
+  getCallEdgeFingerprintsForBranch(branch: string): Map<string, string> {
+    this.throwIfClosed();
+    return new Map(this.inner.getCallEdgeFingerprintsForBranch(branch).map((row: { filePath: string; fingerprint: string }) => [row.filePath, row.fingerprint]));
+  }
+
   clearBranch(branch: string): number {
     this.throwIfClosed();
     return this.inner.clearBranch(branch);

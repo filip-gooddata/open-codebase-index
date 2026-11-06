@@ -1,5 +1,5 @@
 import type { Stats } from "fs";
-import { existsSync, readFileSync, statSync, writeFileSync, renameSync, unlinkSync, mkdirSync, promises as fsPromises } from "fs";
+import { existsSync, readFileSync, statSync, writeFileSync, renameSync, rmSync, unlinkSync, mkdirSync, promises as fsPromises } from "fs";
 import * as path from "path";
 import { performance } from "perf_hooks";
 import { execFile } from "child_process";
@@ -37,6 +37,7 @@ import {
 import type { ParsedFile, SymbolData, CallEdgeData, PathHopData, ReachabilityData, CommunityData, CommunityCouplingData, CentralityData } from "../native/index.js";
 import { getBranchOrDefault, getBaseBranch, isGitRepo } from "../git/index.js";
 import { isFullGitCommit, resolveLocalGitCommit, withMaterializedBranch } from "../git/branch-materialization.js";
+import { runGit } from "../git/branch-resolution.js";
 import type { HostMode } from "../config/host.js";
 import { isProjectIndexPathOwnedByProject, resolveProjectIndexPath } from "../config/paths.js";
 import { getChangedFiles, getWorkingTreeChanges } from "../tools/changed-files.js";
@@ -130,6 +131,8 @@ import {
   getLocalWorkspacePackages,
   isJavaScriptFamilyFilePath,
   LocalModuleCallResolver,
+  MODULE_FORMAT_DEPENDENCY_PREFIX,
+  moduleDependencyKeysForPath,
   TsConfigPathAliasCache,
 } from "./local-module-resolution.js";
 import { generatePreparedChunkId, PDF_EXTRACTION_VERSION, prepareDocument, prepareDocuments } from "../documents/prepare.js";
@@ -218,6 +221,31 @@ const PACKAGE_MANIFEST_MAX_BYTES = 64 * 1024;
 
 // Existing indexes without this metadata are the implicit version 1.
 const CALL_GRAPH_RESOLUTION_VERSION = "12";
+const FILE_DEPENDENCY_GRAPH_VERSION = 3;
+const MAX_SEED_ANCESTOR_CANDIDATES = 32;
+
+function parseEdgeFingerprints(value: unknown): Map<string, string> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const fingerprints = new Map<string, string>();
+  for (const [filePath, fingerprint] of Object.entries(value)) {
+    if (typeof fingerprint !== "string") return null;
+    fingerprints.set(filePath, fingerprint);
+  }
+  return fingerprints;
+}
+const SEED_SYMBOL_NAMESPACE_SAMPLE = 64;
+const BRANCH_SEED_METADATA_PREFIXES = [
+  "index.callGraphResolutionVersion",
+  "index.localModuleResolutionConfigHash",
+  "index.scipTypeScriptState",
+  "index.parser.javascriptVersion",
+  "index.parser.swiftVersion",
+  "index.parser.metalVersion",
+  "index.parser.markupVersion",
+  "index.parser.kotlinVersion",
+  "index.parser.rubyVersion",
+  "index.symbolExtractorVersion",
+] as const;
 const PHP_FUNCTION_SYMBOL_CHUNK_TYPES = new Set([
   "function_declaration",
   "function",
@@ -413,6 +441,14 @@ export interface IndexStats {
   failedBatchesPath?: string;
   warning?: string;
   resetCorruptedIndex?: boolean;
+  /** Files whose hash, version, or module dependencies required reprocessing. */
+  reprocessedFiles?: number;
+  /** Files whose call sites were extracted and resolved this run. */
+  callExtractionFiles?: number;
+  /** Branch catalog key a new branch was seeded from. */
+  seededFrom?: string;
+  /** Why a new branch was built without seeding. */
+  seedFallbackReason?: string;
 }
 
 type LoadedIndexState = {
@@ -1340,6 +1376,10 @@ export class Indexer {
   private configuredProviderInfo: ConfiguredProviderInfo | null = null;
   private fileHashCache: Map<string, string> = new Map();
   private fileHashCachePath: string = "";
+  private fileDependencyGraphPath: string = "";
+  private fileDependencyEntries: Map<string, string[]> | null = null;
+  private fileDependencyModuleFormats: Map<string, string> = new Map();
+  private fileEdgeFingerprints: Map<string, string> | null = null;
   private failedBatchesPath: string = "";
   private currentBranch: string = "default";
   private baseBranch: string = "main";
@@ -1507,6 +1547,7 @@ export class Indexer {
 
   private refreshRuntimeArtifactPaths(): void {
     this.fileHashCachePath = this.getRuntimeArtifactPath("file-hashes.json");
+    this.fileDependencyGraphPath = this.getRuntimeArtifactPath("file-dependencies.json");
     this.failedBatchesPath = this.getRuntimeArtifactPath("failed-batches.json");
   }
 
@@ -1679,6 +1720,9 @@ export class Indexer {
   }
 
   private loadFileHashCache(): void {
+    this.fileDependencyEntries = null;
+    this.fileDependencyModuleFormats = new Map();
+    this.fileEdgeFingerprints = null;
     if (!existsSync(this.fileHashCachePath)) {
       this.fileHashCache = new Map();
       return;
@@ -1688,6 +1732,7 @@ export class Indexer {
       const data = readFileSync(this.fileHashCachePath, "utf-8");
       const parsed = JSON.parse(data);
       this.fileHashCache = new Map(Object.entries(parsed));
+      this.fileDependencyEntries = this.loadFileDependencyGraph(hashContent(data));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn("Failed to load file hash cache, resetting cache state", {
@@ -1698,12 +1743,87 @@ export class Indexer {
     }
   }
 
-  private saveFileHashCache(): void {
+  /**
+   * Reads the per-file module dependency keys recorded by the last complete run.
+   * The artifact is trusted only when it was written together with the exact
+   * hash-cache bytes now on disk, so any other writer of the hash cache voids it.
+   */
+  private loadFileDependencyGraph(hashCacheFingerprint: string): Map<string, string[]> | null {
+    if (!existsSync(this.fileDependencyGraphPath)) return null;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(this.fileDependencyGraphPath, "utf-8"));
+      if (typeof parsed !== "object" || parsed === null) return null;
+      const record = parsed as Record<string, unknown>;
+      if (record.version !== FILE_DEPENDENCY_GRAPH_VERSION || record.hashCacheFingerprint !== hashCacheFingerprint) return null;
+      const entries = record.entries;
+      if (typeof entries !== "object" || entries === null || Array.isArray(entries)) return null;
+      const moduleFormats = record.moduleFormats;
+      if (typeof moduleFormats !== "object" || moduleFormats === null || Array.isArray(moduleFormats)) return null;
+      const loaded = new Map<string, string[]>();
+      for (const [filePath, keys] of Object.entries(entries)) {
+        if (!Array.isArray(keys) || !keys.every((key): key is string => typeof key === "string")) return null;
+        loaded.set(filePath, keys);
+      }
+      const loadedFormats = new Map<string, string>();
+      for (const [filePath, format] of Object.entries(moduleFormats)) {
+        if (typeof format !== "string") return null;
+        loadedFormats.set(filePath, format);
+      }
+      const edgeFingerprints = parseEdgeFingerprints(record.edgeFingerprints);
+      if (!edgeFingerprints) return null;
+      this.fileDependencyModuleFormats = loadedFormats;
+      this.fileEdgeFingerprints = edgeFingerprints;
+      return loaded;
+    } catch (error: unknown) {
+      this.logger.warn("Ignoring unreadable file dependency graph", {
+        fileDependencyGraphPath: this.fileDependencyGraphPath,
+        error: getErrorMessage(error),
+      });
+      return null;
+    }
+  }
+
+  private saveFileHashCache(dependencyGraph?: {
+    entries: ReadonlyMap<string, readonly string[]>;
+    moduleFormats: ReadonlyMap<string, string>;
+    edgeFingerprints: ReadonlyMap<string, string>;
+  }): void {
     const obj: Record<string, string> = {};
     for (const [k, v] of this.fileHashCache) {
       obj[k] = v;
     }
-    this.atomicPublishSync(this.fileHashCachePath, (tempPath) => writeFileSync(tempPath, JSON.stringify(obj)));
+    const serialized = JSON.stringify(obj);
+    this.atomicPublishSync(this.fileHashCachePath, (tempPath) => writeFileSync(tempPath, serialized));
+    if (!dependencyGraph) {
+      this.fileDependencyEntries = null;
+      this.fileDependencyModuleFormats = new Map();
+      this.fileEdgeFingerprints = null;
+      rmSync(this.fileDependencyGraphPath, { force: true });
+      return;
+    }
+    const entries: Record<string, string[]> = {};
+    for (const filePath of [...dependencyGraph.entries.keys()].sort()) {
+      entries[filePath] = [...dependencyGraph.entries.get(filePath)!];
+    }
+    const moduleFormats: Record<string, string> = {};
+    for (const filePath of [...dependencyGraph.moduleFormats.keys()].sort()) {
+      moduleFormats[filePath] = dependencyGraph.moduleFormats.get(filePath)!;
+    }
+    const edgeFingerprints: Record<string, string> = {};
+    for (const filePath of [...dependencyGraph.edgeFingerprints.keys()].sort()) {
+      edgeFingerprints[filePath] = dependencyGraph.edgeFingerprints.get(filePath)!;
+    }
+    const graph = {
+      version: FILE_DEPENDENCY_GRAPH_VERSION,
+      hashCacheFingerprint: hashContent(serialized),
+      entries,
+      moduleFormats,
+      edgeFingerprints,
+    };
+    this.atomicPublishSync(this.fileDependencyGraphPath, (tempPath) => writeFileSync(tempPath, JSON.stringify(graph)));
+    this.fileDependencyEntries = new Map(Object.entries(entries));
+    this.fileDependencyModuleFormats = new Map(Object.entries(moduleFormats));
+    this.fileEdgeFingerprints = new Map(Object.entries(edgeFingerprints));
   }
 
   private atomicPublishSync(targetPath: string, writeTemporary: (tempPath: string) => void): void {
@@ -1913,6 +2033,185 @@ export class Indexer {
 
   private getProjectForceReembedMetadataKey(projectIdentityHash = this.projectIdentityHash): string {
     return `index.forceReembed.${projectIdentityHash}`;
+  }
+
+  /**
+   * Gives a branch that has never been indexed the catalog, file-hash cache,
+   * module dependency graph, and version metadata of the nearest indexed branch.
+   * The regular hash comparison then reprocesses only what differs from that
+   * branch, so the seed changes how much work a run does, never its result.
+   */
+  private async seedNewBranchFromAncestor(
+    database: Database,
+    branchCatalogKey: string,
+    indexedCommit: string | null,
+    isStructural: boolean,
+    signal?: AbortSignal,
+  ): Promise<Pick<IndexStats, "seededFrom" | "seedFallbackReason">> {
+    const isNewBranch = database.getBranchChunkIds(branchCatalogKey).length === 0
+      && database.getBranchSymbolIds(branchCatalogKey).length === 0
+      && !existsSync(this.fileHashCachePath);
+    if (!isNewBranch) return {};
+    const ineligibleReason = this.config.scope !== "project" ? "global scope"
+      : this.getPreparedBranchNamespace() !== null ? "namespaced branch catalog"
+      : branchCatalogKey === "default" ? "no git branch"
+      : isStructural ? "structural mode"
+      : this.config.indexing.scipTypeScript.enabled ? "SCIP TypeScript enabled"
+      : !this.indexCompatibility?.compatible ? "incompatible index"
+      : !indexedCommit ? "no indexed commit"
+      : null;
+    if (ineligibleReason) return { seedFallbackReason: ineligibleReason };
+
+    const ancestor = await this.findSeedAncestor(database, branchCatalogKey, indexedCommit!, signal);
+    if (!ancestor) return { seedFallbackReason: "no usable indexed ancestor" };
+
+    const targetMetadataKeys = BRANCH_SEED_METADATA_PREFIXES.map((prefix) =>
+      this.getBranchMetadataKeyForCatalogKey(prefix, branchCatalogKey));
+    try {
+      database.copyBranchCatalog(ancestor, branchCatalogKey);
+      BRANCH_SEED_METADATA_PREFIXES.forEach((prefix, index) => {
+        const value = database.getMetadata(this.getBranchMetadataKeyForCatalogKey(prefix, ancestor));
+        if (value !== null) database.setMetadata(targetMetadataKeys[index], value);
+      });
+      const hashCacheBytes = readFileSync(this.getProjectArtifactPathForCatalogKey("file-hashes.json", ancestor));
+      const dependencyGraphPath = this.getProjectArtifactPathForCatalogKey("file-dependencies.json", ancestor);
+      const dependencyGraphBytes = existsSync(dependencyGraphPath) ? readFileSync(dependencyGraphPath) : null;
+      this.atomicPublishSync(this.fileHashCachePath, (tempPath) => writeFileSync(tempPath, hashCacheBytes));
+      if (dependencyGraphBytes) {
+        this.atomicPublishSync(this.fileDependencyGraphPath, (tempPath) => writeFileSync(tempPath, dependencyGraphBytes));
+      }
+      this.logger.info("Seeded new branch index from indexed ancestor", { branch: branchCatalogKey, ancestor });
+      return { seededFrom: ancestor };
+    } catch (error: unknown) {
+      throwIfOperationAborted(signal);
+      this.logger.warn("Seeding new branch index failed, building from scratch", {
+        branch: branchCatalogKey,
+        ancestor,
+        error: getErrorMessage(error),
+      });
+      database.clearBranch(branchCatalogKey);
+      database.clearBranchSymbols(branchCatalogKey);
+      for (const key of targetMetadataKeys) database.deleteMetadata(key);
+      rmSync(this.fileHashCachePath, { force: true });
+      rmSync(this.fileDependencyGraphPath, { force: true });
+      return { seedFallbackReason: "seed copy failed" };
+    }
+  }
+
+  /**
+   * Picks the indexed branch with the fewest commits between it and HEAD.
+   * Only branches whose state is complete and current are usable: versions
+   * match this build, the hash cache exists, no embedding batches are pending,
+   * and chunk and symbol IDs carry no branch namespace.
+   */
+  private async findSeedAncestor(
+    database: Database,
+    branchCatalogKey: string,
+    indexedCommit: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const candidates: Array<{ key: string; commit: string }> = [];
+    for (const key of [...database.getAllBranches()].sort()) {
+      if (candidates.length >= MAX_SEED_ANCESTOR_CANDIDATES) break;
+      if (key === branchCatalogKey || key === "default") continue;
+      const commit = database.getMetadata(this.getBranchCommitMetadataKeyForCatalogKey(key));
+      if (!commit || !isFullGitCommit(commit)) continue;
+      if (!this.areBranchMigrationVersionsCurrent(database, key)) continue;
+      if (!existsSync(this.getProjectArtifactPathForCatalogKey("file-hashes.json", key))) continue;
+      const failedBatchesPath = this.getProjectArtifactPathForCatalogKey("failed-batches.json", key);
+      if (existsSync(failedBatchesPath) && statSync(failedBatchesPath).size > 0) continue;
+      if (!this.hasCallEdgeRecord(key)) continue;
+      const namespaceSuffix = `_${hashContent(key).slice(0, 16)}`;
+      if (database.getBranchChunkIds(key).some((chunkId) => chunkId.endsWith(namespaceSuffix))) continue;
+      if (!this.hasUnnamespacedSymbols(database, key)) continue;
+      candidates.push({ key, commit });
+    }
+
+    let best: { key: string; distance: number } | null = null;
+    for (const { key, commit } of candidates) {
+      throwIfOperationAborted(signal);
+      let distance: number;
+      try {
+        const counts = await runGit(
+          this.materializedProjectRoot,
+          ["rev-list", "--left-right", "--count", `${commit}...${indexedCommit}`],
+          { signal },
+        );
+        const [ahead, behind] = counts.split(/\s+/u).map(Number);
+        distance = ahead + behind;
+      } catch (error: unknown) {
+        throwIfOperationAborted(signal);
+        this.logger.debug("Skipping seed candidate without a reachable commit", { branch: key, error: getErrorMessage(error) });
+        continue;
+      }
+      if (!Number.isFinite(distance)) continue;
+      if (!best || distance < best.distance) best = { key, distance };
+    }
+    return best?.key ?? null;
+  }
+
+  /**
+   * A seeded branch starts from the donor's shared call-edge rows, which a run
+   * on any other branch may have rewritten since. Only a donor whose dependency
+   * graph records its own edge fingerprints lets the first run detect that.
+   */
+  private hasCallEdgeRecord(branchCatalogKey: string): boolean {
+    try {
+      const hashCacheBytes = readFileSync(this.getProjectArtifactPathForCatalogKey("file-hashes.json", branchCatalogKey), "utf-8");
+      const parsed: unknown = JSON.parse(
+        readFileSync(this.getProjectArtifactPathForCatalogKey("file-dependencies.json", branchCatalogKey), "utf-8"),
+      );
+      if (typeof parsed !== "object" || parsed === null) return false;
+      const record = parsed as Record<string, unknown>;
+      return record.version === FILE_DEPENDENCY_GRAPH_VERSION
+        && record.hashCacheFingerprint === hashContent(hashCacheBytes)
+        && parseEdgeFingerprints(record.edgeFingerprints) !== null;
+    } catch (error: unknown) {
+      this.logger.debug("Skipping seed candidate without a call-edge record", { branch: branchCatalogKey, error: getErrorMessage(error) });
+      return false;
+    }
+  }
+
+  /**
+   * Prepared and SCIP-enabled catalogs prefix symbol IDs with a branch
+   * namespace. Recomputing the plain ID for a bounded sample of the branch's
+   * symbols tells the two apart without a stored marker.
+   */
+  private hasUnnamespacedSymbols(database: Database, branchKey: string): boolean {
+    const symbolIds = new Set(database.getBranchSymbolIds(branchKey));
+    if (symbolIds.size === 0) return true;
+    let hashes: Record<string, unknown>;
+    try {
+      hashes = JSON.parse(readFileSync(this.getProjectArtifactPathForCatalogKey("file-hashes.json", branchKey), "utf-8")) as Record<string, unknown>;
+    } catch (error: unknown) {
+      this.logger.debug("Skipping seed candidate with unreadable file hash cache", { branch: branchKey, error: getErrorMessage(error) });
+      return false;
+    }
+    let checked = 0;
+    for (const [filePath, sourceHash] of Object.entries(hashes)) {
+      if (checked >= SEED_SYMBOL_NAMESPACE_SAMPLE) break;
+      if (typeof sourceHash !== "string") return false;
+      for (const symbol of database.getSymbolsByFile(filePath)) {
+        if (!symbolIds.has(symbol.id)) continue;
+        const plainId = `sym_${hashContent(
+          symbol.filePath + ":" + symbol.name + ":" + symbol.kind + ":"
+          + symbol.startLine + ":" + symbol.startCol + ":" + sourceHash,
+        ).slice(0, 16)}`;
+        if (plainId !== symbol.id) return false;
+        checked += 1;
+      }
+    }
+    return checked > 0;
+  }
+
+  private getProjectArtifactPathForCatalogKey(fileName: string, branchKey: string): string {
+    const extension = path.extname(fileName);
+    const baseName = fileName.slice(0, fileName.length - extension.length);
+    return path.join(this.indexPath, `${baseName}.${hashContent(branchKey).slice(0, 16)}${extension}`);
+  }
+
+  private getBranchMetadataKeyForCatalogKey(prefix: string, branchKey: string): string {
+    return `${prefix}.${hashContent(branchKey).slice(0, 24)}`;
   }
 
   private getProjectMigrationFinalizedMetadataKey(projectIdentityHash = this.projectIdentityHash): string {
@@ -4311,7 +4610,7 @@ export class Indexer {
     if (!existsSync(this.indexPath)) return;
 
     const names = await fsPromises.readdir(this.indexPath);
-    const runtimeStatePattern = /^(?:file-hashes|failed-batches)(?:\.[a-f0-9]{16})?\.json$/;
+    const runtimeStatePattern = /^(?:file-hashes|file-dependencies|failed-batches)(?:\.[a-f0-9]{16})?\.json$/;
     await Promise.all(
       names
         .filter((name) => runtimeStatePattern.test(name))
@@ -4972,6 +5271,7 @@ export class Indexer {
     const indexedCommit = this.expectedCommitOverride ?? materializedCommit;
     const scopedRoots = this.config.scope === "global" ? this.getScopedRoots() : null;
     const branchCatalogKey = this.getBranchCatalogKey();
+    const seedOutcome = await this.seedNewBranchFromAncestor(database, branchCatalogKey, indexedCommit, isStructural, signal);
     const previousBranchChunkIds = database.getBranchChunkIds(branchCatalogKey);
     const previousBranchChunkIdSet = new Set(previousBranchChunkIds);
     const previousBranchSymbolIds = database.getBranchSymbolIds(branchCatalogKey);
@@ -5005,6 +5305,7 @@ export class Indexer {
       removedChunks: 0,
       skippedFiles: [],
       parseFailures: [],
+      ...seedOutcome,
     };
 
     onProgress?.({
@@ -5240,7 +5541,112 @@ export class Indexer {
       }
     }
 
-    if (javaScriptGraphSourcesChanged || pythonGraphSourcesChanged) {
+    const moduleFormats = new Map<string, Promise<"module" | "commonjs" | "unknown">>();
+    const settledModuleFormats = new Map<string, string>();
+    const readBoundedManifest = async (directory: string): Promise<string | undefined | null> => {
+      const manifestPath = path.join(directory, "package.json");
+      let realManifest: string;
+      try {
+        const realDirectory = await fsPromises.realpath(directory);
+        if (!isPathWithinRoot(realDirectory, this.materializedProjectRoot)) return null;
+        realManifest = await fsPromises.realpath(manifestPath);
+      } catch (error) {
+        if (isOperationInterruption(error)) throw error;
+        return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")
+          ? undefined
+          : null;
+      }
+      if (!isPathWithinRoot(realManifest, this.materializedProjectRoot)) return null;
+      const stats = await fsPromises.lstat(realManifest).catch((error: unknown) => {
+        if (isOperationInterruption(error)) throw error;
+        return undefined;
+      });
+      if (!stats || !stats.isFile() || stats.size > PACKAGE_MANIFEST_MAX_BYTES) return null;
+      const handle = await fsPromises.open(realManifest, "r").catch((error: unknown) => {
+        if (isOperationInterruption(error)) throw error;
+        return undefined;
+      });
+      if (!handle) return null;
+      let content: string | null = null;
+      let interruption: unknown;
+      try {
+        const openedStats = await handle.stat();
+        throwIfOperationAborted(signal);
+        if (openedStats.isFile() && openedStats.size <= PACKAGE_MANIFEST_MAX_BYTES
+          && openedStats.dev === stats.dev && openedStats.ino === stats.ino) {
+          // One spare byte proves EOF and rejects growth beyond the observed size.
+          const buffer = Buffer.alloc(openedStats.size + 1);
+          let offset = 0;
+          while (true) {
+            const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+            throwIfOperationAborted(signal);
+            if (bytesRead === 0) {
+              content = buffer.subarray(0, offset).toString("utf8");
+              break;
+            }
+            offset += bytesRead;
+            if (offset > openedStats.size) break;
+          }
+        }
+      } catch (error: unknown) {
+        if (isOperationInterruption(error)) interruption = error;
+      } finally {
+        try {
+          await handle.close();
+        } catch (error: unknown) {
+          if (interruption === undefined && isOperationInterruption(error)) interruption = error;
+        }
+      }
+      if (interruption !== undefined) throw interruption;
+      return content;
+    };
+    const moduleFormatForFile = async (filePath: string): Promise<"module" | "commonjs" | "unknown"> => {
+      const cached = moduleFormats.get(filePath);
+      if (cached) return cached;
+      const lookup = (async () => {
+        const materializedPath = this.toMaterializedFilePath(filePath);
+        if (!isPathWithinRoot(materializedPath, this.materializedProjectRoot)) return "unknown" as const;
+        let directory = path.dirname(materializedPath);
+        while (isPathWithinRoot(directory, this.materializedProjectRoot)) {
+          throwIfOperationAborted(signal);
+          const content = await readBoundedManifest(directory);
+          if (content === null) return "unknown" as const;
+          if (content !== undefined) return declaredPackageFormat(content);
+          const parent = path.dirname(directory);
+          if (parent === directory) break;
+          directory = parent;
+        }
+        // The ownership boundary prevents proving the nearest enclosing format.
+        return "unknown" as const;
+      })();
+      moduleFormats.set(filePath, lookup);
+      settledModuleFormats.delete(filePath);
+      void lookup.then((format) => { settledModuleFormats.set(filePath, format); }, () => undefined);
+      return lookup;
+    };
+    // Unchanged JS/Python files keep their edges unless a module they resolved
+    // through changed, appeared, or disappeared. Files without a trusted record
+    // fall back to reprocessing their whole language family.
+    const dependencyGraphEligible = scopedRoots === null && this.scipTypeScriptState.outcome === "disabled";
+    const previousDependencyEntries = dependencyGraphEligible ? this.fileDependencyEntries : null;
+    const affectedDependencyKeys = new Set<string>();
+    let moduleFormatChanged = false;
+    if (previousDependencyEntries) {
+      for (const filePath of new Set([...this.fileHashCache.keys(), ...currentFileHashes.keys()])) {
+        if (this.fileHashCache.get(filePath) === currentFileHashes.get(filePath)) continue;
+        for (const key of moduleDependencyKeysForPath(filePath.split(path.sep).join("/"))) {
+          affectedDependencyKeys.add(key);
+        }
+      }
+      // Package manifests are not indexed sources, so a format flip is detected
+      // by re-answering every format question a recorded resolution depended on.
+      for (const [filePath, previousFormat] of this.fileDependencyModuleFormats) {
+        if (await moduleFormatForFile(filePath) === previousFormat) continue;
+        affectedDependencyKeys.add(`${MODULE_FORMAT_DEPENDENCY_PREFIX}${filePath}`);
+        moduleFormatChanged = true;
+      }
+    }
+    if (javaScriptGraphSourcesChanged || pythonGraphSourcesChanged || moduleFormatChanged) {
       let processedDescriptors = 0;
       for (const [storedPath, descriptor] of allFileDescriptors) {
         if (processedDescriptors > 0 && processedDescriptors % 256 === 0) {
@@ -5249,10 +5655,36 @@ export class Indexer {
         }
         processedDescriptors += 1;
         if (
-          !(javaScriptGraphSourcesChanged && isJavaScriptFamilyFilePath(storedPath))
+          !((javaScriptGraphSourcesChanged || moduleFormatChanged) && isJavaScriptFamilyFilePath(storedPath))
           && !(pythonGraphSourcesChanged && isPythonFilePath(storedPath))
         ) continue;
         if (changedFilePathSet.has(storedPath)) continue;
+        const dependencyKeys = previousDependencyEntries?.get(storedPath.split(path.sep).join("/"));
+        if (dependencyKeys && !dependencyKeys.some((key) => affectedDependencyKeys.has(key))) continue;
+        unchangedFilePaths.delete(storedPath);
+        changedFileDescriptors.push(descriptor);
+        changedFilePathSet.add(storedPath);
+      }
+    }
+
+    // Call-edge rows carry no branch, so identical files on two branches share
+    // them and the last branch indexed decides their targets. Files whose rows
+    // no longer match what this branch recorded are re-resolved. An existing
+    // index without a trusted record re-resolves every file that owns edges
+    // once, so another branch's targets are never adopted as the baseline.
+    const recordedEdgeFingerprints = previousDependencyEntries
+      ? this.fileEdgeFingerprints
+      : dependencyGraphEligible && this.fileHashCache.size > 0
+        ? new Map<string, string>()
+        : null;
+    if (recordedEdgeFingerprints) {
+      const currentEdgeFingerprints = database.getCallEdgeFingerprintsForBranch(branchCatalogKey);
+      for (const filePath of new Set([...recordedEdgeFingerprints.keys(), ...currentEdgeFingerprints.keys()])) {
+        if (recordedEdgeFingerprints.get(filePath) === currentEdgeFingerprints.get(filePath)) continue;
+        const storedPath = this.toStoredFilePath(filePath);
+        const descriptor = allFileDescriptors.get(storedPath);
+        if (!descriptor || changedFilePathSet.has(storedPath)) continue;
+        this.logger.debug("Re-resolving call edges rewritten by another branch", { filePath: storedPath });
         unchangedFilePaths.delete(storedPath);
         changedFileDescriptors.push(descriptor);
         changedFilePathSet.add(storedPath);
@@ -5299,6 +5731,8 @@ export class Indexer {
       unchanged: unchangedFilePaths.size,
       changed: changedFileDescriptors.length,
     });
+    stats.reprocessedFiles = changedFileDescriptors.length;
+    stats.callExtractionFiles = 0;
 
     onProgress?.({
       phase: "parsing",
@@ -5382,85 +5816,36 @@ export class Indexer {
         descriptor,
       ]),
     );
-    const moduleFormats = new Map<string, Promise<"module" | "commonjs" | "unknown">>();
-    const readBoundedManifest = async (directory: string): Promise<string | undefined | null> => {
-      const manifestPath = path.join(directory, "package.json");
-      let realManifest: string;
-      try {
-        const realDirectory = await fsPromises.realpath(directory);
-        if (!isPathWithinRoot(realDirectory, this.materializedProjectRoot)) return null;
-        realManifest = await fsPromises.realpath(manifestPath);
-      } catch (error) {
-        if (isOperationInterruption(error)) throw error;
-        return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")
-          ? undefined
-          : null;
+    const capturedFileDependencies = new Map<string, string[]>();
+    const buildFileDependencyEntries = (): {
+      entries: Map<string, string[]>;
+      moduleFormats: Map<string, string>;
+      edgeFingerprints: Map<string, string>;
+    } | undefined => {
+      if (!dependencyGraphEligible) return undefined;
+      const entries = new Map<string, string[]>();
+      for (const storedPath of currentFileHashes.keys()) {
+        if (!isJavaScriptFamilyFilePath(storedPath) && !isPythonFilePath(storedPath)) continue;
+        const posixPath = storedPath.split(path.sep).join("/");
+        const keys = capturedFileDependencies.get(posixPath)
+          ?? (changedFilePathSet.has(storedPath) ? undefined : previousDependencyEntries?.get(posixPath));
+        if (keys) entries.set(posixPath, keys);
       }
-      if (!isPathWithinRoot(realManifest, this.materializedProjectRoot)) return null;
-      const stats = await fsPromises.lstat(realManifest).catch((error: unknown) => {
-        if (isOperationInterruption(error)) throw error;
-        return undefined;
-      });
-      if (!stats || !stats.isFile() || stats.size > PACKAGE_MANIFEST_MAX_BYTES) return null;
-      const handle = await fsPromises.open(realManifest, "r").catch((error: unknown) => {
-        if (isOperationInterruption(error)) throw error;
-        return undefined;
-      });
-      if (!handle) return null;
-      let content: string | null = null;
-      let interruption: unknown;
-      try {
-        const openedStats = await handle.stat();
-        throwIfOperationAborted(signal);
-        if (openedStats.isFile() && openedStats.size <= PACKAGE_MANIFEST_MAX_BYTES
-          && openedStats.dev === stats.dev && openedStats.ino === stats.ino) {
-          // One spare byte proves EOF and rejects growth beyond the observed size.
-          const buffer = Buffer.alloc(openedStats.size + 1);
-          let offset = 0;
-          while (true) {
-            const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-            throwIfOperationAborted(signal);
-            if (bytesRead === 0) {
-              content = buffer.subarray(0, offset).toString("utf8");
-              break;
-            }
-            offset += bytesRead;
-            if (offset > openedStats.size) break;
-          }
-        }
-      } catch (error: unknown) {
-        if (isOperationInterruption(error)) interruption = error;
-      } finally {
-        try {
-          await handle.close();
-        } catch (error: unknown) {
-          if (interruption === undefined && isOperationInterruption(error)) interruption = error;
+      const moduleFormats = new Map<string, string>();
+      for (const keys of entries.values()) {
+        for (const key of keys) {
+          if (!key.startsWith(MODULE_FORMAT_DEPENDENCY_PREFIX)) continue;
+          const filePath = key.slice(MODULE_FORMAT_DEPENDENCY_PREFIX.length);
+          const format = settledModuleFormats.get(filePath);
+          // An unanswered format question cannot be rechecked later, so the
+          // whole record is withheld and the next run uses the family rule.
+          if (format === undefined) return undefined;
+          moduleFormats.set(filePath, format);
         }
       }
-      if (interruption !== undefined) throw interruption;
-      return content;
-    };
-    const moduleFormatForFile = async (filePath: string): Promise<"module" | "commonjs" | "unknown"> => {
-      const cached = moduleFormats.get(filePath);
-      if (cached) return cached;
-      const lookup = (async () => {
-        const materializedPath = this.toMaterializedFilePath(filePath);
-        if (!isPathWithinRoot(materializedPath, this.materializedProjectRoot)) return "unknown" as const;
-        let directory = path.dirname(materializedPath);
-        while (isPathWithinRoot(directory, this.materializedProjectRoot)) {
-          throwIfOperationAborted(signal);
-          const content = await readBoundedManifest(directory);
-          if (content === null) return "unknown" as const;
-          if (content !== undefined) return declaredPackageFormat(content);
-          const parent = path.dirname(directory);
-          if (parent === directory) break;
-          directory = parent;
-        }
-        // The ownership boundary prevents proving the nearest enclosing format.
-        return "unknown" as const;
-      })();
-      moduleFormats.set(filePath, lookup);
-      return lookup;
+      // Recorded after the commit so the next run can tell whether a run on
+      // another branch rewrote any of this branch's shared call-edge rows.
+      return { entries, moduleFormats, edgeFingerprints: database.getCallEdgeFingerprintsForBranch(branchCatalogKey) };
     };
     const localModuleResolver = new LocalModuleCallResolver({
       filePaths: [...sourceDescriptorsByPath.keys()],
@@ -5762,8 +6147,13 @@ export class Indexer {
             localModuleResolver.seedModule(parsed.path, { content: sourceContent, symbols: fileSymbols, moduleSyntax: parsed.moduleSyntax });
           }
 
+          const tracksModuleDependencies = parsed.kind === "source"
+            && (isJavaScriptFamilyFilePath(parsed.path) || isPythonFilePath(parsed.path));
           const fileLanguage = parsed.symbols[0]?.language ?? parsed.chunks[0]?.language;
           if (!fileLanguage || !CALL_GRAPH_LANGUAGES.has(fileLanguage)) {
+            if (tracksModuleDependencies) {
+              capturedFileDependencies.set(descriptor.storedPath.split(path.sep).join("/"), []);
+            }
             continue;
           }
           const isCaseInsensitiveLanguage = CASE_INSENSITIVE_LANGUAGES.has(fileLanguage);
@@ -5778,65 +6168,76 @@ export class Indexer {
           }
 
           const callSites = extractCalls(sourceContent, fileLanguage);
+          stats.callExtractionFiles = (stats.callExtractionFiles ?? 0) + 1;
           const classifyGoCall = fileLanguage === "go"
             ? createGoDirectCallClassifier(sourceContent, fileSymbols)
             : undefined;
-          for (const site of callSites) {
-            const enclosingSymbol = findEnclosingSymbol(fileSymbols, site.line, site.column);
-            if (!enclosingSymbol) {
-              continue;
-            }
+          const resolveCallSites = async (): Promise<void> => {
+            for (const site of callSites) {
+              const enclosingSymbol = findEnclosingSymbol(fileSymbols, site.line, site.column);
+              if (!enclosingSymbol) {
+                continue;
+              }
 
-            const isSupportedGoCall = classifyGoCall?.(site) ?? false;
-            let candidates = symbolsByName.get(normalizeSymbolKey(site.calleeName));
-            if (isJavaScriptFamilyFilePath(parsed.path)
-              && (site.callType === "Call" || site.callType === "Constructor" || site.callType === "Import")) {
-              // JS/TS binding identity and constructability require current AST proof, never a name-only fallback.
-              candidates = undefined;
-            } else if (fileLanguage === "go") {
-              candidates = isSupportedGoCall
-                ? candidates?.filter((candidate) => candidate.kind === "function_declaration")
-                : undefined;
-            } else if (fileLanguage === "php" && candidates) {
-              if (site.callType === "Constructor") {
-                candidates = candidates.filter((candidate) => PHP_CLASS_SYMBOL_CHUNK_TYPES.has(candidate.kind));
-              } else if (site.callType === "Call") {
-                candidates = candidates.filter((candidate) => PHP_FUNCTION_SYMBOL_CHUNK_TYPES.has(candidate.kind));
+              const isSupportedGoCall = classifyGoCall?.(site) ?? false;
+              let candidates = symbolsByName.get(normalizeSymbolKey(site.calleeName));
+              if (isJavaScriptFamilyFilePath(parsed.path)
+                && (site.callType === "Call" || site.callType === "Constructor" || site.callType === "Import")) {
+                // JS/TS binding identity and constructability require current AST proof, never a name-only fallback.
+                candidates = undefined;
+              } else if (fileLanguage === "go") {
+                candidates = isSupportedGoCall
+                  ? candidates?.filter((candidate) => candidate.kind === "function_declaration")
+                  : undefined;
+              } else if (fileLanguage === "php" && candidates) {
+                if (site.callType === "Constructor") {
+                  candidates = candidates.filter((candidate) => PHP_CLASS_SYMBOL_CHUNK_TYPES.has(candidate.kind));
+                } else if (site.callType === "Call") {
+                  candidates = candidates.filter((candidate) => PHP_FUNCTION_SYMBOL_CHUNK_TYPES.has(candidate.kind));
+                }
               }
-            }
-            candidates = candidates?.filter((symbol) =>
-              isCompatibleCFamilyCallTarget(fileLanguage, site.callType, symbol.kind)
-            );
-            let resolvedTarget = candidates?.length === 1 ? candidates[0] : undefined;
-            if (
-              !resolvedTarget
-              && (!candidates || candidates.length === 0)
-              && (isJavaScriptFamilyFilePath(parsed.path) || isSupportedGoCall || isPythonFilePath(parsed.path))
-            ) {
-              resolvedTarget = await localModuleResolver.resolveCallTarget(
-                parsed.path,
-                sourceContent,
-                site,
+              candidates = candidates?.filter((symbol) =>
+                isCompatibleCFamilyCallTarget(fileLanguage, site.callType, symbol.kind)
               );
-              if (resolvedTarget && !symbolBatchIds.has(resolvedTarget.id)) {
-                symbolBatch.push(resolvedTarget);
-                symbolBatchIds.add(resolvedTarget.id);
-                allSymbolIds.add(resolvedTarget.id);
+              let resolvedTarget = candidates?.length === 1 ? candidates[0] : undefined;
+              if (
+                !resolvedTarget
+                && (!candidates || candidates.length === 0)
+                && (isJavaScriptFamilyFilePath(parsed.path) || isSupportedGoCall || isPythonFilePath(parsed.path))
+              ) {
+                resolvedTarget = await localModuleResolver.resolveCallTarget(
+                  parsed.path,
+                  sourceContent,
+                  site,
+                );
+                if (resolvedTarget && !symbolBatchIds.has(resolvedTarget.id)) {
+                  symbolBatch.push(resolvedTarget);
+                  symbolBatchIds.add(resolvedTarget.id);
+                  allSymbolIds.add(resolvedTarget.id);
+                }
               }
+              edgeBatch.push({
+                id: `edge_${hashContent(
+                  enclosingSymbol.id + ":" + site.calleeName + ":" + site.line + ":" + site.column,
+                ).slice(0, 16)}`,
+                fromSymbolId: enclosingSymbol.id,
+                targetName: site.calleeName,
+                toSymbolId: resolvedTarget?.id,
+                callType: site.callType,
+                confidence: site.confidence,
+                line: site.line,
+                col: site.column,
+                isResolved: resolvedTarget !== undefined,
+              });
             }
-            edgeBatch.push({
-              id: `edge_${hashContent(
-                enclosingSymbol.id + ":" + site.calleeName + ":" + site.line + ":" + site.column,
-              ).slice(0, 16)}`,
-              fromSymbolId: enclosingSymbol.id,
-              targetName: site.calleeName,
-              toSymbolId: resolvedTarget?.id,
-              callType: site.callType,
-              confidence: site.confidence,
-              line: site.line,
-              col: site.column,
-              isResolved: resolvedTarget !== undefined,
-            });
+          };
+          if (tracksModuleDependencies) {
+            capturedFileDependencies.set(
+              descriptor.storedPath.split(path.sep).join("/"),
+              await localModuleResolver.captureDependencies(parsed.path, resolveCallSites),
+            );
+          } else {
+            await resolveCallSites();
           }
         }
 
@@ -6123,7 +6524,7 @@ export class Indexer {
           this.replaceScopedFileHashCache(currentFileHashes, scopedRoots);
         } else {
           this.fileHashCache = currentFileHashes;
-          this.saveFileHashCache();
+          this.saveFileHashCache(buildFileDependencyEntries());
         }
         stats.durationMs = Date.now() - startTime;
         onProgress?.({
@@ -6170,7 +6571,7 @@ export class Indexer {
           this.replaceScopedFileHashCache(currentFileHashes, scopedRoots);
         } else {
           this.fileHashCache = currentFileHashes;
-          this.saveFileHashCache();
+          this.saveFileHashCache(buildFileDependencyEntries());
         }
         stats.durationMs = Date.now() - startTime;
         onProgress?.({
@@ -6219,7 +6620,7 @@ export class Indexer {
         this.replaceScopedFileHashCache(currentFileHashes, scopedRoots);
       } else {
         this.fileHashCache = currentFileHashes;
-        this.saveFileHashCache();
+        this.saveFileHashCache(buildFileDependencyEntries());
       }
 
       if (this.config.indexing.autoGc && stats.removedChunks > 0) {

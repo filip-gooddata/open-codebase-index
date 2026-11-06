@@ -55,6 +55,60 @@ describe("Database", () => {
     });
   });
 
+  describe("copyBranchCatalog", () => {
+    function seedSource(): void {
+      const chunks: ChunkData[] = ["a", "b"].map((name) => ({
+        chunkId: `chunk-${name}`,
+        contentHash: `hash-${name}`,
+        filePath: `/${name}.ts`,
+        startLine: 1,
+        endLine: 2,
+        nodeType: "function",
+        name,
+        language: "typescript",
+      }));
+      const symbols: SymbolData[] = ["a", "b"].map((name) => ({
+        id: `symbol-${name}`,
+        filePath: `/${name}.ts`,
+        name,
+        kind: "function",
+        startLine: 1,
+        startCol: 0,
+        endLine: 2,
+        endCol: 1,
+        language: "typescript",
+      }));
+      db.upsertChunksBatch(chunks);
+      db.addChunksToBranchBatch("main", chunks.map((chunk) => chunk.chunkId));
+      db.upsertSymbolsBatch(symbols);
+      db.addSymbolsToBranchBatch("main", symbols.map((symbol) => symbol.id));
+    }
+
+    it("copies the chunk and symbol catalog into the target branch", () => {
+      seedSource();
+
+      expect(db.copyBranchCatalog("main", "feature")).toEqual({ chunks: 2, symbols: 2 });
+      expect(db.getBranchChunkIds("feature").sort()).toEqual(["chunk-a", "chunk-b"]);
+      expect(db.getBranchSymbolIds("feature").sort()).toEqual(["symbol-a", "symbol-b"]);
+      expect(db.getBranchChunkIds("main").sort()).toEqual(["chunk-a", "chunk-b"]);
+    });
+
+    it("keeps existing target rows and copies nothing from an unknown branch", () => {
+      seedSource();
+      db.addChunksToBranchBatch("feature", ["chunk-a"]);
+
+      expect(db.copyBranchCatalog("main", "feature")).toEqual({ chunks: 1, symbols: 2 });
+      expect(db.copyBranchCatalog("missing", "other")).toEqual({ chunks: 0, symbols: 0 });
+      expect(db.getBranchChunkIds("other")).toEqual([]);
+    });
+
+    it("fails fast after close", () => {
+      db.close();
+
+      expect(() => db.copyBranchCatalog("main", "feature")).toThrow("Database is closed");
+    });
+  });
+
   describe("read-only connections", () => {
     it("should read a live WAL database without allowing mutations", () => {
       const dbPath = path.join(tempDir, "test.db");
@@ -156,6 +210,48 @@ describe("Database", () => {
 
       expect(db.getSymbolsByName(generator.name)).toEqual([updated]);
       expect(db.getCallees(generator.id, "main")).toEqual([edge]);
+    });
+  });
+
+  describe("call-edge fingerprints", () => {
+    const caller: SymbolData = {
+      id: "fingerprint-caller",
+      filePath: "/caller.ts",
+      name: "caller",
+      kind: "function",
+      startLine: 1,
+      startCol: 0,
+      endLine: 3,
+      endCol: 1,
+      language: "typescript",
+    };
+    const edge: CallEdgeData = {
+      id: "fingerprint-edge",
+      fromSymbolId: caller.id,
+      targetName: "callee",
+      toSymbolId: "callee-on-main",
+      callType: "Call",
+      confidence: "Direct",
+      line: 2,
+      col: 2,
+      isResolved: true,
+    };
+
+    it("changes when another branch rewrites a shared edge target", () => {
+      db.upsertSymbolsBatch([caller]);
+      db.addSymbolsToBranchBatch("main", [caller.id]);
+      db.addSymbolsToBranchBatch("sibling", [caller.id]);
+      db.upsertCallEdgesBatch([edge]);
+      const recorded = db.getCallEdgeFingerprintsForBranch("main");
+
+      expect([...recorded.keys()]).toEqual([caller.filePath]);
+      expect(db.getCallEdgeFingerprintsForBranch("main")).toEqual(recorded);
+      expect(db.getCallEdgeFingerprintsForBranch("unindexed").size).toBe(0);
+
+      db.upsertCallEdgesBatch([{ ...edge, toSymbolId: "callee-on-sibling" }]);
+
+      expect(db.getCallEdgeFingerprintsForBranch("main").get(caller.filePath)).not.toBe(recorded.get(caller.filePath));
+      expect(db.getCallEdgeFingerprintsForBranch("sibling")).toEqual(db.getCallEdgeFingerprintsForBranch("main"));
     });
   });
 

@@ -920,6 +920,32 @@ pub fn add_chunks_to_branch_batch(
     })
 }
 
+/// Copy one branch's chunk and symbol membership into another branch.
+/// Returns (copied chunk rows, copied symbol rows).
+pub fn copy_branch_catalog(
+    conn: &mut Connection,
+    from_branch: &str,
+    to_branch: &str,
+) -> DbResult<(usize, usize)> {
+    if from_branch == to_branch {
+        return Ok((0, 0));
+    }
+
+    run_batch_with_write_transaction(conn, |conn| {
+        let chunks = conn.execute(
+            "INSERT OR IGNORE INTO branch_chunks (branch, chunk_id) \
+             SELECT ?2, chunk_id FROM branch_chunks WHERE branch = ?1",
+            params![from_branch, to_branch],
+        )?;
+        let symbols = conn.execute(
+            "INSERT OR IGNORE INTO branch_symbols (branch, symbol_id) \
+             SELECT ?2, symbol_id FROM branch_symbols WHERE branch = ?1",
+            params![from_branch, to_branch],
+        )?;
+        Ok((chunks, symbols))
+    })
+}
+
 /// Remove all chunks from a branch (for re-indexing)
 pub fn clear_branch(conn: &Connection, branch: &str) -> DbResult<usize> {
     let count = conn.execute(

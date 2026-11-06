@@ -5422,6 +5422,12 @@ export class Indexer {
     const unchangedFilePaths = new Set<string>();
     const currentFileHashes = new Map<string, string>();
     const currentStoredFilePaths = new Set(files.map((file) => this.toStoredFilePath(file.path)));
+    // A pre-branch-overlay writer may have rewritten shared call-edge targets
+    // this branch relies on; re-resolve the callers' files branch-scoped.
+    const staleCallEdgeFilePaths = new Map<string, string>();
+    for (const filePath of database.getStaleCallEdgeFilePaths(branchCatalogKey)) {
+      staleCallEdgeFilePaths.set(this.toStoredFilePath(filePath), filePath);
+    }
     const needsCallGraphResolutionMigration =
       database.getMetadata(this.getCallGraphResolutionMetadataKey()) !== CALL_GRAPH_RESOLUTION_VERSION;
     const localModuleResolutionConfigChanged =
@@ -5495,7 +5501,8 @@ export class Indexer {
       }
       const needsCallGraphRefresh = cachedHashMatches
         && (
-          (
+          staleCallEdgeFilePaths.has(storedPath)
+          || (
             (needsCallGraphResolutionMigration || localModuleResolutionConfigChanged || scipStateChanged)
             && (
               isJavaScriptFamilyFilePath(storedPath)
@@ -6463,6 +6470,11 @@ export class Indexer {
           }
         }
       }
+
+      const refreshedStaleCallEdgeFilePaths = Array.from(staleCallEdgeFilePaths)
+        .filter(([storedPath]) => changedFilePathSet.has(storedPath))
+        .map(([, filePath]) => filePath);
+      database.clearStaleCallEdgesForFiles(branchCatalogKey, refreshedStaleCallEdgeFilePaths);
 
       const removedChunkIds: string[] = [];
       for (const [chunkId] of existingChunks) {

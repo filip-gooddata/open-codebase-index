@@ -554,6 +554,53 @@ module.exports = { useCjs };
     expect(snapshot.edges).toEqual(scratch.snapshot.edges);
   });
 
+  it("isolates a legacy unscoped edge write from sibling branches and refreshes it on the next index", async () => {
+    await indexMain();
+    await indexShiftedSibling();
+
+    const database = new Database(path.join(repo, ".opencode", "index", "codebase.db"));
+    const mainBefore = graphSnapshot(database, "main");
+    const siblingBefore = graphSnapshot(database, "sibling");
+    const [useAdd] = database.getSymbolsByName("useAdd");
+    const [useMul] = database.getSymbolsByName("useMul");
+    const sharedEdge = database.getCallees(useMul.id, "main").find((edge) => edge.targetName === "mul");
+    expect(database.getBranchSymbolIds("sibling")).toContain(useAdd.id);
+    expect(sharedEdge).toBeDefined();
+    if (!sharedEdge) return;
+    const siblingMulId = database.getCallees(useMul.id, "sibling").find((edge) => edge.targetName === "mul")?.toSymbolId;
+
+    // A 0.34.0 writer has no branch and rewrites the shared row to a symbol both branches contain.
+    database.upsertCallEdge({ ...sharedEdge, toSymbolId: useAdd.id, isResolved: true });
+
+    for (const [branch, before] of [["main", mainBefore], ["sibling", siblingBefore]] as const) {
+      expect(graphSnapshot(database, branch).edges).toEqual(before.edges);
+      expect(database.getCallers("mul", branch).map((edge) => edge.toSymbolId)).not.toContain(useAdd.id);
+      expect(database.getStaleCallEdgeFilePaths(branch)).toEqual(["src/use-mul.ts"]);
+    }
+    expect(database.getCallers("mul", "sibling").find((edge) => edge.fromSymbolId === useMul.id)?.toSymbolId)
+      .toBe(siblingMulId);
+    database.close();
+
+    const embeddingRequestsBefore = fetchSpy.mock.calls.length;
+    const indexer = createIndexer(repo);
+    const stats = await indexer.index();
+    // Re-parsing the unchanged file reuses its chunks and requests no embeddings.
+    expect(fetchSpy.mock.calls.length).toBe(embeddingRequestsBefore);
+    expect(stats.reprocessedFiles).toBe(1);
+    const refreshed = await databaseOf(indexer);
+    const scratch = await scratchSnapshot("main");
+
+    expect(calleeTarget(graphSnapshot(refreshed, "main"), "useMul", "mul")).toBe("src/math.ts#mul:function_declaration@5:7");
+    expect(graphSnapshot(refreshed, "main").edges).toEqual(scratch.snapshot.edges);
+    expect(refreshed.getStaleCallEdgeFilePaths("main")).toEqual([]);
+    expect(refreshed.getStaleCallEdgeFilePaths("sibling")).toEqual(["src/use-mul.ts"]);
+    expect(graphSnapshot(refreshed, "sibling").edges).toEqual(siblingBefore.edges);
+    await closeIndexer(indexer);
+
+    const next = createIndexer(repo);
+    expect((await next.index()).reprocessedFiles).toBe(0);
+  });
+
   it("re-resolves a shared edge target left by a writer without branch targets", async () => {
     await indexMain();
     await indexShiftedSibling();

@@ -1,4 +1,6 @@
-use super::{has_branch_call_edges, DbResult, SQL_BIND_PARAM_BATCH_SIZE};
+use super::{
+    has_branch_call_edges, has_branch_call_edges_stale, DbResult, SQL_BIND_PARAM_BATCH_SIZE,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use xxhash_rust::xxh3::Xxh3;
 
@@ -409,30 +411,73 @@ const UPSERT_BRANCH_TARGET_SQL: &str = r#"
         is_resolved = excluded.is_resolved
 "#;
 
-struct CallEdgeWriter<'conn> {
-    upsert_edge: rusqlite::Statement<'conn>,
-    branch: Option<(&'conn str, rusqlite::Statement<'conn>, rusqlite::Statement<'conn>)>,
+/// Branch writers update an existing row instead of inserting it, so the
+/// `branch_call_edges_legacy_write` trigger only fires for writers that do not
+/// record branch targets.
+const UPDATE_CALL_EDGE_SQL: &str = r#"
+    UPDATE call_edges SET
+        from_symbol_id = ?2,
+        target_name = ?3,
+        to_symbol_id = ?4,
+        call_type = ?5,
+        confidence = ?6,
+        line = ?7,
+        col = ?8,
+        is_resolved = ?9
+    WHERE id = ?1
+"#;
+
+const INSERT_CALL_EDGE_SQL: &str = r#"
+    INSERT INTO call_edges (id, from_symbol_id, target_name, to_symbol_id, call_type, confidence, line, col, is_resolved)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+"#;
+
+const CLEAR_STALE_EDGE_SQL: &str =
+    "DELETE FROM branch_call_edges_stale WHERE branch = ?1 AND edge_id = ?2";
+
+struct BranchEdgeStatements<'conn> {
+    branch: &'conn str,
+    freeze: rusqlite::Statement<'conn>,
+    update_edge: rusqlite::Statement<'conn>,
+    insert_edge: rusqlite::Statement<'conn>,
+    upsert_target: rusqlite::Statement<'conn>,
+    clear_stale: Option<rusqlite::Statement<'conn>>,
+}
+
+enum CallEdgeWriter<'conn> {
+    Shared { upsert_edge: rusqlite::Statement<'conn> },
+    Branch(BranchEdgeStatements<'conn>),
 }
 
 impl<'conn> CallEdgeWriter<'conn> {
     fn new(conn: &'conn Connection, branch: Option<&'conn str>) -> DbResult<Self> {
-        let branch = match branch {
-            Some(branch) if has_branch_call_edges(conn)? => Some((
-                branch,
-                conn.prepare(FREEZE_OTHER_BRANCH_TARGETS_SQL)?,
-                conn.prepare(UPSERT_BRANCH_TARGET_SQL)?,
-            )),
-            _ => None,
-        };
-        Ok(Self {
-            upsert_edge: conn.prepare(UPSERT_CALL_EDGE_SQL)?,
-            branch,
+        Ok(match branch {
+            Some(branch) if has_branch_call_edges(conn)? => {
+                let clear_stale = if has_branch_call_edges_stale(conn)? {
+                    Some(conn.prepare(CLEAR_STALE_EDGE_SQL)?)
+                } else {
+                    None
+                };
+                Self::Branch(BranchEdgeStatements {
+                    branch,
+                    freeze: conn.prepare(FREEZE_OTHER_BRANCH_TARGETS_SQL)?,
+                    update_edge: conn.prepare(UPDATE_CALL_EDGE_SQL)?,
+                    insert_edge: conn.prepare(INSERT_CALL_EDGE_SQL)?,
+                    upsert_target: conn.prepare(UPSERT_BRANCH_TARGET_SQL)?,
+                    clear_stale,
+                })
+            }
+            _ => Self::Shared {
+                upsert_edge: conn.prepare(UPSERT_CALL_EDGE_SQL)?,
+            },
         })
     }
 
     fn freeze(&mut self, edge_id: &str, to_symbol_id: Option<&str>) -> DbResult<()> {
-        if let Some((branch, freeze, _)) = self.branch.as_mut() {
-            freeze.execute(params![edge_id, *branch, to_symbol_id])?;
+        if let Self::Branch(statements) = self {
+            statements
+                .freeze
+                .execute(params![edge_id, statements.branch, to_symbol_id])?;
         }
         Ok(())
     }
@@ -443,16 +488,23 @@ impl<'conn> CallEdgeWriter<'conn> {
         to_symbol_id: Option<&str>,
         is_resolved: bool,
     ) -> DbResult<()> {
-        if let Some((branch, _, upsert_target)) = self.branch.as_mut() {
-            upsert_target.execute(params![*branch, edge_id, to_symbol_id, is_resolved as i32])?;
+        if let Self::Branch(statements) = self {
+            statements.upsert_target.execute(params![
+                statements.branch,
+                edge_id,
+                to_symbol_id,
+                is_resolved as i32
+            ])?;
+            if let Some(clear_stale) = statements.clear_stale.as_mut() {
+                clear_stale.execute(params![statements.branch, edge_id])?;
+            }
         }
         Ok(())
     }
 
     fn write(&mut self, edge: &CallEdgeRow) -> DbResult<()> {
         let to_symbol_id = edge.to_symbol_id.as_deref();
-        self.freeze(&edge.id, to_symbol_id)?;
-        self.upsert_edge.execute(params![
+        let values = params![
             edge.id,
             edge.from_symbol_id,
             edge.target_name,
@@ -462,7 +514,21 @@ impl<'conn> CallEdgeWriter<'conn> {
             edge.line,
             edge.col,
             edge.is_resolved as i32
-        ])?;
+        ];
+        match self {
+            Self::Shared { upsert_edge } => {
+                upsert_edge.execute(values)?;
+                return Ok(());
+            }
+            Self::Branch(statements) => {
+                statements
+                    .freeze
+                    .execute(params![edge.id, statements.branch, to_symbol_id])?;
+                if statements.update_edge.execute(values)? == 0 {
+                    statements.insert_edge.execute(values)?;
+                }
+            }
+        }
         self.set_branch_target(&edge.id, to_symbol_id, edge.is_resolved)
     }
 }
@@ -562,6 +628,31 @@ pub(crate) fn copy_branch_call_edge_targets(
         "#,
         params![from_branch, to_branch],
     )?;
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute(
+            r#"
+            DELETE FROM branch_call_edges_stale
+            WHERE branch = ?2
+              AND edge_id IN (
+                SELECT ce.id
+                FROM call_edges ce
+                INNER JOIN branch_symbols bs ON bs.branch = ?1 AND bs.symbol_id = ce.from_symbol_id
+              )
+            "#,
+            params![from_branch, to_branch],
+        )?;
+        conn.execute(
+            r#"
+            INSERT OR IGNORE INTO branch_call_edges_stale (branch, edge_id)
+            SELECT ?2, st.edge_id
+            FROM branch_call_edges_stale st
+            INNER JOIN call_edges ce ON ce.id = st.edge_id
+            INNER JOIN branch_symbols bs ON bs.branch = ?1 AND bs.symbol_id = ce.from_symbol_id
+            WHERE st.branch = ?1
+            "#,
+            params![from_branch, to_branch],
+        )?;
+    }
     Ok(copied)
 }
 
@@ -580,16 +671,89 @@ fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>)
         "#,
         params![branch],
     )?;
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute(
+            r#"
+            DELETE FROM branch_call_edges_stale
+            WHERE (?1 IS NULL OR branch = ?1)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM call_edges ce
+                INNER JOIN branch_symbols bs
+                    ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges_stale.branch
+                WHERE ce.id = branch_call_edges_stale.edge_id
+              )
+            "#,
+            params![branch],
+        )?;
+    }
     Ok(count)
 }
 
-/// Delete branch edge targets whose edge is gone or whose caller is no longer
-/// a member of that branch.
+/// Delete branch edge targets and stale marks whose edge is gone or whose
+/// caller is no longer a member of that branch.
 pub(crate) fn gc_orphan_branch_call_edges(conn: &Connection) -> DbResult<usize> {
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }
     delete_unreachable_branch_call_edges(conn, None)
+}
+
+/// Sorted, distinct file paths of the callers of `branch`'s stale edges: the
+/// files a legacy write changed since this branch last wrote their edges.
+pub fn get_stale_call_edge_file_paths(conn: &Connection, branch: &str) -> DbResult<Vec<String>> {
+    if !has_branch_call_edges_stale(conn)? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT DISTINCT s.file_path
+        FROM branch_call_edges_stale st
+        INNER JOIN call_edges ce ON ce.id = st.edge_id
+        INNER JOIN symbols s ON s.id = ce.from_symbol_id
+        WHERE st.branch = ?1
+        ORDER BY s.file_path
+        "#,
+    )?;
+    let rows = stmt.query_map(params![branch], |row| row.get::<_, String>(0))?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
+/// Clear `branch`'s stale marks for edges whose caller is in `file_paths`.
+pub fn clear_stale_call_edges_for_files(
+    conn: &mut Connection,
+    branch: &str,
+    file_paths: &[String],
+) -> DbResult<usize> {
+    if file_paths.is_empty() || !has_branch_call_edges_stale(conn)? {
+        return Ok(0);
+    }
+    super::run_batch_with_write_transaction(conn, |conn| {
+        let mut total = 0;
+        for chunk in file_paths.chunks(SQL_BIND_PARAM_BATCH_SIZE) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                r#"
+                DELETE FROM branch_call_edges_stale
+                WHERE branch = ? AND edge_id IN (
+                    SELECT ce.id FROM call_edges ce
+                    INNER JOIN symbols s ON s.id = ce.from_symbol_id
+                    WHERE s.file_path IN ({})
+                )
+                "#,
+                placeholders
+            );
+            let values = std::iter::once(branch).chain(chunk.iter().map(|s| s.as_str()));
+            total += conn.execute(&sql, rusqlite::params_from_iter(values))?;
+        }
+        Ok(total)
+    })
 }
 
 fn is_case_insensitive_language(language: &str) -> bool {
@@ -924,6 +1088,18 @@ pub fn delete_call_edges_by_file(conn: &Connection, file_path: &str) -> DbResult
         conn.execute(
             r#"
             DELETE FROM branch_call_edges WHERE edge_id IN (
+                SELECT ce.id FROM call_edges ce
+                INNER JOIN symbols s ON s.id = ce.from_symbol_id
+                WHERE s.file_path = ?1
+            )
+            "#,
+            params![file_path],
+        )?;
+    }
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute(
+            r#"
+            DELETE FROM branch_call_edges_stale WHERE edge_id IN (
                 SELECT ce.id FROM call_edges ce
                 INNER JOIN symbols s ON s.id = ce.from_symbol_id
                 WHERE s.file_path = ?1
@@ -1401,6 +1577,7 @@ pub fn delete_branch_symbols_by_symbol_ids(
     }
 
     let has_overlay = has_branch_call_edges(conn)?;
+    let has_stale = has_branch_call_edges_stale(conn)?;
     let mut total = 0;
     for chunk in symbol_ids.chunks(SQL_BIND_PARAM_BATCH_SIZE) {
         let placeholders = std::iter::repeat_n("?", chunk.len())
@@ -1412,6 +1589,13 @@ pub fn delete_branch_symbols_by_symbol_ids(
                 placeholders
             );
             conn.execute(&overlay_sql, rusqlite::params_from_iter(chunk.iter()))?;
+        }
+        if has_stale {
+            let stale_sql = format!(
+                "DELETE FROM branch_call_edges_stale WHERE edge_id IN (SELECT id FROM call_edges WHERE from_symbol_id IN ({}))",
+                placeholders
+            );
+            conn.execute(&stale_sql, rusqlite::params_from_iter(chunk.iter()))?;
         }
         let sql = format!(
             "DELETE FROM branch_symbols WHERE symbol_id IN ({})",
@@ -1434,6 +1618,7 @@ pub fn delete_branch_symbols_for_branch(
     }
 
     let has_overlay = has_branch_call_edges(conn)?;
+    let has_stale = has_branch_call_edges_stale(conn)?;
     let mut total = 0;
     for chunk in symbol_ids.chunks(SQL_BIND_PARAM_BATCH_SIZE) {
         let placeholders = std::iter::repeat_n("?", chunk.len())
@@ -1447,6 +1632,13 @@ pub fn delete_branch_symbols_for_branch(
                 placeholders
             );
             conn.execute(&overlay_sql, rusqlite::params_from_iter(branch_params()))?;
+        }
+        if has_stale {
+            let stale_sql = format!(
+                "DELETE FROM branch_call_edges_stale WHERE branch = ? AND edge_id IN (SELECT id FROM call_edges WHERE from_symbol_id IN ({}))",
+                placeholders
+            );
+            conn.execute(&stale_sql, rusqlite::params_from_iter(branch_params()))?;
         }
         let sql = format!(
             "DELETE FROM branch_symbols WHERE branch = ? AND symbol_id IN ({})",

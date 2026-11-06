@@ -171,6 +171,18 @@ export class Database {
     return new Map(this.inner.getCallEdgeFingerprintsForBranch(branch).map((row: { filePath: string; fingerprint: string }) => [row.filePath, row.fingerprint]));
   }
 
+  /** Returns sorted file paths whose call edges a legacy writer changed since the branch last wrote them. */
+  getStaleCallEdgeFilePaths(branch: string): string[] {
+    this.throwIfClosed();
+    return this.inner.getStaleCallEdgeFilePaths(branch);
+  }
+
+  clearStaleCallEdgesForFiles(branch: string, filePaths: string[]): number {
+    this.throwIfClosed();
+    if (filePaths.length === 0) return 0;
+    return this.inner.clearStaleCallEdgesForFiles(branch, filePaths);
+  }
+
   clearBranch(branch: string): number {
     this.throwIfClosed();
     return this.inner.clearBranch(branch);

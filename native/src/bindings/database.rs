@@ -435,6 +435,27 @@ impl Database {
     }
 
     #[napi]
+    pub fn get_stale_call_edge_file_paths(&self, branch: String) -> Result<Vec<String>> {
+        self.with_conn(|conn| {
+            db::get_stale_call_edge_file_paths(conn, &branch)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn clear_stale_call_edges_for_files(
+        &self,
+        branch: String,
+        file_paths: Vec<String>,
+    ) -> Result<u32> {
+        self.with_conn_mut(|conn| {
+            let count = db::clear_stale_call_edges_for_files(conn, &branch, &file_paths)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    #[napi]
     pub fn clear_branch(&self, branch: String) -> Result<u32> {
         self.with_conn(|conn| {
             let count =

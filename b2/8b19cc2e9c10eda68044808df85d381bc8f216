@@ -1,0 +1,33 @@
+CHANGELOG.md
+  s_24c78a9bb4cb46::t_11774f170305ca 20
+native/src/bindings/database.rs
+  s_24c78a9bb4cb46::t_6ed65a9b8db304 788,801-802,807-811,827-828,934-939,941
+native/src/community.rs
+  s_24c78a9bb4cb46::t_07f2793f170f5b 182-183,186,188-189,192,254-255,258,260-261,264,330-331,334-335,338,535-536,539-540,543,608-609,612-613,616
+native/src/db.rs
+  s_24c78a9bb4cb46::t_ea3b09f24eb675 30-35,115-116,120-196,236,1031,1249-1251,1345,1360,2742-3056
+native/src/db/call_graph.rs
+  s_24c78a9bb4cb46::t_c8e2438c4f1d12 1,339-455,465-497,500-501,503-512,518,520,526-580,606,633,657-658,706,744,768-769,809,820,829-830,866-867,872,877,909-920,941,951-958,964-965,967-986,1050-1051,1054,1056-1057,1060,1389,1395-1401,1406,1422,1428-1436,1441
+src/indexer/index.ts
+  s_24c78a9bb4cb46::t_1c4c8d45361036 6255,6455
+src/native/database.ts
+  s_24c78a9bb4cb46::t_7bc41e21e3655d 313,315,318,321,348,350
+tests/branch-seeding.test.ts
+  s_24c78a9bb4cb46::t_9d2dca02c2f27c 2,532,536-545,552-578,581
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b28b19cc2e9c10eda68044808df85d381bc8f216",
+  "prompts": {},
+  "sessions": {
+    "s_24c78a9bb4cb46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9cbb30cc-4250-4c42-a3b4-7d97d7fd0a02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

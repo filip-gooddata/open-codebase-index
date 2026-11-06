@@ -169,8 +169,14 @@ fn branch_call_edges_marker_is_current(conn: &Connection) -> DbResult<bool> {
 /// for every member branch, because the writing branch is unknown. Branch
 /// writers update existing rows instead of inserting, so the trigger never
 /// fires for them.
+///
+/// A store without `call_edges` or `branch_symbols` has no edges to scope, so
+/// it is left without the overlay and reads use the legacy path.
 fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
-    if branch_call_edges_marker_is_current(conn)? {
+    if branch_call_edges_marker_is_current(conn)?
+        || !has_schema_object(conn, "table", "call_edges")?
+        || !has_schema_object(conn, "table", "branch_symbols")?
+    {
         return Ok(());
     }
     if !conn.is_autocommit() {
@@ -2967,6 +2973,28 @@ mod tests {
         assert!(!has_legacy_write_trigger(&conn));
         assert_eq!(get_metadata(&conn, "branch_call_edges_version").unwrap(), None);
         assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn branch_call_edges_migration_skips_store_without_call_edges() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("partial.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO metadata (key, value) VALUES ('schema_version', '8');",
+            )
+            .unwrap();
+        }
+
+        let conn = init_db(&db_path).unwrap();
+        assert!(!has_branch_call_edges(&conn).unwrap());
+        assert!(!has_branch_call_edges_stale(&conn).unwrap());
+        assert!(!has_legacy_write_trigger(&conn));
+        assert_eq!(get_metadata(&conn, "branch_call_edges_version").unwrap(), None);
+        drop(conn);
+        assert!(init_db(&db_path).is_ok());
     }
 
     #[test]

@@ -1,0 +1,19 @@
+tests/indexer-clear-index.test.ts
+  s_6552c4469b29dc::t_8ffb7a5ed6b038 351-413
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3014046b5cd86f4cf5a9ec00097a66793c7da1cf",
+  "prompts": {},
+  "sessions": {
+    "s_6552c4469b29dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7e2e21c3-4ad9-412a-89a2-0f0596f149d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

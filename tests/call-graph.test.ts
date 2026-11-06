@@ -4279,7 +4279,7 @@ main() {
         }
       };
 
-      it("does not retarget resolved edges to a different symbol on another branch", async () => {
+      it("treats a target outside the branch as unresolved and resolves it by name within the branch", async () => {
         writeGitBranchHead("main");
         const db = openIndexerDb();
 
@@ -4303,7 +4303,8 @@ main() {
         );
 
         const path = await callPath("sym_caller", "sym_target_main", 10);
-        expect(path).toEqual([]);
+        expect(path.map((item) => item.symbolId)).toEqual(["sym_caller", "sym_target_main"]);
+        expect(await callPath("sym_caller", "sym_target_feature", 10)).toEqual([]);
       });
 
       it("uses name fallback only for unresolved edges", async () => {

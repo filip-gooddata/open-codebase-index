@@ -1359,12 +1359,6 @@ pub fn clear_branch_symbols(conn: &Connection, branch: &str) -> DbResult<usize> 
         "DELETE FROM branch_symbols WHERE branch = ?",
         params![branch],
     )?;
-    if has_branch_call_edges(conn)? {
-        conn.execute(
-            "DELETE FROM branch_call_edges WHERE branch = ?",
-            params![branch],
-        )?;
-    }
     Ok(count)
 }
 

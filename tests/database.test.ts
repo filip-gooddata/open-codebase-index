@@ -237,21 +237,25 @@ describe("Database", () => {
       isResolved: true,
     };
 
-    it("changes when another branch rewrites a shared edge target", () => {
-      db.upsertSymbolsBatch([caller]);
-      db.addSymbolsToBranchBatch("main", [caller.id]);
-      db.addSymbolsToBranchBatch("sibling", [caller.id]);
-      db.upsertCallEdgesBatch([edge]);
+    it("keeps a branch's fingerprint when another branch rewrites a shared edge target", () => {
+      const calleeOnMain: SymbolData = { ...caller, id: "callee-on-main", filePath: "/callee-main.ts", name: "callee" };
+      const calleeOnSibling: SymbolData = { ...calleeOnMain, id: "callee-on-sibling", filePath: "/callee-sibling.ts" };
+      db.upsertSymbolsBatch([caller, calleeOnMain, calleeOnSibling]);
+      db.addSymbolsToBranchBatch("main", [caller.id, calleeOnMain.id]);
+      db.addSymbolsToBranchBatch("sibling", [caller.id, calleeOnMain.id, calleeOnSibling.id]);
+      db.upsertCallEdgesBatch([edge], "main");
       const recorded = db.getCallEdgeFingerprintsForBranch("main");
 
       expect([...recorded.keys()]).toEqual([caller.filePath]);
       expect(db.getCallEdgeFingerprintsForBranch("main")).toEqual(recorded);
       expect(db.getCallEdgeFingerprintsForBranch("unindexed").size).toBe(0);
 
-      db.upsertCallEdgesBatch([{ ...edge, toSymbolId: "callee-on-sibling" }]);
+      db.upsertCallEdgesBatch([{ ...edge, toSymbolId: "callee-on-sibling" }], "sibling");
 
-      expect(db.getCallEdgeFingerprintsForBranch("main").get(caller.filePath)).not.toBe(recorded.get(caller.filePath));
-      expect(db.getCallEdgeFingerprintsForBranch("sibling")).toEqual(db.getCallEdgeFingerprintsForBranch("main"));
+      expect(db.getCallEdgeFingerprintsForBranch("main")).toEqual(recorded);
+      expect(db.getCallEdgeFingerprintsForBranch("sibling").get(caller.filePath)).not.toBe(
+        recorded.get(caller.filePath),
+      );
     });
   });
 

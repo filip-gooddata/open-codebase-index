@@ -6,6 +6,7 @@ import type {
   CommunityCouplingData,
   CommunityData,
   DatabaseStats,
+  IndexPresence,
   PathHopData,
   ReachabilityData,
   SymbolData,
@@ -251,6 +252,16 @@ export class Database {
   getStats(): DatabaseStats {
     this.throwIfClosed();
     return this.inner.getStats();
+  }
+
+  getIndexPresence(): IndexPresence {
+    this.throwIfClosed();
+    return this.inner.getIndexPresence();
+  }
+
+  getChunkCount(): number {
+    this.throwIfClosed();
+    return this.inner.getChunkCount();
   }
 
   upsertSymbol(symbol: SymbolData): void {

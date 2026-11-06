@@ -13,6 +13,7 @@ export type {
   CommunityCouplingData,
   CommunityRelationshipData,
   DatabaseStats,
+  IndexPresence,
   DynamicBatchOptions,
   FileInput,
   KeywordSearchResult,

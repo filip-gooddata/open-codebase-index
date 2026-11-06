@@ -28,6 +28,8 @@ describe("Database", () => {
       db.close();
 
       expect(() => db.getStats()).toThrow("Database is closed");
+      expect(() => db.getIndexPresence()).toThrow("Database is closed");
+      expect(() => db.getChunkCount()).toThrow("Database is closed");
       expect(() => db.embeddingExists("hash123")).toThrow("Database is closed");
       expect(() => db.setMetadata("key", "value")).toThrow("Database is closed");
     });
@@ -107,6 +109,8 @@ describe("Database", () => {
           symbolCount: 0,
           callEdgeCount: 0,
         });
+        expect(reader.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: false, hasEmbeddings: false });
+        expect(reader.getChunkCount()).toBe(0);
         expect(() => reader.setMetadata("reader-write", "forbidden")).toThrow(/read.?only/i);
         expect(fs.readdirSync(tempDir).sort()).toEqual(filesBefore);
       } finally {
@@ -655,6 +659,41 @@ describe("Database", () => {
       expect(stats.branchChunkCount).toBe(1);
       expect(stats.branchCount).toBe(2);
       expect(stats.symbolCount).toBe(1);
+    });
+
+    it("should report table presence and chunk count without full stats", () => {
+      expect(db.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: false, hasEmbeddings: false });
+      expect(db.getChunkCount()).toBe(0);
+
+      db.upsertEmbedding("hash_presence", Buffer.from(new Float32Array([1.0]).buffer), "text", "model");
+      expect(db.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: false, hasEmbeddings: true });
+
+      db.upsertSymbol({
+        id: "sym_presence",
+        filePath: "/file.ts",
+        name: "presenceFunction",
+        kind: "function",
+        startLine: 1,
+        startCol: 0,
+        endLine: 5,
+        endCol: 0,
+        language: "typescript",
+      });
+      expect(db.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: true, hasEmbeddings: true });
+
+      for (const chunkId of ["chunk_presence_a", "chunk_presence_b"]) {
+        db.upsertChunk({
+          chunkId,
+          contentHash: "hash_presence",
+          filePath: `/${chunkId}.ts`,
+          startLine: 1,
+          endLine: 5,
+          language: "typescript",
+        });
+      }
+      expect(db.getIndexPresence()).toEqual({ hasChunks: true, hasSymbols: true, hasEmbeddings: true });
+      expect(db.getChunkCount()).toBe(2);
+      expect(db.getChunkCount()).toBe(db.getStats().chunkCount);
     });
   });
 

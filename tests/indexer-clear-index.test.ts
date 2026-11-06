@@ -308,6 +308,46 @@ describe("indexer clearIndex force rebuild", () => {
     await expect(restartedIndexer.index()).rejects.toThrow("Run index_codebase with force=true to rebuild the index");
   });
 
+  it("checks path storage compatibility without full database stats on empty and populated indexes", async () => {
+    const dbPath = path.join(tempDir, ".opencode", "index", "codebase.db");
+    const emptyIndexer = createIndexer(tempDir, 8);
+    expect((await emptyIndexer.getStatus()).compatibility?.compatible).toBe(true);
+
+    const emptyDb = trackDb(new Database(dbPath));
+    emptyDb.setMetadata("index.pathStorageVersion", "1");
+    expect(emptyDb.getIndexPresence()).toEqual({ hasChunks: false, hasSymbols: false, hasEmbeddings: false });
+
+    const getStatsSpy = vi.spyOn(Database.prototype, "getStats");
+    const presenceSpy = vi.spyOn(Database.prototype, "getIndexPresence");
+    try {
+      const emptyRestart = createIndexer(tempDir, 8);
+      const emptyStatus = await emptyRestart.getStatus();
+      expect(emptyStatus.compatibility?.compatible).toBe(true);
+      expect(presenceSpy).toHaveBeenCalled();
+      expect(getStatsSpy).not.toHaveBeenCalled();
+    } finally {
+      getStatsSpy.mockRestore();
+      presenceSpy.mockRestore();
+    }
+
+    const populatingIndexer = createIndexer(tempDir, 8);
+    await populatingIndexer.index();
+    const populatedDb = trackDb(new Database(dbPath));
+    expect(populatedDb.getIndexPresence().hasChunks).toBe(true);
+    populatedDb.setMetadata("index.pathStorageVersion", "1");
+
+    const populatedGetStatsSpy = vi.spyOn(Database.prototype, "getStats");
+    try {
+      const populatedRestart = createIndexer(tempDir, 8);
+      const populatedStatus = await populatedRestart.getStatus();
+      expect(populatedStatus.compatibility?.compatible).toBe(false);
+      expect(populatedStatus.compatibility?.reason).toContain("Path storage format mismatch");
+      expect(populatedGetStatsSpy).not.toHaveBeenCalled();
+    } finally {
+      populatedGetStatsSpy.mockRestore();
+    }
+  });
+
   it("marks legacy absolute path storage as incompatible until force rebuild", async () => {
     const indexer = createIndexer(tempDir, 8);
     await indexer.index();

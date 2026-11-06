@@ -179,15 +179,17 @@ fn bfs_callees(
         queue.push_back((id.clone(), 0));
     }
 
-    let mut stmt = conn.prepare(
+    let sql = db::with_branch_edges_source(
+        conn,
         r#"
         SELECT ce.target_name, ce.to_symbol_id
-        FROM call_edges ce
+        FROM {EDGES} ce
         INNER JOIN symbols s ON ce.from_symbol_id = s.id
-        INNER JOIN branch_symbols bs ON s.id = bs.symbol_id AND bs.branch = ?
-        WHERE ce.from_symbol_id = ?
+        INNER JOIN branch_symbols bs ON s.id = bs.symbol_id AND bs.branch = ?1
+        WHERE ce.from_symbol_id = ?2
         "#,
     )?;
+    let mut stmt = conn.prepare(&sql)?;
 
     while let Some((current_id, depth)) = queue.pop_front() {
         if depth >= max_depth {
@@ -249,15 +251,17 @@ fn bfs_callers(
         queue.push_back((id.clone(), 0));
     }
 
-    let mut stmt = conn.prepare(
+    let sql = db::with_branch_edges_source(
+        conn,
         r#"
         SELECT ce.from_symbol_id, ce.to_symbol_id, ce.target_name
-        FROM call_edges ce
+        FROM {EDGES} ce
         INNER JOIN symbols s ON ce.from_symbol_id = s.id
-        INNER JOIN branch_symbols bs ON s.id = bs.symbol_id AND bs.branch = ?
-        WHERE (ce.to_symbol_id = ? OR ce.target_name = ? COLLATE NOCASE)
+        INNER JOIN branch_symbols bs ON s.id = bs.symbol_id AND bs.branch = ?1
+        WHERE (ce.to_symbol_id = ?2 OR ce.target_name = ?3 COLLATE NOCASE)
         "#,
     )?;
+    let mut stmt = conn.prepare(&sql)?;
 
     while let Some((current_id, depth)) = queue.pop_front() {
         if depth >= max_depth {
@@ -323,13 +327,15 @@ pub fn detect_communities(
         adjacency.insert(s.id.clone(), HashSet::new());
     }
 
-    let mut edges_stmt = conn.prepare(
+    let edges_sql = db::with_branch_edges_source(
+        conn,
         r#"
         SELECT ce.from_symbol_id, ce.target_name, ce.to_symbol_id
-        FROM call_edges ce
-        INNER JOIN branch_symbols bs ON ce.from_symbol_id = bs.symbol_id AND bs.branch = ?
+        FROM {EDGES} ce
+        INNER JOIN branch_symbols bs ON ce.from_symbol_id = bs.symbol_id AND bs.branch = ?1
         "#,
     )?;
+    let mut edges_stmt = conn.prepare(&edges_sql)?;
 
     let edge_rows: Vec<(String, String, Option<String>)> = edges_stmt
         .query_map(params![branch], |row| {
@@ -526,13 +532,15 @@ pub fn compute_centrality(conn: &Connection, branch: &str) -> DbResult<Vec<Centr
         callee_counts.insert(s.id.clone(), 0);
     }
 
-    let mut edges_stmt = conn.prepare(
+    let edges_sql = db::with_branch_edges_source(
+        conn,
         r#"
         SELECT ce.from_symbol_id, ce.target_name, ce.to_symbol_id
-        FROM call_edges ce
-        INNER JOIN branch_symbols bs ON ce.from_symbol_id = bs.symbol_id AND bs.branch = ?
+        FROM {EDGES} ce
+        INNER JOIN branch_symbols bs ON ce.from_symbol_id = bs.symbol_id AND bs.branch = ?1
         "#,
     )?;
+    let mut edges_stmt = conn.prepare(&edges_sql)?;
 
     let edge_rows: Vec<(String, String, Option<String>)> = edges_stmt
         .query_map(params![branch], |row| {
@@ -597,13 +605,15 @@ pub fn detect_community_couplings(
         .map(|assignment| (assignment.symbol_id, assignment.community_id))
         .collect();
 
-    let mut edges_stmt = conn.prepare(
+    let edges_sql = db::with_branch_edges_source(
+        conn,
         r#"
         SELECT ce.from_symbol_id, ce.target_name, ce.to_symbol_id
-        FROM call_edges ce
-        INNER JOIN branch_symbols bs ON ce.from_symbol_id = bs.symbol_id AND bs.branch = ?
+        FROM {EDGES} ce
+        INNER JOIN branch_symbols bs ON ce.from_symbol_id = bs.symbol_id AND bs.branch = ?1
         "#,
     )?;
+    let mut edges_stmt = conn.prepare(&edges_sql)?;
 
     let edge_rows: Vec<(String, String, Option<String>)> = edges_stmt
         .query_map(params![branch], |row| {

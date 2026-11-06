@@ -6252,7 +6252,7 @@ export class Indexer {
           );
         }
         if (edgeBatch.length > 0) {
-          database.upsertCallEdgesBatch(edgeBatch);
+          database.upsertCallEdgesBatch(edgeBatch, branchCatalogKey);
         }
 
         processedChangedFiles += descriptorBatch.length;
@@ -6452,7 +6452,7 @@ export class Indexer {
         const allBranchEdges = branchSymbols.flatMap((symbol) => database.getCallees(symbol.id, branchCatalogKey));
         if (allBranchEdges.length > 0) {
           const result = this.scipTypeScriptState.apply(allBranchEdges, branchSymbols);
-          database.upsertCallEdgesBatch(result.edges);
+          database.upsertCallEdgesBatch(result.edges, branchCatalogKey);
           if (result.matchedEdges > 0 || result.ambiguousDefinitions > 0 || result.disagreements > 0) {
             this.logger.info("Applied SCIP TypeScript call graph enrichment", {
               matchedEdges: result.matchedEdges,

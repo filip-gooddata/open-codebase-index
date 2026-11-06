@@ -310,15 +310,15 @@ export class Database {
     return this.inner.deleteSymbolsByFile(filePath);
   }
 
-  upsertCallEdge(edge: CallEdgeData): void {
+  upsertCallEdge(edge: CallEdgeData, branch?: string): void {
     this.throwIfClosed();
-    this.inner.upsertCallEdge(edge);
+    this.inner.upsertCallEdge(edge, branch ?? null);
   }
 
-  upsertCallEdgesBatch(edges: CallEdgeData[]): void {
+  upsertCallEdgesBatch(edges: CallEdgeData[], branch?: string): void {
     this.throwIfClosed();
     if (edges.length === 0) return;
-    this.inner.upsertCallEdgesBatch(edges);
+    this.inner.upsertCallEdgesBatch(edges, branch ?? null);
   }
 
   getCallers(targetName: string, branch: string, callTypeFilter?: string): CallEdgeData[] {
@@ -345,9 +345,9 @@ export class Database {
     return this.inner.deleteCallEdgesByFile(filePath);
   }
 
-  resolveCallEdge(edgeId: string, toSymbolId: string): void {
+  resolveCallEdge(edgeId: string, toSymbolId: string, branch?: string): void {
     this.throwIfClosed();
-    this.inner.resolveCallEdge(edgeId, toSymbolId);
+    this.inner.resolveCallEdge(edgeId, toSymbolId, branch ?? null);
   }
 
   findShortestPath(

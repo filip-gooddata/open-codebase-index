@@ -785,7 +785,7 @@ impl Database {
     // ── Call Edge methods ────────────────────────────────────────────
 
     #[napi]
-    pub fn upsert_call_edge(&self, edge: CallEdgeData) -> Result<()> {
+    pub fn upsert_call_edge(&self, edge: CallEdgeData, branch: Option<String>) -> Result<()> {
         let row = db::CallEdgeRow {
             id: edge.id,
             from_symbol_id: edge.from_symbol_id,
@@ -798,12 +798,17 @@ impl Database {
             is_resolved: edge.is_resolved,
         };
         self.with_conn(|conn| {
-            db::upsert_call_edge(conn, &row).map_err(|e| Error::from_reason(e.to_string()))
+            db::upsert_call_edge_for_branch(conn, &row, branch.as_deref())
+                .map_err(|e| Error::from_reason(e.to_string()))
         })
     }
 
     #[napi]
-    pub fn upsert_call_edges_batch(&self, edges: Vec<CallEdgeData>) -> Result<()> {
+    pub fn upsert_call_edges_batch(
+        &self,
+        edges: Vec<CallEdgeData>,
+        branch: Option<String>,
+    ) -> Result<()> {
         let rows: Vec<db::CallEdgeRow> = edges
             .into_iter()
             .map(|e| db::CallEdgeRow {
@@ -819,7 +824,8 @@ impl Database {
             })
             .collect();
         self.with_conn_mut(|conn| {
-            db::upsert_call_edges_batch(conn, &rows).map_err(|e| Error::from_reason(e.to_string()))
+            db::upsert_call_edges_batch_for_branch(conn, &rows, branch.as_deref())
+                .map_err(|e| Error::from_reason(e.to_string()))
         })
     }
 
@@ -925,9 +931,14 @@ impl Database {
     }
 
     #[napi]
-    pub fn resolve_call_edge(&self, edge_id: String, to_symbol_id: String) -> Result<()> {
+    pub fn resolve_call_edge(
+        &self,
+        edge_id: String,
+        to_symbol_id: String,
+        branch: Option<String>,
+    ) -> Result<()> {
         self.with_conn(|conn| {
-            db::resolve_call_edge(conn, &edge_id, &to_symbol_id)
+            db::resolve_call_edge_for_branch(conn, &edge_id, &to_symbol_id, branch.as_deref())
                 .map_err(|e| Error::from_reason(e.to_string()))
         })
     }

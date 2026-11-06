@@ -1,4 +1,5 @@
 import { execFileSync } from "child_process";
+import { DatabaseSync } from "node:sqlite";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -528,9 +529,19 @@ module.exports = { useCjs };
     expect(seededSnapshot.edges).toEqual(scratch.snapshot.edges);
   });
 
-  it("re-resolves shared edge rows a sibling branch rewrote on the next incremental run", async () => {
+  it("keeps each branch's call target when a sibling branch rewrites a shared edge row", async () => {
     await indexMain();
     await indexShiftedSibling();
+
+    const reader = createIndexer(repo);
+    const database = await databaseOf(reader);
+    const mainBefore = graphSnapshot(database, "main");
+    const siblingAfter = graphSnapshot(database, "sibling");
+    await closeIndexer(reader);
+
+    expect(calleeTarget(mainBefore, "useMul", "mul")).toBe("src/math.ts#mul:function_declaration@5:7");
+    expect(calleeTarget(siblingAfter, "useMul", "mul")).toBe("src/math.ts#mul:function_declaration@6:7");
+    expect(mainBefore.edges.some((edge) => edge.includes("foreign:"))).toBe(false);
 
     const indexer = createIndexer(repo);
     const stats = await indexer.index();
@@ -538,9 +549,36 @@ module.exports = { useCjs };
     const scratch = await scratchSnapshot("main");
 
     expect(stats.seededFrom).toBeUndefined();
+    expect(stats.reprocessedFiles).toBe(0);
+    expect(snapshot.edges).toEqual(mainBefore.edges);
+    expect(snapshot.edges).toEqual(scratch.snapshot.edges);
+  });
+
+  it("re-resolves a shared edge target left by a writer without branch targets", async () => {
+    await indexMain();
+    await indexShiftedSibling();
+    // A store last written without per-branch targets keeps only the sibling's shared target.
+    const raw = new DatabaseSync(path.join(repo, ".opencode", "index", "codebase.db"));
+    try {
+      raw.exec("DELETE FROM branch_call_edges");
+    } finally {
+      raw.close();
+    }
+
+    const reader = createIndexer(repo);
+    const legacy = graphSnapshot(await databaseOf(reader), "main");
+    await closeIndexer(reader);
+    expect(calleeTarget(legacy, "useMul", "mul")).toBe("unresolved");
+    expect(legacy.edges.some((edge) => edge.includes("foreign:"))).toBe(false);
+
+    const indexer = createIndexer(repo);
+    const stats = await indexer.index();
+    const snapshot = graphSnapshot(await databaseOf(indexer), "main");
+    const scratch = await scratchSnapshot("main");
+
     expect(calleeTarget(snapshot, "useMul", "mul")).toBe("src/math.ts#mul:function_declaration@5:7");
     expect(snapshot.edges).toEqual(scratch.snapshot.edges);
-    // Only the file whose shared rows were rewritten is reprocessed.
+    // Only the file whose shared target was foreign is reprocessed.
     expect(stats.reprocessedFiles).toBeGreaterThan(0);
     expect(stats.reprocessedFiles).toBeLessThan(FILLER_FILE_COUNT);
   });

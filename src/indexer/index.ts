@@ -602,6 +602,7 @@ export interface IndexFreshnessResult {
 
 interface LocalModuleResolutionState {
   configHash: string;
+  presentConfigHash: string;
   pathAliasCache: TsConfigPathAliasCache;
   workspacePackages: ReturnType<typeof getLocalWorkspacePackages>;
 }
@@ -4976,15 +4977,20 @@ export class Indexer {
     });
     const workspaceManifestPaths = getLocalWorkspacePackageManifestPaths(importerPaths, loadFileText);
     const workspacePackages = getLocalWorkspacePackages(importerPaths, loadFileText);
-    const configHash = hashContent(JSON.stringify({
-      tsconfig: pathAliasCache.getConfigState(importerPaths),
-      packageManifests: workspaceManifestPaths.map((manifestPath) => [
-        manifestPath,
-        loadFileText(manifestPath) ?? null,
-      ]),
+    const tsconfig = pathAliasCache.getConfigState(importerPaths);
+    const packageManifests = workspaceManifestPaths.map((manifestPath) => [
+      manifestPath,
+      loadFileText(manifestPath) ?? null,
+    ] as const);
+    const configHash = hashContent(JSON.stringify({ tsconfig, packageManifests }));
+    // Missing config lookups depend on which project directories hold sources, so a new
+    // directory would change configHash without changing how any import resolves.
+    const presentConfigHash = hashContent(JSON.stringify({
+      tsconfig: tsconfig.filter(([, content]) => content !== null),
+      packageManifests: packageManifests.filter(([, content]) => content !== null),
     }));
 
-    return { configHash, pathAliasCache, workspacePackages };
+    return { configHash, presentConfigHash, pathAliasCache, workspacePackages };
   }
 
   async indexBranchIfMissing(
@@ -5306,7 +5312,7 @@ export class Indexer {
       scopedRoots,
       scipActive: scipConfig.enabled || storedScipState !== null,
       upgradeKeywordTokenizer,
-      localModuleResolutionConfigHash: localModuleResolutionState.configHash,
+      localModuleResolutionConfigHash: localModuleResolutionState.presentConfigHash,
     });
     const knowledgeBaseReuseCandidates: KnowledgeBaseReuseCandidate[] = [];
     const knowledgeBaseProcessedPaths = new Set<string>();

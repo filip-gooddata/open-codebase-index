@@ -174,7 +174,8 @@ describe("knowledge-base reuse across branches", () => {
     const mainProjectEdge = projectToKnowledgeBaseEdge(mainDb, "main");
 
     git(repo, ["checkout", "-b", "feature"]);
-    fs.writeFileSync(path.join(repo, "src", "extra.ts"), "export function featureOnly(): number { return 7; }\n");
+    fs.mkdirSync(path.join(repo, "src", "nested"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "src", "nested", "extra.ts"), "export function featureOnly(): number { return 7; }\n");
     git(repo, ["add", "."]);
     git(repo, ["commit", "-m", "feature"]);
 
@@ -276,6 +277,22 @@ describe("knowledge-base reuse across branches", () => {
     git(repo, ["checkout", "-b", "second-feature"]);
     await indexCurrentBranch();
     expect(knowledgeBaseParses()).toEqual([]);
+  });
+
+  it("reprocesses JavaScript knowledge-base files when a project resolution config appears", async () => {
+    await indexCurrentBranch();
+    git(repo, ["checkout", "-b", "feature"]);
+    fs.writeFileSync(path.join(repo, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { "@sdk/*": ["../sdk/*"] } },
+    }));
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-m", "tsconfig"]);
+
+    await indexCurrentBranch();
+    expect(knowledgeBaseParses().sort()).toEqual([
+      path.join(canonicalKnowledgeBase, "client.ts"),
+      path.join(canonicalKnowledgeBase, "format.ts"),
+    ]);
   });
 
   it("reprocesses knowledge-base files when the reuse cache is missing", async () => {

@@ -126,7 +126,7 @@ export async function resolvePythonRelativeCall(
   importer: string,
   content: string,
   site: CallSiteData,
-  filePaths: ReadonlySet<string>,
+  filePaths: Pick<ReadonlySet<string>, "has">,
   loadModule: (filePath: string) => Promise<LocalModuleData | undefined>,
 ): Promise<SymbolData | undefined> {
   if (site.callType !== "Call" || path.posix.isAbsolute(importer) || importer.startsWith("../")) return undefined;

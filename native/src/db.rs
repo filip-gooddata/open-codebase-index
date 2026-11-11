@@ -27,6 +27,16 @@ const SCHEMA_VERSION: i32 = 8;
 /// SQLite defaults to 999 (SQLITE_MAX_VARIABLE_NUMBER). We use 900 to stay safely under.
 const SQL_BIND_PARAM_BATCH_SIZE: usize = 900;
 
+/// Metadata key recording that the additive `branch_call_edges` overlay exists.
+/// The overlay is not part of `SCHEMA_VERSION`, so readers that only accept
+/// schema version 8 keep opening stores that a newer writer has upgraded.
+/// Version 2 adds `branch_call_edges_stale` and the trigger that isolates
+/// branches from writers that rewrite `call_edges` without the overlay.
+/// Version 3 replaces that trigger so it never relies on a conflict clause and
+/// also marks branches whose overlay diverges from a same-target legacy write.
+const BRANCH_CALL_EDGES_MARKER_KEY: &str = "branch_call_edges_version";
+const BRANCH_CALL_EDGES_MARKER_VERSION: &str = "3";
+
 pub(crate) fn run_batch_with_write_transaction<T, F>(
     conn: &mut Connection,
     operation: F,
@@ -106,7 +116,156 @@ pub fn init_db(db_path: &Path) -> DbResult<Connection> {
         migrate_schema(&conn, current_version)?;
     }
 
+    ensure_branch_call_edges(&conn)?;
+
     Ok(conn)
+}
+
+fn has_schema_object(conn: &Connection, object_type: &str, name: &str) -> DbResult<bool> {
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            params![object_type, name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
+}
+
+/// Whether the store has the per-branch call-edge target overlay.
+pub(crate) fn has_branch_call_edges(conn: &Connection) -> DbResult<bool> {
+    has_schema_object(conn, "table", "branch_call_edges")
+}
+
+/// Whether the store records which branch edges a legacy write left stale.
+pub(crate) fn has_branch_call_edges_stale(conn: &Connection) -> DbResult<bool> {
+    has_schema_object(conn, "table", "branch_call_edges_stale")
+}
+
+fn branch_call_edges_marker_is_current(conn: &Connection) -> DbResult<bool> {
+    let marker: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            params![BRANCH_CALL_EDGES_MARKER_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(marker.as_deref() == Some(BRANCH_CALL_EDGES_MARKER_VERSION)
+        && has_branch_call_edges(conn)?
+        && has_branch_call_edges_stale(conn)?
+        && has_schema_object(conn, "trigger", "branch_call_edges_legacy_write")?)
+}
+
+/// Create the `branch_call_edges` overlay in one immediate transaction.
+///
+/// The overlay holds each branch's resolved target for a shared `call_edges`
+/// row. It starts empty: reads fall back to the legacy shared target only when
+/// that target is a member of the branch, so no existing rows are rewritten and
+/// the upgrade cost does not depend on store size. Re-running is a no-op.
+///
+/// Writers without the overlay (0.34.0) rewrite shared targets with
+/// `INSERT OR REPLACE`. The `branch_call_edges_legacy_write` trigger runs
+/// before such an insert while the old row still exists. It pins every member
+/// branch that has no overlay row to the old target when the write changes it,
+/// then marks the edge stale for every branch whose overlay differs from the
+/// written target, because the writing branch is unknown. The stale check reads
+/// the overlay by edge id alone, so it also fires when 0.34.0 deletes an edge
+/// whose caller no branch held and later inserts it again. Its inserts
+/// carry no conflict clause and skip existing rows with `NOT EXISTS`: SQLite
+/// applies the outer statement's `OR REPLACE` to trigger statements, which
+/// would otherwise overwrite existing overlays. Branch writers update existing
+/// rows instead of inserting, so the trigger never fires for them.
+///
+/// A store without `call_edges` or `branch_symbols` has no edges to scope, so
+/// it is left without the overlay and reads use the legacy path.
+fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
+    if branch_call_edges_marker_is_current(conn)?
+        || !has_schema_object(conn, "table", "call_edges")?
+        || !has_schema_object(conn, "table", "branch_symbols")?
+    {
+        return Ok(());
+    }
+    if !conn.is_autocommit() {
+        return Err(DbError::TransactionState(String::from(
+            "Cannot create branch_call_edges: transaction already active",
+        )));
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    let result = (|| -> DbResult<()> {
+        if branch_call_edges_marker_is_current(conn)? {
+            return Ok(());
+        }
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS branch_call_edges (
+                branch TEXT NOT NULL,
+                edge_id TEXT NOT NULL,
+                to_symbol_id TEXT,
+                is_resolved INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (branch, edge_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_branch_call_edges_edge ON branch_call_edges(edge_id);
+            CREATE INDEX IF NOT EXISTS idx_branch_call_edges_target ON branch_call_edges(branch, to_symbol_id);
+            CREATE TABLE IF NOT EXISTS branch_call_edges_stale (
+                branch TEXT NOT NULL,
+                edge_id TEXT NOT NULL,
+                PRIMARY KEY (branch, edge_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_branch_call_edges_stale_edge ON branch_call_edges_stale(edge_id);
+            DROP TRIGGER IF EXISTS branch_call_edges_legacy_write;
+            CREATE TRIGGER branch_call_edges_legacy_write
+            BEFORE INSERT ON call_edges
+            WHEN EXISTS (
+                SELECT 1 FROM call_edges
+                WHERE id = NEW.id
+                  AND (to_symbol_id IS NOT NEW.to_symbol_id OR is_resolved IS NOT NEW.is_resolved)
+            ) OR EXISTS (
+                SELECT 1 FROM branch_call_edges bce
+                WHERE bce.edge_id = NEW.id
+                  AND (bce.to_symbol_id IS NOT NEW.to_symbol_id OR bce.is_resolved IS NOT NEW.is_resolved)
+            )
+            BEGIN
+                INSERT INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved)
+                SELECT bs.branch, ce.id, ce.to_symbol_id, ce.is_resolved
+                FROM call_edges ce
+                JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
+                WHERE ce.id = NEW.id
+                  AND (ce.to_symbol_id IS NOT NEW.to_symbol_id OR ce.is_resolved IS NOT NEW.is_resolved)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM branch_call_edges existing
+                      WHERE existing.branch = bs.branch AND existing.edge_id = ce.id
+                  );
+                INSERT INTO branch_call_edges_stale (branch, edge_id)
+                SELECT bce.branch, bce.edge_id
+                FROM branch_call_edges bce
+                WHERE bce.edge_id = NEW.id
+                  AND (bce.to_symbol_id IS NOT NEW.to_symbol_id OR bce.is_resolved IS NOT NEW.is_resolved)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM branch_call_edges_stale existing
+                      WHERE existing.branch = bce.branch AND existing.edge_id = bce.edge_id
+                  );
+            END;
+            "#,
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![BRANCH_CALL_EDGES_MARKER_KEY, BRANCH_CALL_EDGES_MARKER_VERSION],
+        )?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(error) => {
+            conn.execute_batch("ROLLBACK;")?;
+            Err(error)
+        }
+    }
 }
 
 /// Opens a published database without creating files or running migrations.
@@ -148,6 +307,7 @@ pub fn open_db_read_only(db_path: &Path) -> DbResult<Connection> {
 pub fn create_empty_read_only_db() -> DbResult<Connection> {
     let conn = Connection::open_in_memory()?;
     migrate_schema(&conn, 0)?;
+    ensure_branch_call_edges(&conn)?;
     conn.execute_batch("PRAGMA query_only = ON; PRAGMA foreign_keys = ON;")?;
     Ok(conn)
 }
@@ -920,6 +1080,33 @@ pub fn add_chunks_to_branch_batch(
     })
 }
 
+/// Copy one branch's chunk and symbol membership into another branch.
+/// Returns (copied chunk rows, copied symbol rows).
+pub fn copy_branch_catalog(
+    conn: &mut Connection,
+    from_branch: &str,
+    to_branch: &str,
+) -> DbResult<(usize, usize)> {
+    if from_branch == to_branch {
+        return Ok((0, 0));
+    }
+
+    run_batch_with_write_transaction(conn, |conn| {
+        let chunks = conn.execute(
+            "INSERT OR IGNORE INTO branch_chunks (branch, chunk_id) \
+             SELECT ?2, chunk_id FROM branch_chunks WHERE branch = ?1",
+            params![from_branch, to_branch],
+        )?;
+        let symbols = conn.execute(
+            "INSERT OR IGNORE INTO branch_symbols (branch, symbol_id) \
+             SELECT ?2, symbol_id FROM branch_symbols WHERE branch = ?1",
+            params![from_branch, to_branch],
+        )?;
+        copy_branch_call_edge_targets(conn, from_branch, to_branch)?;
+        Ok((chunks, symbols))
+    })
+}
+
 /// Remove all chunks from a branch (for re-indexing)
 pub fn clear_branch(conn: &Connection, branch: &str) -> DbResult<usize> {
     let count = conn.execute(
@@ -1133,6 +1320,12 @@ pub fn get_all_branches(conn: &Connection) -> DbResult<Vec<String>> {
 
 /// Remove all indexed data so a force rebuild starts from an empty database.
 pub fn clear_all_indexed_data(conn: &Connection) -> DbResult<()> {
+    if has_branch_call_edges(conn)? {
+        conn.execute("DELETE FROM branch_call_edges", [])?;
+    }
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute("DELETE FROM branch_call_edges_stale", [])?;
+    }
     conn.execute("DELETE FROM branch_symbols", [])?;
     conn.execute("DELETE FROM branch_chunks", [])?;
     conn.execute("DELETE FROM call_edges", [])?;
@@ -1226,6 +1419,7 @@ pub fn gc_orphan_symbols(conn: &Connection) -> DbResult<usize> {
         "#,
         [],
     )?;
+    gc_orphan_branch_call_edges(conn)?;
     Ok(count)
 }
 
@@ -1240,6 +1434,7 @@ pub fn gc_orphan_call_edges(conn: &Connection) -> DbResult<usize> {
         "#,
         [],
     )?;
+    gc_orphan_branch_call_edges(conn)?;
     Ok(count)
 }
 
@@ -2721,5 +2916,1175 @@ mod tests {
 
         let result = get_symbols_for_files(&conn, &file_paths, "main").unwrap();
         assert_eq!(result.len(), 1000);
+    }
+
+    fn overlay_rows(conn: &Connection) -> Vec<(String, String, Option<String>, bool)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT branch, edge_id, to_symbol_id, is_resolved FROM branch_call_edges \
+                 ORDER BY branch, edge_id",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    fn callee_target(conn: &Connection, symbol_id: &str, branch: &str) -> Option<String> {
+        let edges = get_callees(conn, symbol_id, branch, None).unwrap();
+        assert_eq!(edges.len(), 1, "expected one callee edge on {branch}");
+        assert_eq!(edges[0].is_resolved, edges[0].to_symbol_id.is_some());
+        edges[0].to_symbol_id.clone()
+    }
+
+    fn seed_divergent_graph(conn: &mut Connection, branches: &[&str]) {
+        upsert_symbols_batch(
+            conn,
+            &[
+                call_graph_symbol("caller", "caller", "typescript"),
+                call_graph_symbol("target_a", "helper", "typescript"),
+                call_graph_symbol("target_b", "helper", "typescript"),
+            ],
+        )
+        .unwrap();
+        for branch in branches {
+            add_symbols_to_branch_batch(conn, branch, &[String::from("caller")]).unwrap();
+        }
+    }
+
+    fn drop_overlay(conn: &Connection) {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS branch_call_edges_legacy_write; \
+             DROP TABLE IF EXISTS branch_call_edges_stale; \
+             DROP TABLE branch_call_edges; \
+             DELETE FROM metadata WHERE key = 'branch_call_edges_version';",
+        )
+        .unwrap();
+    }
+
+    fn downgrade_overlay_to_marker_1(conn: &Connection) {
+        conn.execute_batch(
+            "DROP TRIGGER branch_call_edges_legacy_write; \
+             DROP TABLE branch_call_edges_stale; \
+             UPDATE metadata SET value = '1' WHERE key = 'branch_call_edges_version';",
+        )
+        .unwrap();
+    }
+
+    fn stale_rows(conn: &Connection) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare("SELECT branch, edge_id FROM branch_call_edges_stale ORDER BY branch, edge_id")
+            .unwrap();
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn legacy_target(conn: &Connection, edge_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT to_symbol_id FROM call_edges WHERE id = ?1",
+            [edge_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn has_legacy_write_trigger(conn: &Connection) -> bool {
+        has_schema_object(conn, "trigger", "branch_call_edges_legacy_write").unwrap()
+    }
+
+    fn legacy_0_34_write(conn: &Connection, edge: &CallEdgeRow) {
+        conn.execute(
+            "INSERT OR REPLACE INTO call_edges (id, from_symbol_id, target_name, to_symbol_id, call_type, confidence, line, col, is_resolved) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                edge.id,
+                edge.from_symbol_id,
+                edge.target_name,
+                edge.to_symbol_id,
+                edge.call_type,
+                edge.confidence,
+                edge.line,
+                edge.col,
+                edge.is_resolved,
+            ],
+        )
+        .unwrap();
+    }
+
+    fn pair(branch: &str, edge_id: &str) -> (String, String) {
+        (branch.to_string(), edge_id.to_string())
+    }
+
+    #[test]
+    fn branch_call_edges_migration_preserves_v8_store_and_is_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("v8.db");
+        {
+            let mut conn = init_db(&db_path).unwrap();
+            seed_divergent_graph(&mut conn, &["main"]);
+            add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+            drop_overlay(&conn);
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+                None,
+            )
+            .unwrap();
+            assert!(!has_branch_call_edges(&conn).unwrap());
+        }
+
+        let legacy_edges = |conn: &Connection| -> Vec<(String, Option<String>, bool)> {
+            let mut stmt = conn
+                .prepare("SELECT id, to_symbol_id, is_resolved FROM call_edges ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        let conn = init_db(&db_path).unwrap();
+        assert!(has_branch_call_edges(&conn).unwrap());
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
+        );
+        assert!(has_branch_call_edges_stale(&conn).unwrap());
+        assert!(has_legacy_write_trigger(&conn));
+        assert!(stale_rows(&conn).is_empty());
+        assert_eq!(
+            get_metadata(&conn, "schema_version").unwrap().as_deref(),
+            Some(SCHEMA_VERSION.to_string().as_str())
+        );
+        assert_eq!(
+            legacy_edges(&conn),
+            vec![(String::from("edge"), Some(String::from("target_a")), true)]
+        );
+        assert!(overlay_rows(&conn).is_empty());
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+        drop(conn);
+
+        let conn = init_db(&db_path).unwrap();
+        assert!(overlay_rows(&conn).is_empty());
+        assert_eq!(
+            legacy_edges(&conn),
+            vec![(String::from("edge"), Some(String::from("target_a")), true)]
+        );
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+    }
+
+    #[test]
+    fn branch_call_edges_migration_rolls_back_when_creation_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("blocked.db");
+        {
+            let conn = init_db(&db_path).unwrap();
+            drop_overlay(&conn);
+            conn.execute_batch("CREATE VIEW branch_call_edges AS SELECT 1 AS branch;")
+                .unwrap();
+        }
+
+        assert!(init_db(&db_path).is_err());
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert!(!has_branch_call_edges(&conn).unwrap());
+        assert!(!has_branch_call_edges_stale(&conn).unwrap());
+        assert!(!has_legacy_write_trigger(&conn));
+        assert_eq!(get_metadata(&conn, "branch_call_edges_version").unwrap(), None);
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn branch_call_edges_migration_skips_store_without_call_edges() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("partial.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO metadata (key, value) VALUES ('schema_version', '8');",
+            )
+            .unwrap();
+        }
+
+        let conn = init_db(&db_path).unwrap();
+        assert!(!has_branch_call_edges(&conn).unwrap());
+        assert!(!has_branch_call_edges_stale(&conn).unwrap());
+        assert!(!has_legacy_write_trigger(&conn));
+        assert_eq!(get_metadata(&conn, "branch_call_edges_version").unwrap(), None);
+        drop(conn);
+        assert!(init_db(&db_path).is_ok());
+    }
+
+    #[test]
+    fn legacy_call_edge_target_reads_only_on_member_branches() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature"]);
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "feature"), None);
+        let main_callers = get_callers(&conn, "helper", "main", None).unwrap();
+        assert_eq!(main_callers[0].to_symbol_id.as_deref(), Some("target_a"));
+        let feature_callers = get_callers(&conn, "helper", "feature", None).unwrap();
+        assert_eq!(feature_callers.len(), 1);
+        assert_eq!(feature_callers[0].to_symbol_id, None);
+        assert!(!feature_callers[0].is_resolved);
+    }
+
+    #[test]
+    fn divergent_branch_targets_stay_isolated_and_freeze_unwritten_branches() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature", "stale"]);
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+        add_symbols_to_branch_batch(&mut conn, "stale", &[String::from("target_a")]).unwrap();
+        add_symbols_to_branch_batch(&mut conn, "feature", &[String::from("target_b")]).unwrap();
+
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            Some("main"),
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("feature"),
+        )
+        .unwrap();
+
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "feature").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "stale").as_deref(), Some("target_a"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                (String::from("feature"), String::from("edge"), Some(String::from("target_b")), true),
+                (String::from("main"), String::from("edge"), Some(String::from("target_a")), true),
+                (String::from("stale"), String::from("edge"), Some(String::from("target_a")), true),
+            ]
+        );
+        let legacy_target: Option<String> = conn
+            .query_row("SELECT to_symbol_id FROM call_edges WHERE id = 'edge'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(legacy_target.as_deref(), Some("target_b"));
+
+        let main_fingerprints = get_call_edge_fingerprints_for_branch(&conn, "main").unwrap();
+        let feature_fingerprints = get_call_edge_fingerprints_for_branch(&conn, "feature").unwrap();
+        assert_eq!(main_fingerprints.len(), 1);
+        assert_ne!(main_fingerprints, feature_fingerprints);
+
+        resolve_call_edge_for_branch(&conn, "edge", "target_a", Some("feature")).unwrap();
+        assert_eq!(callee_target(&conn, "caller", "feature"), None);
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", None)],
+            Some("main"),
+        )
+        .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "main"), None);
+        assert_eq!(callee_target(&conn, "caller", "stale").as_deref(), Some("target_a"));
+    }
+
+    #[test]
+    fn copy_branch_catalog_copies_branch_call_edge_targets() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature"]);
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+        add_symbols_to_branch_batch(&mut conn, "feature", &[String::from("target_b")]).unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            Some("main"),
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("feature"),
+        )
+        .unwrap();
+
+        copy_branch_catalog(&mut conn, "feature", "seeded").unwrap();
+
+        assert_eq!(callee_target(&conn, "caller", "seeded").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+        assert!(overlay_rows(&conn).contains(&(
+            String::from("seeded"),
+            String::from("edge"),
+            Some(String::from("target_b")),
+            true
+        )));
+    }
+
+    #[test]
+    fn seed_retry_replaces_stale_branch_call_edge_targets() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature"]);
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "feature",
+            &[String::from("target_a"), String::from("target_b")],
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("feature"),
+        )
+        .unwrap();
+        conn.execute("DELETE FROM branch_call_edges WHERE branch = 'main'", [])
+            .unwrap();
+        conn.execute("UPDATE call_edges SET to_symbol_id = 'target_a' WHERE id = 'edge'", [])
+            .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+
+        copy_branch_catalog(&mut conn, "feature", "seeded").unwrap();
+        assert_eq!(callee_target(&conn, "caller", "seeded").as_deref(), Some("target_b"));
+
+        copy_branch_catalog(&mut conn, "feature", "retried").unwrap();
+        clear_branch(&conn, "retried").unwrap();
+        conn.execute("DELETE FROM branch_symbols WHERE branch = 'retried'", [])
+            .unwrap();
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "retried",
+            &[String::from("caller"), String::from("target_a"), String::from("target_b")],
+        )
+        .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "retried").as_deref(), Some("target_b"));
+
+        copy_branch_catalog(&mut conn, "main", "retried").unwrap();
+        assert_eq!(callee_target(&conn, "caller", "retried").as_deref(), Some("target_a"));
+        assert!(overlay_rows(&conn).iter().all(|row| row.0 != "retried"));
+    }
+
+    #[test]
+    fn branch_symbol_deletes_scope_branch_call_edge_targets() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature"]);
+        for branch in ["main", "feature"] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", None)],
+                Some(branch),
+            )
+            .unwrap();
+        }
+        assert_eq!(overlay_rows(&conn).len(), 2);
+
+        delete_branch_symbols_for_branch(&conn, "feature", &[String::from("caller")]).unwrap();
+        let remaining: Vec<String> = overlay_rows(&conn).into_iter().map(|row| row.0).collect();
+        assert_eq!(remaining, vec![String::from("main")]);
+
+        delete_branch_symbols_by_symbol_ids(&conn, &[String::from("caller")]).unwrap();
+        assert!(overlay_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn gc_and_clear_remove_unreachable_branch_call_edge_targets() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature"]);
+        for branch in ["main", "feature"] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", None)],
+                Some(branch),
+            )
+            .unwrap();
+        }
+
+        clear_branch_symbols(&conn, "feature").unwrap();
+        assert_eq!(overlay_rows(&conn).len(), 2);
+        gc_orphan_call_edges(&conn).unwrap();
+        let remaining: Vec<String> = overlay_rows(&conn).into_iter().map(|row| row.0).collect();
+        assert_eq!(remaining, vec![String::from("main")]);
+        assert_eq!(callee_target(&conn, "caller", "main"), None);
+
+        clear_all_indexed_data(&conn).unwrap();
+        assert!(overlay_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn delete_call_edges_by_file_removes_branch_call_edge_targets() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main"]);
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", None)],
+            Some("main"),
+        )
+        .unwrap();
+
+        assert_eq!(delete_call_edges_by_file(&conn, "src/caller").unwrap(), 1);
+        assert!(overlay_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn read_only_open_without_overlay_uses_legacy_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("readonly.db");
+        {
+            let mut conn = init_db(&db_path).unwrap();
+            seed_divergent_graph(&mut conn, &["main", "feature"]);
+            add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+                None,
+            )
+            .unwrap();
+            drop_overlay(&conn);
+        }
+
+        let conn = open_db_read_only(&db_path).unwrap();
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "feature"), None);
+        assert_eq!(get_call_edge_fingerprints_for_branch(&conn, "main").unwrap().len(), 1);
+        assert!(!has_branch_call_edges(&conn).unwrap());
+    }
+
+    #[test]
+    fn branch_call_edges_marker_1_store_upgrades_to_current_and_reopens_as_no_op() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("marker1.db");
+        {
+            let mut conn = init_db(&db_path).unwrap();
+            seed_divergent_graph(&mut conn, &["main"]);
+            add_symbols_to_branch_batch(&mut conn, "main", &[String::from("target_a")]).unwrap();
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+                Some("main"),
+            )
+            .unwrap();
+            downgrade_overlay_to_marker_1(&conn);
+            assert!(!has_branch_call_edges_stale(&conn).unwrap());
+        }
+
+        let conn = init_db(&db_path).unwrap();
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
+        );
+        assert_eq!(
+            get_metadata(&conn, "schema_version").unwrap().as_deref(),
+            Some(SCHEMA_VERSION.to_string().as_str())
+        );
+        assert!(has_branch_call_edges_stale(&conn).unwrap());
+        assert!(has_legacy_write_trigger(&conn));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![(String::from("main"), String::from("edge"), Some(String::from("target_a")), true)]
+        );
+        let objects_before: Vec<String> = conn
+            .prepare("SELECT type || ':' || name FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        drop(conn);
+
+        let conn = init_db(&db_path).unwrap();
+        let objects_after: Vec<String> = conn
+            .prepare("SELECT type || ':' || name FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(objects_before, objects_after);
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
+        );
+        drop(conn);
+
+        let conn = open_db_read_only(&db_path).unwrap();
+        assert!(has_branch_call_edges(&conn).unwrap());
+        assert!(has_branch_call_edges_stale(&conn).unwrap());
+        assert_eq!(callee_target(&conn, "caller", "main").as_deref(), Some("target_a"));
+    }
+
+    #[test]
+    fn branch_call_edges_marker_1_upgrade_rolls_back_when_stale_creation_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("blocked-stale.db");
+        {
+            let conn = init_db(&db_path).unwrap();
+            downgrade_overlay_to_marker_1(&conn);
+            conn.execute_batch("CREATE VIEW branch_call_edges_stale AS SELECT 1 AS branch;")
+                .unwrap();
+        }
+
+        assert!(init_db(&db_path).is_err());
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert!(has_branch_call_edges(&conn).unwrap());
+        assert!(!has_branch_call_edges_stale(&conn).unwrap());
+        assert!(!has_legacy_write_trigger(&conn));
+        assert!(!has_schema_object(&conn, "index", "idx_branch_call_edges_stale_edge").unwrap());
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some("1")
+        );
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn legacy_write_pins_sibling_branches_without_overlay_and_marks_them_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["a", "b"]);
+        for branch in ["a", "b"] {
+            add_symbols_to_branch_batch(
+                &mut conn,
+                branch,
+                &[String::from("target_a"), String::from("target_b")],
+            )
+            .unwrap();
+        }
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_a")));
+        assert!(overlay_rows(&conn).is_empty());
+        assert!(stale_rows(&conn).is_empty());
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_a"));
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("b", "edge")]);
+        assert_eq!(get_stale_call_edge_file_paths(&conn, "a").unwrap(), vec![String::from("src/caller")]);
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("b", "edge")]);
+    }
+
+    #[test]
+    fn legacy_write_to_owning_branch_with_overlay_is_marked_stale_until_branch_rewrite() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["a", "b"]);
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "a",
+            &[String::from("target_a"), String::from("target_b")],
+        )
+        .unwrap();
+        add_symbols_to_branch_batch(&mut conn, "b", &[String::from("target_a")]).unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            Some("a"),
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            Some("b"),
+        )
+        .unwrap();
+        assert!(stale_rows(&conn).is_empty());
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_a"));
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("b", "edge")]);
+
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("a"),
+        )
+        .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_a"));
+        assert_eq!(stale_rows(&conn), vec![pair("b", "edge")]);
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                (String::from("a"), String::from("edge"), Some(String::from("target_b")), true),
+                (String::from("b"), String::from("edge"), Some(String::from("target_a")), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn branch_writer_never_creates_stale_rows() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main", "feature", "idle"]);
+        for branch in ["main", "feature", "idle"] {
+            add_symbols_to_branch_batch(
+                &mut conn,
+                branch,
+                &[String::from("target_a"), String::from("target_b")],
+            )
+            .unwrap();
+        }
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            Some("main"),
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("feature"),
+        )
+        .unwrap();
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", None)],
+            Some("main"),
+        )
+        .unwrap();
+        resolve_call_edge_for_branch(&conn, "edge", "target_a", Some("feature")).unwrap();
+
+        assert!(stale_rows(&conn).is_empty());
+        assert_eq!(callee_target(&conn, "caller", "main"), None);
+        assert_eq!(callee_target(&conn, "caller", "feature").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "idle").as_deref(), Some("target_a"));
+        assert_eq!(get_stale_call_edge_file_paths(&conn, "main").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn unscoped_writes_behave_like_legacy_writes() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["a", "b"]);
+        for branch in ["a", "b"] {
+            add_symbols_to_branch_batch(
+                &mut conn,
+                branch,
+                &[String::from("target_a"), String::from("target_b")],
+            )
+            .unwrap();
+        }
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            None,
+        )
+        .unwrap();
+        assert!(stale_rows(&conn).is_empty());
+        assert!(overlay_rows(&conn).is_empty());
+
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_a"))],
+            None,
+        )
+        .unwrap();
+        assert!(stale_rows(&conn).is_empty());
+
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            None,
+        )
+        .unwrap();
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_a"));
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("b", "edge")]);
+    }
+
+    fn seed_stale_graph(conn: &mut Connection, branches: &[&str]) {
+        seed_divergent_graph(conn, branches);
+        for branch in branches {
+            add_symbols_to_branch_batch(
+                conn,
+                branch,
+                &[String::from("target_a"), String::from("target_b")],
+            )
+            .unwrap();
+        }
+        legacy_0_34_write(conn, &call_graph_edge("edge", "caller", "helper", Some("target_a")));
+        legacy_0_34_write(conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+        let expected: Vec<(String, String)> =
+            branches.iter().map(|branch| pair(branch, "edge")).collect();
+        let mut sorted = expected;
+        sorted.sort();
+        assert_eq!(stale_rows(conn), sorted);
+    }
+
+    #[test]
+    fn gc_and_branch_removal_scope_stale_rows() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph(&mut conn, &["main", "feature", "gone"]);
+
+        clear_branch_symbols(&conn, "gone").unwrap();
+        assert_eq!(stale_rows(&conn).len(), 3);
+        gc_orphan_call_edges(&conn).unwrap();
+        assert_eq!(stale_rows(&conn), vec![pair("feature", "edge"), pair("main", "edge")]);
+
+        delete_branch_symbols_for_branch(&conn, "feature", &[String::from("caller")]).unwrap();
+        assert_eq!(stale_rows(&conn), vec![pair("main", "edge")]);
+
+        delete_branch_symbols_by_symbol_ids(&conn, &[String::from("caller")]).unwrap();
+        assert!(stale_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn clear_all_and_delete_by_file_remove_stale_rows() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph(&mut conn, &["main", "feature"]);
+        assert_eq!(delete_call_edges_by_file(&conn, "src/caller").unwrap(), 1);
+        assert!(stale_rows(&conn).is_empty());
+        assert!(overlay_rows(&conn).is_empty());
+
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph(&mut conn, &["main"]);
+        clear_all_indexed_data(&conn).unwrap();
+        assert!(stale_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn seeding_copy_replaces_and_copies_stale_rows() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph(&mut conn, &["main", "feature"]);
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+            Some("feature"),
+        )
+        .unwrap();
+        assert_eq!(stale_rows(&conn), vec![pair("main", "edge")]);
+
+        copy_branch_catalog(&mut conn, "main", "seeded").unwrap();
+        assert_eq!(stale_rows(&conn), vec![pair("main", "edge"), pair("seeded", "edge")]);
+        assert_eq!(callee_target(&conn, "caller", "seeded").as_deref(), Some("target_a"));
+
+        copy_branch_catalog(&mut conn, "feature", "seeded").unwrap();
+        assert_eq!(stale_rows(&conn), vec![pair("main", "edge")]);
+        assert_eq!(callee_target(&conn, "caller", "seeded").as_deref(), Some("target_b"));
+    }
+
+    #[test]
+    fn stale_file_paths_are_listed_and_cleared_per_branch() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph(&mut conn, &["main", "feature"]);
+        upsert_symbols_batch(&mut conn, &[call_graph_symbol("other", "other", "typescript")])
+            .unwrap();
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("other")]).unwrap();
+        legacy_0_34_write(&conn, &call_graph_edge("edge2", "other", "helper", Some("target_a")));
+        legacy_0_34_write(&conn, &call_graph_edge("edge2", "other", "helper", None));
+
+        assert_eq!(
+            get_stale_call_edge_file_paths(&conn, "main").unwrap(),
+            vec![String::from("src/caller"), String::from("src/other")]
+        );
+        assert_eq!(
+            get_stale_call_edge_file_paths(&conn, "feature").unwrap(),
+            vec![String::from("src/caller")]
+        );
+        assert_eq!(get_stale_call_edge_file_paths(&conn, "unknown").unwrap(), Vec::<String>::new());
+
+        assert_eq!(clear_stale_call_edges_for_files(&mut conn, "main", &[]).unwrap(), 0);
+        assert_eq!(
+            clear_stale_call_edges_for_files(&mut conn, "main", &[String::from("src/caller")])
+                .unwrap(),
+            1
+        );
+        assert_eq!(stale_rows(&conn), vec![pair("feature", "edge"), pair("main", "edge2")]);
+        assert_eq!(
+            clear_stale_call_edges_for_files(
+                &mut conn,
+                "main",
+                &[String::from("src/other"), String::from("src/missing")]
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(stale_rows(&conn), vec![pair("feature", "edge")]);
+    }
+
+    #[test]
+    fn stale_helpers_tolerate_missing_stale_table() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main"]);
+        drop_overlay(&conn);
+        assert_eq!(get_stale_call_edge_file_paths(&conn, "main").unwrap(), Vec::<String>::new());
+        assert_eq!(
+            clear_stale_call_edges_for_files(&mut conn, "main", &[String::from("src/caller")])
+                .unwrap(),
+            0
+        );
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_a")));
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+        assert_eq!(callee_target(&conn, "caller", "main"), None);
+    }
+
+    const MARKER_2_LEGACY_WRITE_TRIGGER_SQL: &str = r#"
+        CREATE TRIGGER branch_call_edges_legacy_write
+        BEFORE INSERT ON call_edges
+        WHEN EXISTS (
+            SELECT 1 FROM call_edges
+            WHERE id = NEW.id AND to_symbol_id IS NOT NEW.to_symbol_id
+        )
+        BEGIN
+            INSERT OR IGNORE INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved)
+            SELECT bs.branch, ce.id, ce.to_symbol_id, ce.is_resolved
+            FROM call_edges ce
+            JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
+            WHERE ce.id = NEW.id;
+            INSERT OR IGNORE INTO branch_call_edges_stale (branch, edge_id)
+            SELECT bs.branch, NEW.id
+            FROM call_edges ce
+            JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
+            WHERE ce.id = NEW.id;
+        END;
+    "#;
+
+    fn legacy_write_trigger_sql(conn: &Connection) -> String {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'branch_call_edges_legacy_write'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn schema_snapshot(conn: &Connection) -> Vec<(String, Option<String>)> {
+        conn.prepare("SELECT type || ':' || name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn overlay(branch: &str, target: &str) -> (String, String, Option<String>, bool) {
+        (branch.to_string(), String::from("edge"), Some(target.to_string()), true)
+    }
+
+    /// Branches `a`, `b` and `e` own overlays to `target_a`, `target_b` and
+    /// `target_c`; the shared target is `target_b`; `d` joins afterwards
+    /// without an overlay and reads the shared target.
+    fn seed_shared_target_b(conn: &mut Connection) {
+        let branches = ["a", "b", "d", "e"];
+        seed_divergent_graph(conn, &["a", "b", "e"]);
+        upsert_symbols_batch(conn, &[call_graph_symbol("target_c", "helper", "typescript")])
+            .unwrap();
+        let targets = [
+            String::from("target_a"),
+            String::from("target_b"),
+            String::from("target_c"),
+        ];
+        for branch in branches {
+            add_symbols_to_branch_batch(conn, branch, &targets).unwrap();
+        }
+        for (branch, target) in [("e", "target_c"), ("a", "target_a"), ("b", "target_b")] {
+            upsert_call_edges_batch_for_branch(
+                conn,
+                &[call_graph_edge("edge", "caller", "helper", Some(target))],
+                Some(branch),
+            )
+            .unwrap();
+        }
+        add_symbols_to_branch_batch(conn, "d", &[String::from("caller")]).unwrap();
+        assert_eq!(legacy_target(conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(
+            overlay_rows(conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert!(stale_rows(conn).is_empty());
+    }
+
+    #[test]
+    fn legacy_replace_keeps_divergent_overlays_and_marks_them_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_c"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("d", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "e").as_deref(), Some("target_c"));
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge")]
+        );
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_a")));
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "e").as_deref(), Some("target_c"));
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+    }
+
+    #[test]
+    fn legacy_same_target_write_marks_divergent_overlay_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("e", "edge")]);
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_b"));
+
+        for branch in ["a", "e"] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+                Some(branch),
+            )
+            .unwrap();
+        }
+        assert!(stale_rows(&conn).is_empty());
+        for branch in ["a", "b", "d", "e"] {
+            assert_eq!(callee_target(&conn, "caller", branch).as_deref(), Some("target_b"));
+        }
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+        assert!(stale_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn legacy_reinsert_after_delete_marks_divergent_overlays_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        // 0.34.0 deletes edges whose caller no branch holds
+        // (delete_call_edges_by_file, gc_orphan_call_edges); overlays survive.
+        conn.execute("DELETE FROM call_edges WHERE id = 'edge'", []).unwrap();
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_c"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("b", "edge")]);
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_c"));
+    }
+
+    #[test]
+    fn legacy_resolution_only_and_null_target_writes_mark_divergent_overlays_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        let mut unresolved = call_graph_edge("edge", "caller", "helper", Some("target_b"));
+        unresolved.is_resolved = false;
+        legacy_0_34_write(&conn, &unresolved);
+
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("d", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+
+        conn.execute("DELETE FROM branch_call_edges_stale", []).unwrap();
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", None));
+
+        assert_eq!(legacy_target(&conn, "edge"), None);
+        assert_eq!(overlay_rows(&conn).len(), 4);
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_b"));
+    }
+
+    #[test]
+    fn marker_2_store_replaces_legacy_write_trigger_and_reopens_as_no_op() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("marker2.db");
+        {
+            let mut conn = init_db(&db_path).unwrap();
+            seed_shared_target_b(&mut conn);
+            conn.execute_batch("DROP TRIGGER branch_call_edges_legacy_write;").unwrap();
+            conn.execute_batch(MARKER_2_LEGACY_WRITE_TRIGGER_SQL).unwrap();
+            set_metadata(&conn, "branch_call_edges_version", "2").unwrap();
+            assert!(legacy_write_trigger_sql(&conn).contains("INSERT OR IGNORE"));
+        }
+
+        let conn = init_db(&db_path).unwrap();
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
+        );
+        assert_eq!(BRANCH_CALL_EDGES_MARKER_VERSION, "3");
+        assert_eq!(
+            get_metadata(&conn, "schema_version").unwrap().as_deref(),
+            Some(SCHEMA_VERSION.to_string().as_str())
+        );
+        let trigger_sql = legacy_write_trigger_sql(&conn);
+        assert!(!trigger_sql.contains("OR IGNORE"));
+        assert!(trigger_sql.contains("NOT EXISTS"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        let before = schema_snapshot(&conn);
+        drop(conn);
+
+        let mut conn = init_db(&db_path).unwrap();
+        assert_eq!(schema_snapshot(&conn), before);
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_b"));
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge")]
+        );
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_c"))],
+            Some("a"),
+        )
+        .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_c"));
+        drop(conn);
+
+        let conn = open_db_read_only(&db_path).unwrap();
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_b"));
+    }
+
+    #[test]
+    fn marker_2_upgrade_rolls_back_when_trigger_creation_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("blocked-trigger.db");
+        {
+            let conn = init_db(&db_path).unwrap();
+            conn.execute_batch("DROP TRIGGER branch_call_edges_legacy_write;").unwrap();
+            conn.execute_batch(MARKER_2_LEGACY_WRITE_TRIGGER_SQL).unwrap();
+            set_metadata(&conn, "branch_call_edges_version", "2").unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER block_marker BEFORE INSERT ON metadata \
+                 WHEN NEW.key = 'branch_call_edges_version' \
+                 BEGIN SELECT RAISE(ABORT, 'blocked marker'); END;",
+            )
+            .unwrap();
+        }
+
+        assert!(init_db(&db_path).is_err());
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some("2")
+        );
+        assert!(legacy_write_trigger_sql(&conn).contains("INSERT OR IGNORE"));
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn unscoped_upsert_with_existing_stale_and_overlay_rows_does_not_error() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+        let stale_before = stale_rows(&conn);
+        assert_eq!(
+            stale_before,
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge")]
+        );
+
+        for target in [Some("target_a"), None, Some("target_b")] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", target)],
+                None,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("d", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+    }
+
+    #[test]
+    fn branch_writer_never_fires_legacy_trigger_against_divergent_overlays() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        for (branch, target) in [
+            ("a", Some("target_a")),
+            ("d", Some("target_c")),
+            ("a", Some("target_b")),
+            ("e", None),
+            ("b", Some("target_b")),
+        ] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", target)],
+                Some(branch),
+            )
+            .unwrap();
+            assert!(stale_rows(&conn).is_empty(), "branch write on {branch} created stale rows");
+        }
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_c"));
+        assert_eq!(callee_target(&conn, "caller", "e"), None);
     }
 }

@@ -26,6 +26,33 @@ const JAVASCRIPT_RUNTIME_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs"]);
 const STATIC_ESM_EXPORT_CONDITIONS = new Set(["node", "node-addons", "module-sync", "import", "default"]);
 const STATIC_COMMONJS_EXPORT_CONDITIONS = new Set(["node", "node-addons", "module-sync", "require", "default"]);
 const TYPESCRIPT_SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"] as const;
+/** Prefix of a dependency key naming a module probe base rather than a concrete file. */
+export const MODULE_PROBE_DEPENDENCY_PREFIX = "?";
+/** Prefix of a dependency key naming a file whose nearest package format a resolution consulted. */
+export const MODULE_FORMAT_DEPENDENCY_PREFIX = "%";
+
+/**
+ * Dependency keys whose recorded resolutions may change when `filePath` is added, removed, or
+ * edited: the path itself plus every module-probe base that can resolve to it.
+ */
+export function moduleDependencyKeysForPath(filePath: string): string[] {
+  const normalized = normalizeFilePath(filePath);
+  const keys = new Set<string>([normalized, `${MODULE_PROBE_DEPENDENCY_PREFIX}${normalized}`]);
+  const extension = path.posix.extname(normalized).toLowerCase();
+  if (JAVASCRIPT_SOURCE_EXTENSIONS.includes(extension as (typeof JAVASCRIPT_SOURCE_EXTENSIONS)[number])) {
+    const withoutExtension = normalized.slice(0, -extension.length);
+    keys.add(`${MODULE_PROBE_DEPENDENCY_PREFIX}${withoutExtension}`);
+    if (path.posix.basename(withoutExtension) === "index") {
+      keys.add(`${MODULE_PROBE_DEPENDENCY_PREFIX}${path.posix.dirname(withoutExtension)}`);
+    }
+    if (TYPESCRIPT_SOURCE_EXTENSIONS.includes(extension as (typeof TYPESCRIPT_SOURCE_EXTENSIONS)[number])) {
+      for (const runtimeExtension of JAVASCRIPT_RUNTIME_EXTENSIONS) {
+        keys.add(`${MODULE_PROBE_DEPENDENCY_PREFIX}${withoutExtension}${runtimeExtension}`);
+      }
+    }
+  }
+  return [...keys];
+}
 
 interface ImportBinding {
   importedName: string;
@@ -1176,8 +1203,15 @@ export class LocalModuleCallResolver {
   private readonly moduleRecordContents = new Map<string, string>();
   private readonly moduleSyntax = new Map<string, { content: string; syntax: ModuleSyntaxData }>();
   private readonly goCallClassifiers = new Map<string, (site: CallSiteData) => boolean>();
-  private readonly exportCache = new Map<string, SymbolData[]>();
+  private readonly exportCache = new Map<string, { symbols: SymbolData[]; dependencies: ReadonlySet<string> }>();
   private exportCacheEpoch = 0;
+  private readonly dependencyFrames: Set<string>[] = [];
+  private readonly recordingPythonModulePaths: Pick<ReadonlySet<string>, "has"> = {
+    has: (filePath: string): boolean => {
+      this.recordDependency(filePath);
+      return this.pythonModulePaths.has(filePath);
+    },
+  };
   private readonly tsConfigPathAliases?: LocalModulePathAliases;
   private readonly pathAliasesForImporter?: LocalModuleResolverOptions["pathAliasesForImporter"];
   private readonly moduleFormatForFile?: LocalModuleResolverOptions["moduleFormatForFile"];
@@ -1224,6 +1258,26 @@ export class LocalModuleCallResolver {
     this.exportCacheEpoch++;
   }
 
+  /**
+   * Runs one importer's resolutions and returns every dependency key they observed:
+   * exact module paths that were read, and `${MODULE_PROBE_DEPENDENCY_PREFIX}<base>` keys for
+   * extension/index probes whose answer changes when a matching file is added or removed.
+   */
+  async captureDependencies(importerFilePath: string, run: () => Promise<void>): Promise<string[]> {
+    const frame = new Set<string>([normalizeFilePath(importerFilePath)]);
+    this.dependencyFrames.push(frame);
+    try {
+      await run();
+    } finally {
+      this.dependencyFrames.splice(this.dependencyFrames.lastIndexOf(frame), 1);
+    }
+    return [...frame].sort();
+  }
+
+  private recordDependency(key: string): void {
+    for (const frame of this.dependencyFrames) frame.add(key);
+  }
+
   /** Resolve only a current-AST call's exact lexical binding and source ancestry. */
   async resolveCallTarget(
     importerFilePath: string,
@@ -1232,7 +1286,7 @@ export class LocalModuleCallResolver {
   ): Promise<SymbolData | undefined> {
     const importer = normalizeFilePath(importerFilePath);
     if (this.pythonModulePaths.has(importer)) {
-      return resolvePythonRelativeCall(importer, importerContent, site, this.pythonModulePaths, (filePath) => this.getModuleData(filePath));
+      return resolvePythonRelativeCall(importer, importerContent, site, this.recordingPythonModulePaths, (filePath) => this.getModuleData(filePath));
     }
     if (this.goPackagePaths.has(importer)) {
       return this.resolveGoPackageCallTarget(importer, importerContent, site);
@@ -1307,7 +1361,9 @@ export class LocalModuleCallResolver {
     if (extension === ".mjs" || extension === ".mts") return false;
     if (extension === ".cjs" || extension === ".cts") return true;
     // Ambiguous extensions require nearest package-format evidence; missing evidence fails closed.
-    return await this.moduleFormatForFile?.(filePath) === "commonjs";
+    if (!this.moduleFormatForFile) return false;
+    this.recordDependency(`${MODULE_FORMAT_DEPENDENCY_PREFIX}${normalizeFilePath(filePath)}`);
+    return await this.moduleFormatForFile(filePath) === "commonjs";
   }
 
   private async resolveGoPackageCallTarget(
@@ -1358,6 +1414,7 @@ export class LocalModuleCallResolver {
 
   private async getModuleData(filePath: string): Promise<LocalModuleData | undefined> {
     const normalized = normalizeFilePath(filePath);
+    this.recordDependency(normalized);
     const existing = this.moduleData.get(normalized);
     if (existing) return existing;
     const loaded = this.loadModule(normalized);
@@ -1378,6 +1435,7 @@ export class LocalModuleCallResolver {
 
   private async getModuleRecord(filePath: string, knownContent?: string): Promise<ModuleRecord | undefined> {
     const normalized = normalizeFilePath(filePath);
+    this.recordDependency(normalized);
     if (knownContent !== undefined) {
       const existing = this.moduleRecords.get(normalized);
       if (existing && this.moduleRecordContents.get(normalized) === knownContent) return existing;
@@ -1492,6 +1550,7 @@ export class LocalModuleCallResolver {
 
     const candidates = new Set<string>();
     const normalizedBase = trimLeadingCurrentDir(base);
+    this.recordDependency(`${MODULE_PROBE_DEPENDENCY_PREFIX}${normalizedBase}`);
     if (this.modulePaths.has(normalizedBase)) {
       candidates.add(normalizedBase);
     }
@@ -1584,9 +1643,31 @@ export class LocalModuleCallResolver {
     if ((callType === "Call" || callType === "Constructor") && !isJavaScriptRuntimeSourceFilePath(normalized)) return [];
     const cacheKey = `${normalized}\0${exportedName}\0${callType}\0${commonJs ? "root" : "esm"}`;
     const cached = this.exportCache.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      for (const dependency of cached.dependencies) this.recordDependency(dependency);
+      return cached.symbols;
+    }
+    this.recordDependency(normalized);
     if (visiting.has(cacheKey)) return [];
 
+    const dependencies = new Set<string>([normalized]);
+    this.dependencyFrames.push(dependencies);
+    try {
+      return await this.resolveUncachedExport(normalized, exportedName, callType, visiting, commonJs, cacheKey, dependencies);
+    } finally {
+      this.dependencyFrames.splice(this.dependencyFrames.lastIndexOf(dependencies), 1);
+    }
+  }
+
+  private async resolveUncachedExport(
+    normalized: string,
+    exportedName: string,
+    callType: string,
+    visiting: Set<string>,
+    commonJs: boolean,
+    cacheKey: string,
+    dependencies: ReadonlySet<string>,
+  ): Promise<SymbolData[]> {
     const cacheEpoch = this.exportCacheEpoch;
     const nextVisiting = new Set(visiting);
     nextVisiting.add(cacheKey);
@@ -1633,7 +1714,7 @@ export class LocalModuleCallResolver {
 
     const result = deduplicateSymbols(candidates);
     // Demanded modules can refresh workspace packages while this traversal awaits.
-    if (cacheEpoch === this.exportCacheEpoch) this.exportCache.set(cacheKey, result);
+    if (cacheEpoch === this.exportCacheEpoch) this.exportCache.set(cacheKey, { symbols: result, dependencies });
     return result;
   }
 }

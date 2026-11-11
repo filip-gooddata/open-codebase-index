@@ -1,6 +1,6 @@
 use crate::{
-    community, db, CallEdgeData, CentralityData, CommunityCouplingData, CommunityData,
-    CommunityRelationshipData, PathHopData, ReachabilityData, SymbolData,
+    community, db, CallEdgeData, CallEdgeFingerprintData, CentralityData, CommunityCouplingData,
+    CommunityData, CommunityRelationshipData, PathHopData, ReachabilityData, SymbolData,
 };
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi_derive::napi;
@@ -415,6 +415,54 @@ impl Database {
     }
 
     #[napi]
+    pub fn copy_branch_catalog(&self, from_branch: String, to_branch: String) -> Result<Vec<u32>> {
+        self.with_conn_mut(|conn| {
+            let (chunks, symbols) = db::copy_branch_catalog(conn, &from_branch, &to_branch)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(vec![chunks as u32, symbols as u32])
+        })
+    }
+
+    #[napi]
+    pub fn get_call_edge_fingerprints_for_branch(
+        &self,
+        branch: String,
+    ) -> Result<Vec<CallEdgeFingerprintData>> {
+        self.with_conn(|conn| {
+            let rows = db::get_call_edge_fingerprints_for_branch(conn, &branch)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(rows
+                .into_iter()
+                .map(|(file_path, fingerprint)| CallEdgeFingerprintData {
+                    file_path,
+                    fingerprint,
+                })
+                .collect())
+        })
+    }
+
+    #[napi]
+    pub fn get_stale_call_edge_file_paths(&self, branch: String) -> Result<Vec<String>> {
+        self.with_conn(|conn| {
+            db::get_stale_call_edge_file_paths(conn, &branch)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn clear_stale_call_edges_for_files(
+        &self,
+        branch: String,
+        file_paths: Vec<String>,
+    ) -> Result<u32> {
+        self.with_conn_mut(|conn| {
+            let count = db::clear_stale_call_edges_for_files(conn, &branch, &file_paths)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    #[napi]
     pub fn clear_branch(&self, branch: String) -> Result<u32> {
         self.with_conn(|conn| {
             let count =
@@ -786,7 +834,7 @@ impl Database {
     // ── Call Edge methods ────────────────────────────────────────────
 
     #[napi]
-    pub fn upsert_call_edge(&self, edge: CallEdgeData) -> Result<()> {
+    pub fn upsert_call_edge(&self, edge: CallEdgeData, branch: Option<String>) -> Result<()> {
         let row = db::CallEdgeRow {
             id: edge.id,
             from_symbol_id: edge.from_symbol_id,
@@ -799,12 +847,17 @@ impl Database {
             is_resolved: edge.is_resolved,
         };
         self.with_conn(|conn| {
-            db::upsert_call_edge(conn, &row).map_err(|e| Error::from_reason(e.to_string()))
+            db::upsert_call_edge_for_branch(conn, &row, branch.as_deref())
+                .map_err(|e| Error::from_reason(e.to_string()))
         })
     }
 
     #[napi]
-    pub fn upsert_call_edges_batch(&self, edges: Vec<CallEdgeData>) -> Result<()> {
+    pub fn upsert_call_edges_batch(
+        &self,
+        edges: Vec<CallEdgeData>,
+        branch: Option<String>,
+    ) -> Result<()> {
         let rows: Vec<db::CallEdgeRow> = edges
             .into_iter()
             .map(|e| db::CallEdgeRow {
@@ -820,7 +873,8 @@ impl Database {
             })
             .collect();
         self.with_conn_mut(|conn| {
-            db::upsert_call_edges_batch(conn, &rows).map_err(|e| Error::from_reason(e.to_string()))
+            db::upsert_call_edges_batch_for_branch(conn, &rows, branch.as_deref())
+                .map_err(|e| Error::from_reason(e.to_string()))
         })
     }
 
@@ -926,9 +980,14 @@ impl Database {
     }
 
     #[napi]
-    pub fn resolve_call_edge(&self, edge_id: String, to_symbol_id: String) -> Result<()> {
+    pub fn resolve_call_edge(
+        &self,
+        edge_id: String,
+        to_symbol_id: String,
+        branch: Option<String>,
+    ) -> Result<()> {
         self.with_conn(|conn| {
-            db::resolve_call_edge(conn, &edge_id, &to_symbol_id)
+            db::resolve_call_edge_for_branch(conn, &edge_id, &to_symbol_id, branch.as_deref())
                 .map_err(|e| Error::from_reason(e.to_string()))
         })
     }

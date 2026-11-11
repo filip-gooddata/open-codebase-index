@@ -160,6 +160,30 @@ export class Database {
     this.inner.addChunksToBranchBatch(branch, chunkIds);
   }
 
+  copyBranchCatalog(fromBranch: string, toBranch: string): { chunks: number; symbols: number } {
+    this.throwIfClosed();
+    const [chunks = 0, symbols = 0] = this.inner.copyBranchCatalog(fromBranch, toBranch);
+    return { chunks, symbols };
+  }
+
+  /** Returns file path to call-edge fingerprint for every file with call edges on the branch. */
+  getCallEdgeFingerprintsForBranch(branch: string): Map<string, string> {
+    this.throwIfClosed();
+    return new Map(this.inner.getCallEdgeFingerprintsForBranch(branch).map((row: { filePath: string; fingerprint: string }) => [row.filePath, row.fingerprint]));
+  }
+
+  /** Returns sorted file paths whose call edges a legacy writer changed since the branch last wrote them. */
+  getStaleCallEdgeFilePaths(branch: string): string[] {
+    this.throwIfClosed();
+    return this.inner.getStaleCallEdgeFilePaths(branch);
+  }
+
+  clearStaleCallEdgesForFiles(branch: string, filePaths: string[]): number {
+    this.throwIfClosed();
+    if (filePaths.length === 0) return 0;
+    return this.inner.clearStaleCallEdgesForFiles(branch, filePaths);
+  }
+
   clearBranch(branch: string): number {
     this.throwIfClosed();
     return this.inner.clearBranch(branch);
@@ -309,15 +333,15 @@ export class Database {
     return this.inner.deleteSymbolsByFile(filePath);
   }
 
-  upsertCallEdge(edge: CallEdgeData): void {
+  upsertCallEdge(edge: CallEdgeData, branch?: string): void {
     this.throwIfClosed();
-    this.inner.upsertCallEdge(edge);
+    this.inner.upsertCallEdge(edge, branch ?? null);
   }
 
-  upsertCallEdgesBatch(edges: CallEdgeData[]): void {
+  upsertCallEdgesBatch(edges: CallEdgeData[], branch?: string): void {
     this.throwIfClosed();
     if (edges.length === 0) return;
-    this.inner.upsertCallEdgesBatch(edges);
+    this.inner.upsertCallEdgesBatch(edges, branch ?? null);
   }
 
   getCallers(targetName: string, branch: string, callTypeFilter?: string): CallEdgeData[] {
@@ -344,9 +368,9 @@ export class Database {
     return this.inner.deleteCallEdgesByFile(filePath);
   }
 
-  resolveCallEdge(edgeId: string, toSymbolId: string): void {
+  resolveCallEdge(edgeId: string, toSymbolId: string, branch?: string): void {
     this.throwIfClosed();
-    this.inner.resolveCallEdge(edgeId, toSymbolId);
+    this.inner.resolveCallEdge(edgeId, toSymbolId, branch ?? null);
   }
 
   findShortestPath(

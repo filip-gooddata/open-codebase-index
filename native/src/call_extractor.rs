@@ -1,6 +1,8 @@
 use crate::types::Language;
 use anyhow::{anyhow, Result};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 
@@ -21,7 +23,7 @@ pub enum Confidence {
     Inferred, // Pattern-based or indirect (dynamic dispatch, string-based require)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CallSite {
     pub callee_name: String,
     pub line: u32,
@@ -122,65 +124,142 @@ fn is_pipe_callable(mut node: tree_sitter::Node<'_>, source: &[u8]) -> bool {
     false
 }
 
+fn call_language_spec(language: Language) -> Option<(tree_sitter::Language, &'static str)> {
+    let spec: (tree_sitter::Language, &'static str) = match language {
+        Language::TypeScript | Language::TypeScriptTsx => (
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            include_str!("../queries/typescript-calls.scm"),
+        ),
+        Language::JavaScript | Language::JavaScriptJsx => (
+            tree_sitter_javascript::LANGUAGE.into(),
+            include_str!("../queries/javascript-calls.scm"),
+        ),
+        Language::Python => (
+            tree_sitter_python::LANGUAGE.into(),
+            include_str!("../queries/python-calls.scm"),
+        ),
+        Language::Rust => (
+            tree_sitter_rust::LANGUAGE.into(),
+            include_str!("../queries/rust-calls.scm"),
+        ),
+        Language::Swift => (
+            tree_sitter_swift::LANGUAGE.into(),
+            include_str!("../queries/swift-calls.scm"),
+        ),
+        Language::Go => (
+            tree_sitter_go::LANGUAGE.into(),
+            include_str!("../queries/go-calls.scm"),
+        ),
+        Language::Kotlin => (
+            tree_sitter_kotlin_ng::LANGUAGE.into(),
+            include_str!("../queries/kotlin-calls.scm"),
+        ),
+        Language::Metal => (
+            tree_sitter_cpp::LANGUAGE.into(),
+            include_str!("../queries/metal-calls.scm"),
+        ),
+        Language::Php => (
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            include_str!("../queries/php-calls.scm"),
+        ),
+        Language::Zig => (
+            tree_sitter_zig::LANGUAGE.into(),
+            include_str!("../queries/zig-calls.scm"),
+        ),
+        Language::Gdscript => (
+            tree_sitter_gdscript::LANGUAGE.into(),
+            include_str!("../queries/gdscript-calls.scm"),
+        ),
+        Language::Matlab => (
+            tree_sitter_matlab::LANGUAGE.into(),
+            include_str!("../queries/matlab-calls.scm"),
+        ),
+        Language::Apex => (
+            tree_sitter_sfapex::apex::LANGUAGE.into(),
+            include_str!("../queries/apex-calls.scm"),
+        ),
+        Language::Bash => (
+            tree_sitter_bash::LANGUAGE.into(),
+            include_str!("../queries/bash-calls.scm"),
+        ),
+        Language::C => (
+            tree_sitter_c::LANGUAGE.into(),
+            include_str!("../queries/c-calls.scm"),
+        ),
+        Language::Cpp => (
+            tree_sitter_cpp::LANGUAGE.into(),
+            include_str!("../queries/cpp-calls.scm"),
+        ),
+        _ => return None,
+    };
+    Some(spec)
+}
+
+type QueryCache = Mutex<HashMap<usize, Arc<Query>>>;
+
+static CALL_QUERY_CACHE: OnceLock<QueryCache> = OnceLock::new();
+
+thread_local! {
+    static CALL_PARSERS: RefCell<HashMap<usize, Parser>> = RefCell::new(HashMap::new());
+}
+
+fn cached_call_query(
+    ts_language: &tree_sitter::Language,
+    query_source: &'static str,
+) -> Result<Arc<Query>> {
+    let key = query_source.as_ptr() as usize;
+    let cache = CALL_QUERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(query) = cache
+        .lock()
+        .map_err(|_| anyhow!("Call query cache poisoned"))?
+        .get(&key)
+    {
+        return Ok(Arc::clone(query));
+    }
+    let query = Arc::new(
+        Query::new(ts_language, query_source)
+            .map_err(|e| anyhow!("Failed to compile query: {}", e))?,
+    );
+    let mut guard = cache
+        .lock()
+        .map_err(|_| anyhow!("Call query cache poisoned"))?;
+    Ok(Arc::clone(guard.entry(key).or_insert(query)))
+}
+
+fn parse_with_cached_parser(
+    ts_language: &tree_sitter::Language,
+    query_source: &'static str,
+    content: &str,
+) -> Result<tree_sitter::Tree> {
+    let key = query_source.as_ptr() as usize;
+    CALL_PARSERS.with(|parsers| {
+        let mut parsers = parsers.borrow_mut();
+        let parser = match parsers.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut parser = Parser::new();
+                parser
+                    .set_language(ts_language)
+                    .map_err(|e| anyhow!("Failed to set language: {}", e))?;
+                entry.insert(parser)
+            }
+        };
+        parser.reset();
+        parser
+            .parse(content, None)
+            .ok_or_else(|| anyhow!("Parse failed"))
+    })
+}
+
 pub fn extract_calls(content: &str, language_name: &str) -> Result<Vec<CallSite>> {
     let language = Language::from_string(language_name);
-    let ts_language = match language {
-        Language::TypeScript | Language::TypeScriptTsx => {
-            tree_sitter_typescript::LANGUAGE_TSX.into()
-        }
-        Language::JavaScript | Language::JavaScriptJsx => tree_sitter_javascript::LANGUAGE.into(),
-        Language::Python => tree_sitter_python::LANGUAGE.into(),
-        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-        Language::Swift => tree_sitter_swift::LANGUAGE.into(),
-        Language::Go => tree_sitter_go::LANGUAGE.into(),
-        Language::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
-        Language::Metal => tree_sitter_cpp::LANGUAGE.into(),
-        Language::Php => tree_sitter_php::LANGUAGE_PHP.into(),
-        Language::Zig => tree_sitter_zig::LANGUAGE.into(),
-        Language::Gdscript => tree_sitter_gdscript::LANGUAGE.into(),
-        Language::Matlab => tree_sitter_matlab::LANGUAGE.into(),
-        Language::Apex => tree_sitter_sfapex::apex::LANGUAGE.into(),
-        Language::Bash => tree_sitter_bash::LANGUAGE.into(),
-        Language::C => tree_sitter_c::LANGUAGE.into(),
-        Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-        _ => return Ok(vec![]),
+    let Some((ts_language, query_source)) = call_language_spec(language) else {
+        return Ok(vec![]);
     };
 
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_language)
-        .map_err(|e| anyhow!("Failed to set language: {}", e))?;
-
-    let tree = parser
-        .parse(content, None)
-        .ok_or_else(|| anyhow!("Parse failed"))?;
-
-    let query_source = match language {
-        Language::TypeScript | Language::TypeScriptTsx => {
-            include_str!("../queries/typescript-calls.scm")
-        }
-        Language::JavaScript | Language::JavaScriptJsx => {
-            include_str!("../queries/javascript-calls.scm")
-        }
-        Language::Python => include_str!("../queries/python-calls.scm"),
-        Language::Rust => include_str!("../queries/rust-calls.scm"),
-        Language::Swift => include_str!("../queries/swift-calls.scm"),
-        Language::Go => include_str!("../queries/go-calls.scm"),
-        Language::Kotlin => include_str!("../queries/kotlin-calls.scm"),
-        Language::Metal => include_str!("../queries/metal-calls.scm"),
-        Language::Php => include_str!("../queries/php-calls.scm"),
-        Language::Zig => include_str!("../queries/zig-calls.scm"),
-        Language::Gdscript => include_str!("../queries/gdscript-calls.scm"),
-        Language::Matlab => include_str!("../queries/matlab-calls.scm"),
-        Language::Apex => include_str!("../queries/apex-calls.scm"),
-        Language::Bash => include_str!("../queries/bash-calls.scm"),
-        Language::C => include_str!("../queries/c-calls.scm"),
-        Language::Cpp => include_str!("../queries/cpp-calls.scm"),
-        _ => return Ok(vec![]),
-    };
-
-    let query = Query::new(&ts_language, query_source)
-        .map_err(|e| anyhow!("Failed to compile query: {}", e))?;
+    let tree = parse_with_cached_parser(&ts_language, query_source, content)?;
+    let query = cached_call_query(&ts_language, query_source)?;
+    let query: &Query = &query;
 
     let callee_name_idx = query.capture_index_for_name("callee.name");
     let call_idx = query.capture_index_for_name("call");
@@ -481,6 +560,112 @@ fn call_type_specificity(call_type: CallType) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_extract_calls_repeat_and_interleave_languages() {
+        let ts = "function run() { alpha(); }";
+        let py = "def run():\n    beta()\n";
+        let first = extract_calls(ts, "typescript").unwrap();
+        assert_eq!(first, extract_calls(ts, "typescript").unwrap());
+        let python = extract_calls(py, "python").unwrap();
+        assert!(python.iter().any(|call| call.callee_name == "beta"));
+        assert_eq!(first, extract_calls(ts, "typescript").unwrap());
+    }
+
+    #[test]
+    fn cached_extract_calls_many_times_without_panicking() {
+        for _ in 0..200 {
+            extract_calls("function run() { alpha(); }", "typescript").unwrap();
+        }
+    }
+
+    fn uncached_extract(language: Language, src: &str) -> Result<Vec<CallSite>> {
+        let Some((ts_language, query_source)) = call_language_spec(language) else {
+            return Ok(vec![]);
+        };
+        let mut parser = Parser::new();
+        parser.set_language(&ts_language)?;
+        let tree = parser
+            .parse(src, None)
+            .ok_or_else(|| anyhow!("Parse failed"))?;
+        let query = Query::new(&ts_language, query_source)?;
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&query, tree.root_node(), src.as_bytes());
+        let mut calls = Vec::new();
+        while let Some((query_match, _)) = captures.next() {
+            let mut name = None;
+            let mut kind = CallType::Call;
+            let mut position = None;
+            for capture in query_match.captures {
+                let capture_name = query.capture_names()[capture.index as usize];
+                let text = capture.node.utf8_text(src.as_bytes()).unwrap_or("");
+                match capture_name {
+                    "callee.name" => {
+                        name = Some(text.to_owned());
+                        let point = capture.node.start_position();
+                        position = Some((point.row as u32 + 1, point.column as u32));
+                    }
+                    "import.name" | "import.default" | "import.namespace" => {
+                        name = Some(text.to_owned());
+                        kind = CallType::Import;
+                        let point = capture.node.start_position();
+                        position = Some((point.row as u32 + 1, point.column as u32));
+                    }
+                    "inherits.name" | "implements.name" => {
+                        name = Some(text.to_owned());
+                        kind = if capture_name == "inherits.name" { CallType::Inherits } else { CallType::Implements };
+                        let point = capture.node.start_position();
+                        position = Some((point.row as u32 + 1, point.column as u32));
+                    }
+                    "method.call" | "static.call" => kind = CallType::MethodCall,
+                    "constructor" => kind = CallType::Constructor,
+                    _ => {}
+                }
+            }
+            if let (Some(callee_name), Some((line, column))) = (name, position) {
+                calls.push(CallSite { callee_name, line, column, call_type: kind, confidence: Confidence::Direct });
+            }
+        }
+        calls.dedup_by(|a, b| a.callee_name == b.callee_name && a.line == b.line && a.column == b.column && a.call_type == b.call_type);
+        calls.sort_by(|a, b| (a.line, a.column, &a.callee_name).cmp(&(b.line, b.column, &b.callee_name)));
+        Ok(calls)
+    }
+
+    #[test]
+    fn cached_matches_uncached_and_reuses_query_for_supported_languages() {
+        let samples = [
+            (Language::TypeScript, "function run() { alpha(); obj.beta(); }"),
+            (Language::JavaScript, "function run() { alpha(); obj.beta(); }"),
+            (Language::Python, "def run():\n    alpha()\n    obj.beta()\n"),
+            (Language::Rust, "fn run() { alpha(); obj.beta(); }"),
+            (Language::Swift, "func run() { alpha(); obj.beta() }"),
+            (Language::Go, "package p\nfunc run() { alpha(); obj.beta() }"),
+            (Language::Kotlin, "fun run() { alpha(); obj.beta() }"),
+            (Language::Metal, "void run() { alpha(); obj.beta(); }"),
+            (Language::Php, "<?php function run() { alpha(); $obj->beta(); }"),
+            (Language::Zig, "fn run() void { alpha(); obj.beta(); }"),
+            (Language::Gdscript, "func run():\n    alpha()\n    obj.beta()\n"),
+            (Language::Matlab, "function run()\n alpha();\nend"),
+            (Language::Apex, "class A { void run() { alpha(); obj.beta(); } }"),
+            (Language::Bash, "run() { alpha; beta; }"),
+            (Language::C, "void run() { alpha(); obj.beta(); }"),
+            (Language::Cpp, "void run() { alpha(); obj.beta(); }"),
+        ];
+        for (language, source) in samples {
+            assert_eq!(extract_calls(source, language.as_str()).unwrap(), uncached_extract(language, source).unwrap(), "{language:?}");
+            let (ts_language, query_source) = call_language_spec(language).unwrap();
+            let first = cached_call_query(&ts_language, query_source).unwrap();
+            let second = cached_call_query(&ts_language, query_source).unwrap();
+            assert!(Arc::ptr_eq(&first, &second), "{language:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_then_valid_input_matches_uncached_on_same_thread() {
+        let _ = extract_calls("function ( {", "typescript").unwrap();
+        let valid = "function run() { alpha(); }";
+        assert_eq!(extract_calls(valid, "typescript").unwrap(), uncached_extract(Language::TypeScript, valid).unwrap());
+    }
 
     #[test]
     fn test_extract_direct_calls() {

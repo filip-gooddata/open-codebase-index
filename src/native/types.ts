@@ -294,6 +294,12 @@ export interface BranchDelta {
   removed: string[];
 }
 
+export interface IndexPresence {
+  hasChunks: boolean;
+  hasSymbols: boolean;
+  hasEmbeddings: boolean;
+}
+
 export interface DatabaseStats {
   embeddingCount: number;
   chunkCount: number;

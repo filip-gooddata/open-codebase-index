@@ -55,6 +55,13 @@ pub struct DatabaseStats {
     pub call_edge_count: u32,
 }
 
+#[napi(object)]
+pub struct IndexPresence {
+    pub has_chunks: bool,
+    pub has_symbols: bool,
+    pub has_embeddings: bool,
+}
+
 #[napi]
 impl Database {
     fn from_connection(conn: rusqlite::Connection) -> Self {
@@ -566,6 +573,27 @@ impl Database {
                 symbol_count: stats.symbol_count as u32,
                 call_edge_count: stats.call_edge_count as u32,
             })
+        })
+    }
+
+    #[napi]
+    pub fn get_index_presence(&self) -> Result<IndexPresence> {
+        self.with_conn(|conn| {
+            let presence =
+                db::get_index_presence(conn).map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(IndexPresence {
+                has_chunks: presence.has_chunks,
+                has_symbols: presence.has_symbols,
+                has_embeddings: presence.has_embeddings,
+            })
+        })
+    }
+
+    #[napi]
+    pub fn get_chunk_count(&self) -> Result<u32> {
+        self.with_conn(|conn| {
+            let count = db::get_chunk_count(conn).map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(count as u32)
         })
     }
 

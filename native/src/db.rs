@@ -1274,6 +1274,38 @@ pub fn get_stats(conn: &Connection) -> DbResult<DbStats> {
         call_edge_count: call_edge_count as u64,
     })
 }
+/// Report which index tables hold any rows, using `EXISTS` probes that stop at
+/// the first row instead of counting whole tables.
+pub fn get_index_presence(conn: &Connection) -> DbResult<IndexPresence> {
+    let (has_chunks, has_symbols, has_embeddings): (bool, bool, bool) = conn.query_row(
+        r#"
+        SELECT
+            EXISTS(SELECT 1 FROM chunks),
+            EXISTS(SELECT 1 FROM symbols),
+            EXISTS(SELECT 1 FROM embeddings)
+        "#,
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    Ok(IndexPresence {
+        has_chunks,
+        has_symbols,
+        has_embeddings,
+    })
+}
+
+pub fn get_chunk_count(conn: &Connection) -> DbResult<u64> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+    Ok(count as u64)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexPresence {
+    pub has_chunks: bool,
+    pub has_symbols: bool,
+    pub has_embeddings: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct DbStats {
     pub embedding_count: u64,
@@ -2194,6 +2226,75 @@ mod tests {
             .is_empty());
         assert!(get_branch_symbol_ids(&conn, "main").unwrap().is_empty());
         assert!(get_callees(&conn, "sym1", "main", None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_index_presence_and_chunk_count_track_each_table() {
+        let (_temp_dir, conn) = setup_test_db();
+        let absent = IndexPresence {
+            has_chunks: false,
+            has_symbols: false,
+            has_embeddings: false,
+        };
+        assert_eq!(get_index_presence(&conn).unwrap(), absent);
+        assert_eq!(get_chunk_count(&conn).unwrap(), 0);
+
+        upsert_embedding(&conn, "hash", &[0u8; 4], "text", "model").unwrap();
+        assert_eq!(
+            get_index_presence(&conn).unwrap(),
+            IndexPresence {
+                has_embeddings: true,
+                ..absent
+            }
+        );
+
+        upsert_symbol(&conn, &call_graph_symbol("s1", "alpha", "typescript")).unwrap();
+        assert_eq!(
+            get_index_presence(&conn).unwrap(),
+            IndexPresence {
+                has_symbols: true,
+                has_embeddings: true,
+                ..absent
+            }
+        );
+
+        upsert_chunk(
+            &conn,
+            "c1",
+            "hash",
+            "src/a.ts",
+            1,
+            5,
+            None,
+            None,
+            "typescript",
+        )
+        .unwrap();
+        upsert_chunk(
+            &conn,
+            "c2",
+            "hash",
+            "src/b.ts",
+            1,
+            5,
+            None,
+            None,
+            "typescript",
+        )
+        .unwrap();
+        assert_eq!(
+            get_index_presence(&conn).unwrap(),
+            IndexPresence {
+                has_chunks: true,
+                has_symbols: true,
+                has_embeddings: true,
+            }
+        );
+        assert_eq!(get_chunk_count(&conn).unwrap(), 2);
+        assert_eq!(
+            get_chunk_count(&conn).unwrap(),
+            get_stats(&conn).unwrap().chunk_count
+        );
     }
 
     #[test]

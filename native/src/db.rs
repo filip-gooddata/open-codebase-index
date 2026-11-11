@@ -32,8 +32,10 @@ const SQL_BIND_PARAM_BATCH_SIZE: usize = 900;
 /// schema version 8 keep opening stores that a newer writer has upgraded.
 /// Version 2 adds `branch_call_edges_stale` and the trigger that isolates
 /// branches from writers that rewrite `call_edges` without the overlay.
+/// Version 3 replaces that trigger so it never relies on a conflict clause and
+/// also marks branches whose overlay diverges from a same-target legacy write.
 const BRANCH_CALL_EDGES_MARKER_KEY: &str = "branch_call_edges_version";
-const BRANCH_CALL_EDGES_MARKER_VERSION: &str = "2";
+const BRANCH_CALL_EDGES_MARKER_VERSION: &str = "3";
 
 pub(crate) fn run_batch_with_write_transaction<T, F>(
     conn: &mut Connection,
@@ -164,11 +166,14 @@ fn branch_call_edges_marker_is_current(conn: &Connection) -> DbResult<bool> {
 ///
 /// Writers without the overlay (0.34.0) rewrite shared targets with
 /// `INSERT OR REPLACE`. The `branch_call_edges_legacy_write` trigger runs
-/// before such an insert while the old row still exists: it pins every member
-/// branch that has no overlay row to the old target and marks the edge stale
-/// for every member branch, because the writing branch is unknown. Branch
-/// writers update existing rows instead of inserting, so the trigger never
-/// fires for them.
+/// before such an insert while the old row still exists. It pins every member
+/// branch that has no overlay row to the old target when the write changes it,
+/// then marks the edge stale for every member branch whose overlay differs from
+/// the written target, because the writing branch is unknown. Its inserts
+/// carry no conflict clause and skip existing rows with `NOT EXISTS`: SQLite
+/// applies the outer statement's `OR REPLACE` to trigger statements, which
+/// would otherwise overwrite existing overlays. Branch writers update existing
+/// rows instead of inserting, so the trigger never fires for them.
 ///
 /// A store without `call_edges` or `branch_symbols` has no edges to scope, so
 /// it is left without the overlay and reads use the legacy path.
@@ -207,23 +212,41 @@ fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
                 PRIMARY KEY (branch, edge_id)
             );
             CREATE INDEX IF NOT EXISTS idx_branch_call_edges_stale_edge ON branch_call_edges_stale(edge_id);
-            CREATE TRIGGER IF NOT EXISTS branch_call_edges_legacy_write
+            DROP TRIGGER IF EXISTS branch_call_edges_legacy_write;
+            CREATE TRIGGER branch_call_edges_legacy_write
             BEFORE INSERT ON call_edges
             WHEN EXISTS (
                 SELECT 1 FROM call_edges
-                WHERE id = NEW.id AND to_symbol_id IS NOT NEW.to_symbol_id
+                WHERE id = NEW.id
+                  AND (to_symbol_id IS NOT NEW.to_symbol_id OR is_resolved IS NOT NEW.is_resolved)
+            ) OR EXISTS (
+                SELECT 1 FROM call_edges ce
+                JOIN branch_call_edges bce ON bce.edge_id = ce.id
+                WHERE ce.id = NEW.id
+                  AND (bce.to_symbol_id IS NOT NEW.to_symbol_id OR bce.is_resolved IS NOT NEW.is_resolved)
             )
             BEGIN
-                INSERT OR IGNORE INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved)
+                INSERT INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved)
                 SELECT bs.branch, ce.id, ce.to_symbol_id, ce.is_resolved
                 FROM call_edges ce
                 JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
-                WHERE ce.id = NEW.id;
-                INSERT OR IGNORE INTO branch_call_edges_stale (branch, edge_id)
-                SELECT bs.branch, NEW.id
+                WHERE ce.id = NEW.id
+                  AND (ce.to_symbol_id IS NOT NEW.to_symbol_id OR ce.is_resolved IS NOT NEW.is_resolved)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM branch_call_edges existing
+                      WHERE existing.branch = bs.branch AND existing.edge_id = ce.id
+                  );
+                INSERT INTO branch_call_edges_stale (branch, edge_id)
+                SELECT bs.branch, ce.id
                 FROM call_edges ce
                 JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
-                WHERE ce.id = NEW.id;
+                JOIN branch_call_edges bce ON bce.branch = bs.branch AND bce.edge_id = ce.id
+                WHERE ce.id = NEW.id
+                  AND (bce.to_symbol_id IS NOT NEW.to_symbol_id OR bce.is_resolved IS NOT NEW.is_resolved)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM branch_call_edges_stale existing
+                      WHERE existing.branch = bs.branch AND existing.edge_id = ce.id
+                  );
             END;
             "#,
         )?;
@@ -2928,7 +2951,7 @@ mod tests {
         assert!(has_branch_call_edges(&conn).unwrap());
         assert_eq!(
             get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
-            Some("2")
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
         );
         assert!(has_branch_call_edges_stale(&conn).unwrap());
         assert!(has_legacy_write_trigger(&conn));
@@ -3237,7 +3260,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_call_edges_marker_1_store_upgrades_to_2_and_reopens_as_no_op() {
+    fn branch_call_edges_marker_1_store_upgrades_to_current_and_reopens_as_no_op() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("marker1.db");
         {
@@ -3257,7 +3280,7 @@ mod tests {
         let conn = init_db(&db_path).unwrap();
         assert_eq!(
             get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
-            Some("2")
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
         );
         assert_eq!(
             get_metadata(&conn, "schema_version").unwrap().as_deref(),
@@ -3289,7 +3312,7 @@ mod tests {
         assert_eq!(objects_before, objects_after);
         assert_eq!(
             get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
-            Some("2")
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
         );
         drop(conn);
 
@@ -3604,5 +3627,305 @@ mod tests {
         legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_a")));
         legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
         assert_eq!(callee_target(&conn, "caller", "main"), None);
+    }
+
+    const MARKER_2_LEGACY_WRITE_TRIGGER_SQL: &str = r#"
+        CREATE TRIGGER branch_call_edges_legacy_write
+        BEFORE INSERT ON call_edges
+        WHEN EXISTS (
+            SELECT 1 FROM call_edges
+            WHERE id = NEW.id AND to_symbol_id IS NOT NEW.to_symbol_id
+        )
+        BEGIN
+            INSERT OR IGNORE INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved)
+            SELECT bs.branch, ce.id, ce.to_symbol_id, ce.is_resolved
+            FROM call_edges ce
+            JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
+            WHERE ce.id = NEW.id;
+            INSERT OR IGNORE INTO branch_call_edges_stale (branch, edge_id)
+            SELECT bs.branch, NEW.id
+            FROM call_edges ce
+            JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
+            WHERE ce.id = NEW.id;
+        END;
+    "#;
+
+    fn legacy_write_trigger_sql(conn: &Connection) -> String {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'branch_call_edges_legacy_write'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn schema_snapshot(conn: &Connection) -> Vec<(String, Option<String>)> {
+        conn.prepare("SELECT type || ':' || name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn overlay(branch: &str, target: &str) -> (String, String, Option<String>, bool) {
+        (branch.to_string(), String::from("edge"), Some(target.to_string()), true)
+    }
+
+    /// Branches `a`, `b` and `e` own overlays to `target_a`, `target_b` and
+    /// `target_c`; the shared target is `target_b`; `d` joins afterwards
+    /// without an overlay and reads the shared target.
+    fn seed_shared_target_b(conn: &mut Connection) {
+        let branches = ["a", "b", "d", "e"];
+        seed_divergent_graph(conn, &["a", "b", "e"]);
+        upsert_symbols_batch(conn, &[call_graph_symbol("target_c", "helper", "typescript")])
+            .unwrap();
+        let targets = [
+            String::from("target_a"),
+            String::from("target_b"),
+            String::from("target_c"),
+        ];
+        for branch in branches {
+            add_symbols_to_branch_batch(conn, branch, &targets).unwrap();
+        }
+        for (branch, target) in [("e", "target_c"), ("a", "target_a"), ("b", "target_b")] {
+            upsert_call_edges_batch_for_branch(
+                conn,
+                &[call_graph_edge("edge", "caller", "helper", Some(target))],
+                Some(branch),
+            )
+            .unwrap();
+        }
+        add_symbols_to_branch_batch(conn, "d", &[String::from("caller")]).unwrap();
+        assert_eq!(legacy_target(conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(
+            overlay_rows(conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert!(stale_rows(conn).is_empty());
+    }
+
+    #[test]
+    fn legacy_replace_keeps_divergent_overlays_and_marks_them_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_c"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("d", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "e").as_deref(), Some("target_c"));
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge")]
+        );
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_a")));
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "e").as_deref(), Some("target_c"));
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+    }
+
+    #[test]
+    fn legacy_same_target_write_marks_divergent_overlay_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("e", "edge")]);
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_b"));
+
+        for branch in ["a", "e"] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", Some("target_b"))],
+                Some(branch),
+            )
+            .unwrap();
+        }
+        assert!(stale_rows(&conn).is_empty());
+        for branch in ["a", "b", "d", "e"] {
+            assert_eq!(callee_target(&conn, "caller", branch).as_deref(), Some("target_b"));
+        }
+
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
+        assert!(stale_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn marker_2_store_replaces_legacy_write_trigger_and_reopens_as_no_op() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("marker2.db");
+        {
+            let mut conn = init_db(&db_path).unwrap();
+            seed_shared_target_b(&mut conn);
+            conn.execute_batch("DROP TRIGGER branch_call_edges_legacy_write;").unwrap();
+            conn.execute_batch(MARKER_2_LEGACY_WRITE_TRIGGER_SQL).unwrap();
+            set_metadata(&conn, "branch_call_edges_version", "2").unwrap();
+            assert!(legacy_write_trigger_sql(&conn).contains("INSERT OR IGNORE"));
+        }
+
+        let conn = init_db(&db_path).unwrap();
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some(BRANCH_CALL_EDGES_MARKER_VERSION)
+        );
+        assert_eq!(BRANCH_CALL_EDGES_MARKER_VERSION, "3");
+        assert_eq!(
+            get_metadata(&conn, "schema_version").unwrap().as_deref(),
+            Some(SCHEMA_VERSION.to_string().as_str())
+        );
+        let trigger_sql = legacy_write_trigger_sql(&conn);
+        assert!(!trigger_sql.contains("OR IGNORE"));
+        assert!(trigger_sql.contains("NOT EXISTS"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        let before = schema_snapshot(&conn);
+        drop(conn);
+
+        let mut conn = init_db(&db_path).unwrap();
+        assert_eq!(schema_snapshot(&conn), before);
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_b"));
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge")]
+        );
+        upsert_call_edges_batch_for_branch(
+            &mut conn,
+            &[call_graph_edge("edge", "caller", "helper", Some("target_c"))],
+            Some("a"),
+        )
+        .unwrap();
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_c"));
+        drop(conn);
+
+        let conn = open_db_read_only(&db_path).unwrap();
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_b"));
+    }
+
+    #[test]
+    fn marker_2_upgrade_rolls_back_when_trigger_creation_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("blocked-trigger.db");
+        {
+            let conn = init_db(&db_path).unwrap();
+            conn.execute_batch("DROP TRIGGER branch_call_edges_legacy_write;").unwrap();
+            conn.execute_batch(MARKER_2_LEGACY_WRITE_TRIGGER_SQL).unwrap();
+            set_metadata(&conn, "branch_call_edges_version", "2").unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER block_marker BEFORE INSERT ON metadata \
+                 WHEN NEW.key = 'branch_call_edges_version' \
+                 BEGIN SELECT RAISE(ABORT, 'blocked marker'); END;",
+            )
+            .unwrap();
+        }
+
+        assert!(init_db(&db_path).is_err());
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version").unwrap().as_deref(),
+            Some("2")
+        );
+        assert!(legacy_write_trigger_sql(&conn).contains("INSERT OR IGNORE"));
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn unscoped_upsert_with_existing_stale_and_overlay_rows_does_not_error() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+        let stale_before = stale_rows(&conn);
+        assert_eq!(
+            stale_before,
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge")]
+        );
+
+        for target in [Some("target_a"), None, Some("target_b")] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", target)],
+                None,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_b"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("d", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+    }
+
+    #[test]
+    fn branch_writer_never_fires_legacy_trigger_against_divergent_overlays() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        for (branch, target) in [
+            ("a", Some("target_a")),
+            ("d", Some("target_c")),
+            ("a", Some("target_b")),
+            ("e", None),
+            ("b", Some("target_b")),
+        ] {
+            upsert_call_edges_batch_for_branch(
+                &mut conn,
+                &[call_graph_edge("edge", "caller", "helper", target)],
+                Some(branch),
+            )
+            .unwrap();
+            assert!(stale_rows(&conn).is_empty(), "branch write on {branch} created stale rows");
+        }
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_b"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_c"));
+        assert_eq!(callee_target(&conn, "caller", "e"), None);
     }
 }

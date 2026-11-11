@@ -168,8 +168,10 @@ fn branch_call_edges_marker_is_current(conn: &Connection) -> DbResult<bool> {
 /// `INSERT OR REPLACE`. The `branch_call_edges_legacy_write` trigger runs
 /// before such an insert while the old row still exists. It pins every member
 /// branch that has no overlay row to the old target when the write changes it,
-/// then marks the edge stale for every member branch whose overlay differs from
-/// the written target, because the writing branch is unknown. Its inserts
+/// then marks the edge stale for every branch whose overlay differs from the
+/// written target, because the writing branch is unknown. The stale check reads
+/// the overlay by edge id alone, so it also fires when 0.34.0 deletes an edge
+/// whose caller no branch held and later inserts it again. Its inserts
 /// carry no conflict clause and skip existing rows with `NOT EXISTS`: SQLite
 /// applies the outer statement's `OR REPLACE` to trigger statements, which
 /// would otherwise overwrite existing overlays. Branch writers update existing
@@ -220,9 +222,8 @@ fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
                 WHERE id = NEW.id
                   AND (to_symbol_id IS NOT NEW.to_symbol_id OR is_resolved IS NOT NEW.is_resolved)
             ) OR EXISTS (
-                SELECT 1 FROM call_edges ce
-                JOIN branch_call_edges bce ON bce.edge_id = ce.id
-                WHERE ce.id = NEW.id
+                SELECT 1 FROM branch_call_edges bce
+                WHERE bce.edge_id = NEW.id
                   AND (bce.to_symbol_id IS NOT NEW.to_symbol_id OR bce.is_resolved IS NOT NEW.is_resolved)
             )
             BEGIN
@@ -237,15 +238,13 @@ fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
                       WHERE existing.branch = bs.branch AND existing.edge_id = ce.id
                   );
                 INSERT INTO branch_call_edges_stale (branch, edge_id)
-                SELECT bs.branch, ce.id
-                FROM call_edges ce
-                JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id
-                JOIN branch_call_edges bce ON bce.branch = bs.branch AND bce.edge_id = ce.id
-                WHERE ce.id = NEW.id
+                SELECT bce.branch, bce.edge_id
+                FROM branch_call_edges bce
+                WHERE bce.edge_id = NEW.id
                   AND (bce.to_symbol_id IS NOT NEW.to_symbol_id OR bce.is_resolved IS NOT NEW.is_resolved)
                   AND NOT EXISTS (
                       SELECT 1 FROM branch_call_edges_stale existing
-                      WHERE existing.branch = bs.branch AND existing.edge_id = ce.id
+                      WHERE existing.branch = bce.branch AND existing.edge_id = bce.edge_id
                   );
             END;
             "#,
@@ -3779,6 +3778,65 @@ mod tests {
 
         legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_b")));
         assert!(stale_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn legacy_reinsert_after_delete_marks_divergent_overlays_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        // 0.34.0 deletes edges whose caller no branch holds
+        // (delete_call_edges_by_file, gc_orphan_call_edges); overlays survive.
+        conn.execute("DELETE FROM call_edges WHERE id = 'edge'", []).unwrap();
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", Some("target_c")));
+
+        assert_eq!(legacy_target(&conn, "edge").as_deref(), Some("target_c"));
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(stale_rows(&conn), vec![pair("a", "edge"), pair("b", "edge")]);
+        assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_a"));
+        assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_c"));
+    }
+
+    #[test]
+    fn legacy_resolution_only_and_null_target_writes_mark_divergent_overlays_stale() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_shared_target_b(&mut conn);
+
+        let mut unresolved = call_graph_edge("edge", "caller", "helper", Some("target_b"));
+        unresolved.is_resolved = false;
+        legacy_0_34_write(&conn, &unresolved);
+
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![
+                overlay("a", "target_a"),
+                overlay("b", "target_b"),
+                overlay("d", "target_b"),
+                overlay("e", "target_c"),
+            ]
+        );
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+
+        conn.execute("DELETE FROM branch_call_edges_stale", []).unwrap();
+        legacy_0_34_write(&conn, &call_graph_edge("edge", "caller", "helper", None));
+
+        assert_eq!(legacy_target(&conn, "edge"), None);
+        assert_eq!(overlay_rows(&conn).len(), 4);
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("a", "edge"), pair("b", "edge"), pair("d", "edge"), pair("e", "edge")]
+        );
+        assert_eq!(callee_target(&conn, "caller", "b").as_deref(), Some("target_b"));
     }
 
     #[test]

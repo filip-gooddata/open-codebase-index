@@ -1,0 +1,19 @@
+native/src/db.rs
+  s_0390eac120f385::t_2aec8c39dca807 171-174,225-226,241-243,247,3783-3841
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "35a09d4cd9820fdf74596cf7b416588c70262e87",
+  "prompts": {},
+  "sessions": {
+    "s_0390eac120f385": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d065d73c-857c-4c3f-a77e-9a2e65b866c9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

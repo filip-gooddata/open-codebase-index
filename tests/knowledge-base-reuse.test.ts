@@ -9,6 +9,7 @@ import type { ParsedCodebaseIndexConfig } from "../src/config/schema.js";
 import type { Database } from "../src/native/index.js";
 import { parseConfig } from "../src/config/schema.js";
 import { Indexer } from "../src/indexer/index.js";
+import { InvertedIndex } from "../src/native/index.js";
 import {
   buildKnowledgeBaseReuseCache,
   computeKnowledgeBaseRoots,
@@ -466,6 +467,50 @@ describe("knowledge-base reuse across branches", () => {
     expect(knowledgeBaseParses()).toContain(failedPath);
     const cachePath = path.join(repo, ".opencode", "index", "knowledge-base-files.json");
     expect(JSON.parse(fs.readFileSync(cachePath, "utf-8"))).toEqual({ version: 1, entries: {} });
+  });
+
+  describe("on a store whose keyword index predates tokenizer versioning", () => {
+    const indexPath = (): string => path.join(repo, ".opencode", "index");
+
+    async function downgradeKeywordIndexAndCheckoutUnseedableBranch(options: { keepReuseCache: boolean }): Promise<void> {
+      await indexCurrentBranch();
+      await indexer?.close();
+      indexer = null;
+      const keywordPath = path.join(indexPath(), "inverted-index.json");
+      const snapshot = JSON.parse(fs.readFileSync(keywordPath, "utf-8")) as Record<string, unknown>;
+      delete snapshot.tokenizer_version;
+      delete snapshot.legacy_chunks;
+      fs.writeFileSync(keywordPath, JSON.stringify(snapshot));
+      for (const entry of fs.readdirSync(indexPath())) {
+        if (entry.startsWith("file-dependencies.")) fs.rmSync(path.join(indexPath(), entry));
+      }
+      if (!options.keepReuseCache) fs.rmSync(path.join(indexPath(), "knowledge-base-files.json"), { force: true });
+      git(repo, ["checkout", "-b", "feature"]);
+    }
+
+    async function expectFeatureCatalogOnCurrentTokenizer(): Promise<void> {
+      const featureDb = await indexCurrentBranch();
+      const featureChunkIds = featureDb.getBranchChunkIds("feature");
+      expect(featureChunkIds.length).toBeGreaterThan(0);
+      expect(await (indexer as Indexer).getIndexFreshness()).toEqual({ readable: true, current: true, reason: "current" });
+      await indexer?.close();
+      indexer = null;
+      const keywordIndex = new InvertedIndex(path.join(indexPath(), "inverted-index.json"));
+      keywordIndex.load();
+      expect(keywordIndex.outdatedTokenizerChunkIds(featureChunkIds)).toEqual([]);
+    }
+
+    it("retokenizes the reused knowledge-base chunks a new unseeded branch adopts", async () => {
+      await downgradeKeywordIndexAndCheckoutUnseedableBranch({ keepReuseCache: false });
+      await expectFeatureCatalogOnCurrentTokenizer();
+      expect(knowledgeBaseParses().length).toBeGreaterThan(0);
+    });
+
+    it("does not reuse knowledge-base files whose chunks still carry legacy keyword tokens", async () => {
+      await downgradeKeywordIndexAndCheckoutUnseedableBranch({ keepReuseCache: true });
+      await expectFeatureCatalogOnCurrentTokenizer();
+      expect(knowledgeBaseParses().length).toBeGreaterThan(0);
+    });
   });
 });
 

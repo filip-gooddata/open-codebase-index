@@ -5433,13 +5433,18 @@ export class Indexer {
 
     this.loadFileHashCache();
     const rebuildStructuralKeyword = isStructural && this.structuralKeywordRebuildRequired;
-    let keywordTokenizerUpgradeChunks: Set<string> | undefined;
+    // A run can adopt existing chunks that are not yet in this catalog (a new
+    // branch, knowledge-base files shared with other branches), so every legacy
+    // chunk it meets is retokenized, not only the catalog's own.
+    let legacyKeywordChunkIds: ReadonlySet<string> | undefined;
+    let upgradeKeywordTokenizer = false;
     if (!invertedIndex.hasCurrentTokenizer()) {
-      const activeChunkIds = this.getBranchCatalogKeys().flatMap((key) => database.getBranchChunkIds(key));
-      const outdated = invertedIndex.outdatedTokenizerChunkIds(activeChunkIds);
-      if (outdated.length > 0) keywordTokenizerUpgradeChunks = new Set(outdated);
+      const legacyChunkIds = new Set(invertedIndex.outdatedTokenizerChunkIds());
+      legacyKeywordChunkIds = legacyChunkIds;
+      upgradeKeywordTokenizer = this.getBranchCatalogKeys().some((key) =>
+        database.getBranchChunkIds(key).some((chunkId) => legacyChunkIds.has(chunkId))
+      );
     }
-    const upgradeKeywordTokenizer = keywordTokenizerUpgradeChunks !== undefined;
     let keywordTokenizerUpdated = false;
 
     const javaScriptParserMetadataKey = this.getJavaScriptParserVersionMetadataKey();
@@ -5722,7 +5727,8 @@ export class Indexer {
           roots: knowledgeBaseRoots,
           hasStoredChunks: (chunkIds) => {
             const vectorChunkIds = requireLoadedCapability(store, "vector store").getMetadataBatch(chunkIds).keys();
-            return new Set([...vectorChunkIds].filter((chunkId) => invertedIndex.hasChunk(chunkId)));
+            return new Set([...vectorChunkIds].filter((chunkId) =>
+              invertedIndex.hasChunk(chunkId) && !legacyKeywordChunkIds?.has(chunkId)));
           },
         })
       : new Map<string, KnowledgeBaseReuseEntry>();
@@ -6316,7 +6322,7 @@ export class Indexer {
             });
 
             if (existingContentHash === contentHash && !rebuildStructuralKeyword) {
-              if (keywordTokenizerUpgradeChunks?.has(id)) {
+              if (legacyKeywordChunkIds?.has(id)) {
                 invertedIndex.removeChunk(id);
                 invertedIndex.addChunk(id, chunk.content);
                 keywordTokenizerUpdated = true;

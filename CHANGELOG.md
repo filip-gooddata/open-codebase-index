@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Keyword tokenizer upgrade on new branches**: When a store's keyword index still holds pre-versioning tokens, the first index of a new branch now retokenizes every legacy chunk it adopts, including knowledge-base chunks shared with other branches, and knowledge-base reuse skips files whose chunks still carry legacy tokens. Previously the run left those chunks on the old tokenizer, freshness reported `keyword-index-outdated`, and the next run reparsed the whole branch.
+
 ## [0.38.2-gd.1] - 2026-11-12
 
 Fork release of filip-gooddata/open-codebase-index on top of upstream 0.38.2 plus upstream `main` at e3f4899. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.

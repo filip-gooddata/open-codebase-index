@@ -1,0 +1,29 @@
+src/indexer/index.ts
+  s_4cec457fcd9b63::t_56fec17cb35c66 5638-5652,5657
+tests/knowledge-base-reuse.test.ts
+  s_8547fcb7c8d965::t_602901cddb504a 251-285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ac6785bec6a72a1d12d9f8f2570253f881a52679",
+  "prompts": {},
+  "sessions": {
+    "s_4cec457fcd9b63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a3df4d83-a0de-42ae-89d1-560d2d985f3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_8547fcb7c8d965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca0f3a08-18cd-4cd7-87ea-45ba21da6fc4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

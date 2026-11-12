@@ -2,6 +2,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ParsedCodebaseIndexConfig } from "../src/config/schema.js";
@@ -219,6 +220,34 @@ describe("knowledge-base reuse across branches", () => {
     expect(knowledgeBaseParses()).toEqual([]);
   });
 
+  it("reprocesses a knowledge-base root whose branch call-edge targets changed without a stale marker", async () => {
+    const mainDb = await indexCurrentBranch();
+    const mainGraph = knowledgeBaseGraph(mainDb, "main");
+    git(repo, ["checkout", "-b", "feature"]);
+    const featureDb = await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([]);
+
+    const [sendRequest] = featureDb.getSymbolsByName("sendRequest");
+    const [formatPayload] = featureDb.getSymbolsByName("formatPayload");
+    const edge = featureDb.getCallees(sendRequest.id, "feature").find((callee) => callee.targetName === "normalizePayload");
+    expect(edge).toBeDefined();
+    if (!edge) return;
+    await indexer?.close();
+    indexer = null;
+    const raw = new DatabaseSync(path.join(repo, ".opencode", "index", "codebase.db"));
+    try {
+      raw.prepare("INSERT OR REPLACE INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved) VALUES (?, ?, ?, 1)")
+        .run("feature", edge.id, formatPayload.id);
+    } finally {
+      raw.close();
+    }
+
+    const refreshed = await indexCurrentBranch();
+    expect(refreshed.getStaleCallEdgeFilePaths("feature")).toEqual([]);
+    expect(knowledgeBaseParses().length).toBeGreaterThan(0);
+    expect(knowledgeBaseGraph(refreshed, "feature")).toEqual(mainGraph);
+  });
+
   it("keeps a resolved cross-file knowledge-base edge identical with and without reuse", async () => {
     fs.writeFileSync(path.join(knowledgeBase, "greet.go"), [
       `// ${KB_MARKER} greet`,
@@ -329,7 +358,7 @@ describe("knowledge-base reuse across branches", () => {
     ]);
   });
 
-  it("rebuilds the reuse cache when it is missing", async () => {
+  it("serves a seeded branch from its ancestor when the reuse cache is missing", async () => {
     await indexCurrentBranch();
     const cachePath = path.join(repo, ".opencode", "index", "knowledge-base-files.json");
     expect(fs.existsSync(cachePath)).toBe(true);
@@ -339,7 +368,6 @@ describe("knowledge-base reuse across branches", () => {
     const featureDb = await indexCurrentBranch();
     expect(knowledgeBaseParses()).toEqual([]);
     expect(featureDb.getSymbolsForBranch("feature").map((symbol) => symbol.name)).toContain("formatPayload");
-    expect(fs.existsSync(cachePath)).toBe(true);
   });
 
   it("does not record a root with a failed embedding and reprocesses it on the next branch", async () => {

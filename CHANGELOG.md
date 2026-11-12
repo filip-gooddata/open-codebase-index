@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.2] - 2026-11-12
+
+Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.1. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.
+
 ### Fixed
 
 - **Keyword tokenizer upgrade on new branches**: When a store's keyword index still holds pre-versioning tokens, the first index of a new branch now retokenizes every legacy chunk it adopts, including knowledge-base chunks shared with other branches, and knowledge-base reuse skips files whose chunks still carry legacy tokens. Previously the run left those chunks on the old tokenizer, freshness reported `keyword-index-outdated`, and the next run reparsed the whole branch.
+- **Plugin manifest versions**: The Claude plugin, Claude marketplace, and Codex plugin manifests now carry the package version. 0.38.2-gd.1 left them at 0.38.2.
 
 ## [0.38.2-gd.1] - 2026-11-12
 

@@ -135,6 +135,18 @@ import {
   moduleDependencyKeysForPath,
   TsConfigPathAliasCache,
 } from "./local-module-resolution.js";
+import {
+  buildKnowledgeBaseReuseCache,
+  computeKnowledgeBaseRoots,
+  KNOWLEDGE_BASE_REUSE_CACHE_FILE,
+  loadKnowledgeBaseReuseCache,
+  selectReusableKnowledgeBaseFiles,
+  serializeKnowledgeBaseReuseCache,
+  type KnowledgeBaseReuseCache,
+  type KnowledgeBaseReuseCandidate,
+  type KnowledgeBaseReuseEntry,
+} from "./knowledge-base-reuse.js";
+import { getPackageVersion } from "../package-metadata.js";
 import { generatePreparedChunkId, PDF_EXTRACTION_VERSION, prepareDocument, prepareDocuments } from "../documents/prepare.js";
 import { PdfExtractionError } from "../documents/pdf.js";
 import {
@@ -626,6 +638,7 @@ export interface IndexFreshnessResult {
 
 interface LocalModuleResolutionState {
   configHash: string;
+  presentConfigHash: string;
   pathAliasCache: TsConfigPathAliasCache;
   workspacePackages: ReturnType<typeof getLocalWorkspacePackages>;
 }
@@ -1824,6 +1837,90 @@ export class Indexer {
     this.fileDependencyEntries = new Map(Object.entries(entries));
     this.fileDependencyModuleFormats = new Map(Object.entries(moduleFormats));
     this.fileEdgeFingerprints = new Map(Object.entries(edgeFingerprints));
+  }
+
+  private prepareKnowledgeBaseReuse(options: {
+    isStructural: boolean;
+    scopedRoots: string[] | null;
+    scipActive: boolean;
+    upgradeKeywordTokenizer: boolean;
+    localModuleResolutionConfigHash: string;
+  }): {
+    cache: KnowledgeBaseReuseCache;
+    isCandidate: (storedPath: string, hash: string) => boolean;
+    fingerprintFor: (storedPath: string) => string;
+    rootFor: (storedPath: string) => string | undefined;
+  } | null {
+    if (
+      this.config.knowledgeBases.length === 0
+      || this.getPreparedBranchNamespace() !== null
+      || options.isStructural
+      || options.scopedRoots !== null
+      || options.scipActive
+      || options.upgradeKeywordTokenizer
+    ) {
+      return null;
+    }
+    const canonicalProjectRoot = this.getCanonicalPath(this.projectRoot);
+    const knowledgeBaseRoots = this.config.knowledgeBases
+      .map((knowledgeBase) => this.getCanonicalPath(path.resolve(this.projectRoot, knowledgeBase)))
+      .filter((root) => !isPathWithinRoot(root, canonicalProjectRoot))
+      .sort((left, right) => right.length - left.length);
+    if (knowledgeBaseRoots.length === 0) return null;
+
+    const cache = loadKnowledgeBaseReuseCache(
+      path.join(this.indexPath, KNOWLEDGE_BASE_REUSE_CACHE_FILE),
+      (error) => this.logger.warn("Failed to load knowledge-base reuse cache, reprocessing knowledge bases", {
+        error: getErrorMessage(error),
+      }),
+    );
+    const baseFingerprint = hashContent(JSON.stringify({
+      packageVersion: getPackageVersion(),
+      parsers: [
+        JAVASCRIPT_PARSER_VERSION,
+        SWIFT_PARSER_VERSION,
+        METAL_PARSER_VERSION,
+        MARKUP_PARSER_VERSION,
+        KOTLIN_PARSER_VERSION,
+        RUBY_PARSER_VERSION,
+        SYMBOL_EXTRACTOR_VERSION,
+        CALL_GRAPH_RESOLUTION_VERSION,
+        PDF_EXTRACTION_VERSION,
+      ],
+      indexing: this.config.indexing,
+      embeddingProvider: this.config.embeddingProvider,
+      effectiveProvider: this.configuredProviderInfo?.provider ?? null,
+      embeddingModel: this.configuredProviderInfo
+        ? [this.configuredProviderInfo.modelInfo.model, this.configuredProviderInfo.modelInfo.dimensions]
+        : null,
+      embeddingStrategyVersion: EMBEDDING_STRATEGY_VERSION,
+      embedding: this.config.embedding,
+    }));
+    const javaScriptFingerprint = hashContent(`${baseFingerprint}:${options.localModuleResolutionConfigHash}`);
+    const rootFor = (storedPath: string): string | undefined =>
+      path.isAbsolute(storedPath)
+        ? knowledgeBaseRoots.find((root) => isPathWithinRoot(storedPath, root))
+        : undefined;
+    return {
+      cache,
+      isCandidate: (storedPath, hash) =>
+        cache.get(storedPath)?.hash === hash
+        && !this.isFileInProjectRoot(storedPath)
+        && rootFor(storedPath) !== undefined,
+      fingerprintFor: (storedPath) =>
+        isJavaScriptFamilyFilePath(storedPath) ? javaScriptFingerprint : baseFingerprint,
+      rootFor,
+    };
+  }
+
+  private publishKnowledgeBaseReuseCache(cache: KnowledgeBaseReuseCache): void {
+    try {
+      const cachePath = path.join(this.indexPath, KNOWLEDGE_BASE_REUSE_CACHE_FILE);
+      const serialized = serializeKnowledgeBaseReuseCache(cache);
+      this.atomicPublishSync(cachePath, (tempPath) => writeFileSync(tempPath, serialized));
+    } catch (error: unknown) {
+      this.logger.warn("Failed to save knowledge-base reuse cache", { error: getErrorMessage(error) });
+    }
   }
 
   private atomicPublishSync(targetPath: string, writeTemporary: (tempPath: string) => void): void {
@@ -5178,15 +5275,20 @@ export class Indexer {
     });
     const workspaceManifestPaths = getLocalWorkspacePackageManifestPaths(importerPaths, loadFileText);
     const workspacePackages = getLocalWorkspacePackages(importerPaths, loadFileText);
-    const configHash = hashContent(JSON.stringify({
-      tsconfig: pathAliasCache.getConfigState(importerPaths),
-      packageManifests: workspaceManifestPaths.map((manifestPath) => [
-        manifestPath,
-        loadFileText(manifestPath) ?? null,
-      ]),
+    const tsconfig = pathAliasCache.getConfigState(importerPaths);
+    const packageManifests = workspaceManifestPaths.map((manifestPath) => [
+      manifestPath,
+      loadFileText(manifestPath) ?? null,
+    ] as const);
+    const configHash = hashContent(JSON.stringify({ tsconfig, packageManifests }));
+    // Missing config lookups depend on which project directories hold sources, so a new
+    // directory would change configHash without changing how any import resolves.
+    const presentConfigHash = hashContent(JSON.stringify({
+      tsconfig: tsconfig.filter(([, content]) => content !== null),
+      packageManifests: packageManifests.filter(([, content]) => content !== null),
     }));
 
-    return { configHash, pathAliasCache, workspacePackages };
+    return { configHash, presentConfigHash, pathAliasCache, workspacePackages };
   }
 
   async indexBranchIfMissing(
@@ -5452,43 +5554,9 @@ export class Indexer {
       ),
     );
 
-    for (const [fileIndex, file] of files.entries()) {
-      throwIfOperationAborted(signal);
-      if (fileIndex > 0 && fileIndex % 128 === 0) {
-        await heartbeat?.();
-        throwIfOperationAborted(signal);
-      }
-      const storedPath = this.toStoredFilePath(file.path);
-      let currentHash: string;
-      try {
-        const sourceHash = hashFile(file.path);
-        currentHash = path.extname(storedPath).toLowerCase() === ".pdf"
-          ? hashContent(`${sourceHash}:${PDF_EXTRACTION_VERSION}`)
-          : sourceHash;
-      } catch (error) {
-        throwIfOperationAborted(signal);
-        // A file that is unreadable at the OS level (e.g., an LSM denial that
-        // returns EPERM despite readable mode bits, or a permissions error)
-        // must not abort the whole index. The hash step opens the file; a bare
-        // throw here previously tore down the entire run. Skip the file and
-        // continue so the remaining files index.
-        stats.skippedFiles.push({ path: this.toCanonicalFilePath(file.path), reason: "unreadable" });
-        this.logger.warn("Skipped unreadable file during indexing", {
-          path: file.path,
-          error: getErrorMessage(error),
-        });
-        continue;
-      }
-      currentFileHashes.set(storedPath, currentHash);
-      const descriptor: ChangedFileDescriptor = {
-        storedPath,
-        materializedPath: file.path,
-        hash: currentHash,
-        sourceBytes: file.size,
-      };
-      allFileDescriptors.set(storedPath, descriptor);
-
-      const cachedHashMatches = this.fileHashCache.get(storedPath) === currentHash;
+    const classifyFileChange = (descriptor: ChangedFileDescriptor): void => {
+      const storedPath = descriptor.storedPath;
+      const cachedHashMatches = this.fileHashCache.get(storedPath) === descriptor.hash;
       if (!cachedHashMatches && isJavaScriptFamilyFilePath(storedPath)) {
         javaScriptGraphSourcesChanged = true;
       }
@@ -5545,6 +5613,95 @@ export class Indexer {
         changedFileDescriptors.push(descriptor);
         changedFilePathSet.add(storedPath);
       }
+    };
+    const knowledgeBaseReuse = this.prepareKnowledgeBaseReuse({
+      isStructural,
+      scopedRoots,
+      scipActive: scipConfig.enabled || storedScipState !== null,
+      upgradeKeywordTokenizer,
+      localModuleResolutionConfigHash: localModuleResolutionState.presentConfigHash,
+    });
+    const knowledgeBaseReuseCandidates: KnowledgeBaseReuseCandidate[] = [];
+    const knowledgeBaseProcessedPaths = new Set<string>();
+
+    for (const [fileIndex, file] of files.entries()) {
+      throwIfOperationAborted(signal);
+      if (fileIndex > 0 && fileIndex % 128 === 0) {
+        await heartbeat?.();
+        throwIfOperationAborted(signal);
+      }
+      const storedPath = this.toStoredFilePath(file.path);
+      let currentHash: string;
+      try {
+        const sourceHash = hashFile(file.path);
+        currentHash = path.extname(storedPath).toLowerCase() === ".pdf"
+          ? hashContent(`${sourceHash}:${PDF_EXTRACTION_VERSION}`)
+          : sourceHash;
+      } catch (error) {
+        throwIfOperationAborted(signal);
+        // A file that is unreadable at the OS level (e.g., an LSM denial that
+        // returns EPERM despite readable mode bits, or a permissions error)
+        // must not abort the whole index. The hash step opens the file; a bare
+        // throw here previously tore down the entire run. Skip the file and
+        // continue so the remaining files index.
+        stats.skippedFiles.push({ path: this.toCanonicalFilePath(file.path), reason: "unreadable" });
+        this.logger.warn("Skipped unreadable file during indexing", {
+          path: file.path,
+          error: getErrorMessage(error),
+        });
+        continue;
+      }
+      currentFileHashes.set(storedPath, currentHash);
+      const descriptor: ChangedFileDescriptor = {
+        storedPath,
+        materializedPath: file.path,
+        hash: currentHash,
+        sourceBytes: file.size,
+      };
+      allFileDescriptors.set(storedPath, descriptor);
+
+      if (knowledgeBaseReuse?.isCandidate(storedPath, currentHash)) {
+        knowledgeBaseReuseCandidates.push({
+          storedPath,
+          hash: currentHash,
+          fingerprint: knowledgeBaseReuse.fingerprintFor(storedPath),
+        });
+        continue;
+      }
+      classifyFileChange(descriptor);
+    }
+
+    const knowledgeBaseRoots = knowledgeBaseReuse
+      ? computeKnowledgeBaseRoots(currentFileHashes, knowledgeBaseReuse.rootFor, hashContent)
+      : null;
+    const reusedKnowledgeBaseFiles = knowledgeBaseReuse && knowledgeBaseRoots && knowledgeBaseReuseCandidates.length > 0
+      ? selectReusableKnowledgeBaseFiles({
+          candidates: knowledgeBaseReuseCandidates,
+          cache: knowledgeBaseReuse.cache,
+          database,
+          roots: knowledgeBaseRoots,
+          hasStoredChunks: (chunkIds) => {
+            const vectorChunkIds = requireLoadedCapability(store, "vector store").getMetadataBatch(chunkIds).keys();
+            return new Set([...vectorChunkIds].filter((chunkId) => invertedIndex.hasChunk(chunkId)));
+          },
+        })
+      : new Map<string, KnowledgeBaseReuseEntry>();
+    for (const candidate of knowledgeBaseReuseCandidates) {
+      if (reusedKnowledgeBaseFiles.has(candidate.storedPath)) {
+        unchangedFilePaths.add(candidate.storedPath);
+        continue;
+      }
+      const descriptor = allFileDescriptors.get(candidate.storedPath);
+      if (descriptor) classifyFileChange(descriptor);
+    }
+    const reusedKnowledgeBaseSymbolIds = new Set(
+      [...reusedKnowledgeBaseFiles.values()].flatMap((entry) => entry.symbolIds),
+    );
+    if (knowledgeBaseReuseCandidates.length > 0) {
+      this.logger.cache("info", "Knowledge-base reuse results", {
+        reused: reusedKnowledgeBaseFiles.size,
+        candidates: knowledgeBaseReuseCandidates.length,
+      });
     }
 
     const moduleFormats = new Map<string, Promise<"module" | "commonjs" | "unknown">>();
@@ -5664,7 +5821,7 @@ export class Indexer {
           !((javaScriptGraphSourcesChanged || moduleFormatChanged) && isJavaScriptFamilyFilePath(storedPath))
           && !(pythonGraphSourcesChanged && isPythonFilePath(storedPath))
         ) continue;
-        if (changedFilePathSet.has(storedPath)) continue;
+        if (changedFilePathSet.has(storedPath) || reusedKnowledgeBaseFiles.has(storedPath)) continue;
         const dependencyKeys = previousDependencyEntries?.get(storedPath.split(path.sep).join("/"));
         if (dependencyKeys && !dependencyKeys.some((key) => affectedDependencyKeys.has(key))) continue;
         unchangedFilePaths.delete(storedPath);
@@ -5689,7 +5846,7 @@ export class Indexer {
         if (recordedEdgeFingerprints.get(filePath) === currentEdgeFingerprints.get(filePath)) continue;
         const storedPath = this.toStoredFilePath(filePath);
         const descriptor = allFileDescriptors.get(storedPath);
-        if (!descriptor || changedFilePathSet.has(storedPath)) continue;
+        if (!descriptor || changedFilePathSet.has(storedPath) || reusedKnowledgeBaseFiles.has(storedPath)) continue;
         this.logger.debug("Re-resolving call edges rewritten by another branch", { filePath: storedPath });
         unchangedFilePaths.delete(storedPath);
         changedFileDescriptors.push(descriptor);
@@ -5710,6 +5867,7 @@ export class Indexer {
           !isGoFilePath(normalizedStoredPath)
           || !changedGoPackageDirectories.has(path.posix.dirname(normalizedStoredPath))
           || changedFilePathSet.has(storedPath)
+          || reusedKnowledgeBaseFiles.has(storedPath)
         ) {
           continue;
         }
@@ -5793,6 +5951,19 @@ export class Indexer {
 
     for (const filePath of unchangedFilePaths) {
       const fileChunks = existingChunksByFile.get(filePath);
+      const reusedEntry = reusedKnowledgeBaseFiles.get(filePath);
+      if (reusedEntry) {
+        // Other branches may hold other versions of this knowledge-base file; only the
+        // recorded chunks belong to this content, and only previous-branch chunks can be removed.
+        const reusedChunkIds = new Set(reusedEntry.chunkIds);
+        for (const chunkId of reusedChunkIds) currentChunkIds.add(chunkId);
+        for (const chunkId of fileChunks ?? []) {
+          if (!reusedChunkIds.has(chunkId) && !previousBranchChunkIdSet.has(chunkId)) {
+            existingChunks.delete(chunkId);
+          }
+        }
+        continue;
+      }
       if (fileChunks) {
         for (const chunkId of fileChunks) {
           currentChunkIds.add(chunkId);
@@ -5864,7 +6035,9 @@ export class Indexer {
         throwIfOperationAborted(signal);
         if (unchangedFilePaths.has(descriptor.storedPath)) {
           const symbols = database.getSymbolsByFile(descriptor.storedPath).filter((symbol) =>
-            !restrictExistingChunksToBranch || previousBranchSymbolIdSet.has(symbol.id)
+            reusedKnowledgeBaseFiles.has(descriptor.storedPath)
+              ? reusedKnowledgeBaseSymbolIds.has(symbol.id)
+              : !restrictExistingChunksToBranch || previousBranchSymbolIdSet.has(symbol.id)
           );
           return { content, symbols };
         }
@@ -5954,6 +6127,11 @@ export class Indexer {
       }
 
       for (const filePath of unchangedFilePaths) {
+        const reusedEntry = reusedKnowledgeBaseFiles.get(filePath);
+        if (reusedEntry) {
+          for (const symbolId of reusedEntry.symbolIds) allSymbolIds.add(symbolId);
+          continue;
+        }
         for (const symbol of database.getSymbolsByFile(filePath)) {
           if (!restrictExistingChunksToBranch || previousBranchSymbolIdSet.has(symbol.id)) {
             allSymbolIds.add(symbol.id);
@@ -6043,6 +6221,11 @@ export class Indexer {
             stats.parseFailures.push(path.isAbsolute(parsed.path)
               ? path.relative(this.projectRoot, parsed.path)
               : parsed.path);
+            if (parsed.parseFailed !== true && entry.prepared.kind === "source" && sourceContent.trim() === "") {
+              knowledgeBaseProcessedPaths.add(descriptor.storedPath);
+            }
+          } else {
+            knowledgeBaseProcessedPaths.add(descriptor.storedPath);
           }
 
           let chunksToProcess = parsed.chunks;
@@ -6493,6 +6676,49 @@ export class Indexer {
         removed: removedCount,
       });
 
+      const recordKnowledgeBaseReuse = (committedChunkIds: ReadonlySet<string>): void => {
+        if (!knowledgeBaseReuse || !knowledgeBaseRoots) return;
+        const indexed = changedFileDescriptors
+          .filter((descriptor) =>
+            knowledgeBaseRoots.rootByPath.has(descriptor.storedPath)
+            && currentFileHashes.get(descriptor.storedPath) === descriptor.hash
+            && knowledgeBaseProcessedPaths.has(descriptor.storedPath)
+          )
+          .map((descriptor) => ({
+            storedPath: descriptor.storedPath,
+            hash: descriptor.hash,
+            fingerprint: knowledgeBaseReuse.fingerprintFor(descriptor.storedPath),
+          }));
+        const workspacePackageNames = localModuleResolutionState.workspacePackages.map((entry) => entry.name);
+        const isRecordable = (storedPath: string): boolean => {
+          if (workspacePackageNames.length === 0 || !isJavaScriptFamilyFilePath(storedPath)) return true;
+          const descriptor = allFileDescriptors.get(storedPath);
+          if (!descriptor) return false;
+          try {
+            const content = readFileSync(descriptor.materializedPath, "utf-8");
+            return !workspacePackageNames.some((name) => content.includes(name));
+          } catch (error: unknown) {
+            this.logger.debug("Knowledge-base file not recorded for reuse", {
+              path: storedPath,
+              error: getErrorMessage(error),
+            });
+            return false;
+          }
+        };
+        this.publishKnowledgeBaseReuseCache(buildKnowledgeBaseReuseCache({
+          previous: knowledgeBaseReuse.cache,
+          reused: reusedKnowledgeBaseFiles,
+          indexed,
+          database,
+          branchKey: branchCatalogKey,
+          roots: knowledgeBaseRoots,
+          currentChunkIds,
+          committedChunkIds,
+          committedSymbolIds: allSymbolIds,
+          isRecordable,
+        }));
+      };
+
       if (stats.totalChunks === 0 && removedCount === 0) {
         const removedStoredChunks = this.replaceBranchCatalog(
           store,
@@ -6537,6 +6763,7 @@ export class Indexer {
           this.fileHashCache = currentFileHashes;
           this.saveFileHashCache(buildFileDependencyEntries());
         }
+        recordKnowledgeBaseReuse(currentChunkIds);
         stats.durationMs = Date.now() - startTime;
         onProgress?.({
           phase: "complete",
@@ -6584,6 +6811,7 @@ export class Indexer {
           this.fileHashCache = currentFileHashes;
           this.saveFileHashCache(buildFileDependencyEntries());
         }
+        recordKnowledgeBaseReuse(currentChunkIds);
         stats.durationMs = Date.now() - startTime;
         onProgress?.({
           phase: "complete",
@@ -6633,6 +6861,7 @@ export class Indexer {
         this.fileHashCache = currentFileHashes;
         this.saveFileHashCache(buildFileDependencyEntries());
       }
+      recordKnowledgeBaseReuse(new Set(branchChunkIds));
 
       if (this.config.indexing.autoGc && stats.removedChunks > 0) {
         const gcReset = await this.maybeRunOrphanGc();

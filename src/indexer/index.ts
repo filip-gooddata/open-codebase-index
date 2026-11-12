@@ -5635,12 +5635,26 @@ export class Indexer {
       upgradeKeywordTokenizer,
       localModuleResolutionConfigHash: localModuleResolutionState.presentConfigHash,
     });
+    // Unchanged JS/Python files keep their edges unless a module they resolved
+    // through changed, appeared, or disappeared. Files without a trusted record
+    // fall back to reprocessing their whole language family.
+    const dependencyGraphEligible = scopedRoots === null && this.scipTypeScriptState.outcome === "disabled";
+    const previousDependencyEntries = dependencyGraphEligible ? this.fileDependencyEntries : null;
+    // Call-edge rows carry no branch, so identical files on two branches share
+    // them and the last branch indexed decides their targets. Files whose rows
+    // no longer match what this branch recorded are re-resolved. An existing
+    // index without a trusted record re-resolves every file that owns edges
+    // once, so another branch's targets are never adopted as the baseline.
+    const recordedEdgeFingerprints = previousDependencyEntries
+      ? this.fileEdgeFingerprints
+      : dependencyGraphEligible && this.fileHashCache.size > 0
+        ? new Map<string, string>()
+        : null;
     // Reuse certifies a knowledge-base file's content, not this branch's call
     // edges. A file with evidence that its edges went stale is classified
     // normally, which also keeps its whole root from being reused.
     const callEdgeRepairFilePaths = new Set(staleCallEdgeFilePaths.keys());
-    if (knowledgeBaseReuse && this.fileDependencyEntries && this.fileEdgeFingerprints) {
-      const recordedEdgeFingerprints = this.fileEdgeFingerprints;
+    if (knowledgeBaseReuse && recordedEdgeFingerprints) {
       const currentEdgeFingerprints = database.getCallEdgeFingerprintsForBranch(branchCatalogKey);
       for (const filePath of new Set([...recordedEdgeFingerprints.keys(), ...currentEdgeFingerprints.keys()])) {
         if (recordedEdgeFingerprints.get(filePath) === currentEdgeFingerprints.get(filePath)) continue;
@@ -5813,11 +5827,6 @@ export class Indexer {
       void lookup.then((format) => { settledModuleFormats.set(filePath, format); }, () => undefined);
       return lookup;
     };
-    // Unchanged JS/Python files keep their edges unless a module they resolved
-    // through changed, appeared, or disappeared. Files without a trusted record
-    // fall back to reprocessing their whole language family.
-    const dependencyGraphEligible = scopedRoots === null && this.scipTypeScriptState.outcome === "disabled";
-    const previousDependencyEntries = dependencyGraphEligible ? this.fileDependencyEntries : null;
     const affectedDependencyKeys = new Set<string>();
     let moduleFormatChanged = false;
     if (previousDependencyEntries) {
@@ -5856,16 +5865,6 @@ export class Indexer {
       }
     }
 
-    // Call-edge rows carry no branch, so identical files on two branches share
-    // them and the last branch indexed decides their targets. Files whose rows
-    // no longer match what this branch recorded are re-resolved. An existing
-    // index without a trusted record re-resolves every file that owns edges
-    // once, so another branch's targets are never adopted as the baseline.
-    const recordedEdgeFingerprints = previousDependencyEntries
-      ? this.fileEdgeFingerprints
-      : dependencyGraphEligible && this.fileHashCache.size > 0
-        ? new Map<string, string>()
-        : null;
     if (recordedEdgeFingerprints) {
       const currentEdgeFingerprints = database.getCallEdgeFingerprintsForBranch(branchCatalogKey);
       for (const filePath of new Set([...recordedEdgeFingerprints.keys(), ...currentEdgeFingerprints.keys()])) {

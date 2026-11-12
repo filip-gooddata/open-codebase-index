@@ -248,6 +248,41 @@ describe("knowledge-base reuse across branches", () => {
     expect(knowledgeBaseGraph(refreshed, "feature")).toEqual(mainGraph);
   });
 
+  it("reprocesses a knowledge-base root whose branch call-edge targets changed when the dependency record is missing", async () => {
+    const mainDb = await indexCurrentBranch();
+    const mainGraph = knowledgeBaseGraph(mainDb, "main");
+    git(repo, ["checkout", "-b", "feature"]);
+    const featureDb = await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([]);
+
+    const [sendRequest] = featureDb.getSymbolsByName("sendRequest");
+    const [formatPayload] = featureDb.getSymbolsByName("formatPayload");
+    const edge = featureDb.getCallees(sendRequest.id, "feature").find((callee) => callee.targetName === "normalizePayload");
+    expect(edge).toBeDefined();
+    if (!edge) return;
+    await indexer?.close();
+    indexer = null;
+    const raw = new DatabaseSync(path.join(repo, ".opencode", "index", "codebase.db"));
+    try {
+      raw.prepare("INSERT OR REPLACE INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved) VALUES (?, ?, ?, 1)")
+        .run("feature", edge.id, formatPayload.id);
+    } finally {
+      raw.close();
+    }
+
+    const artifactDir = path.join(repo, ".opencode", "index");
+    const dependencyArtifacts = fs.readdirSync(artifactDir)
+      .filter((name) => name.startsWith("file-dependencies.") && name.endsWith(".json"))
+      .map((name) => path.join(artifactDir, name));
+    expect(dependencyArtifacts.length).toBeGreaterThan(0);
+    for (const artifactPath of dependencyArtifacts) fs.rmSync(artifactPath, { force: true });
+
+    const refreshed = await indexCurrentBranch();
+    expect(refreshed.getStaleCallEdgeFilePaths("feature")).toEqual([]);
+    expect(knowledgeBaseGraph(refreshed, "feature")).toEqual(mainGraph);
+    expect(knowledgeBaseParses().length).toBeGreaterThan(0);
+  });
+
   it("keeps a resolved cross-file knowledge-base edge identical with and without reuse", async () => {
     fs.writeFileSync(path.join(knowledgeBase, "greet.go"), [
       `// ${KB_MARKER} greet`,

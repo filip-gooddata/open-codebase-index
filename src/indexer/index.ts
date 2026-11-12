@@ -269,6 +269,20 @@ const PHP_CLASS_SYMBOL_CHUNK_TYPES = new Set([
 ]);
 const C_FAMILY_TYPE_SYMBOL_CHUNK_TYPES = new Set(["class_specifier", "struct_specifier"]);
 
+/**
+ * A recorded SCIP TypeScript state whose outcome is "disabled" never enriched
+ * the index; seeding and every later run on a branch leave one behind.
+ */
+function recordsScipTypeScriptEnrichment(storedState: string | null): boolean {
+  if (storedState === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(storedState);
+    return typeof parsed !== "object" || parsed === null || (parsed as { outcome?: unknown }).outcome !== "disabled";
+  } catch {
+    return true;
+  }
+}
+
 function isCompatibleCFamilyCallTarget(
   language: string,
   callType: string,
@@ -5617,10 +5631,22 @@ export class Indexer {
     const knowledgeBaseReuse = this.prepareKnowledgeBaseReuse({
       isStructural,
       scopedRoots,
-      scipActive: scipConfig.enabled || storedScipState !== null,
+      scipActive: scipConfig.enabled || recordsScipTypeScriptEnrichment(storedScipState),
       upgradeKeywordTokenizer,
       localModuleResolutionConfigHash: localModuleResolutionState.presentConfigHash,
     });
+    // Reuse certifies a knowledge-base file's content, not this branch's call
+    // edges. A file with evidence that its edges went stale is classified
+    // normally, which also keeps its whole root from being reused.
+    const callEdgeRepairFilePaths = new Set(staleCallEdgeFilePaths.keys());
+    if (knowledgeBaseReuse && this.fileDependencyEntries && this.fileEdgeFingerprints) {
+      const recordedEdgeFingerprints = this.fileEdgeFingerprints;
+      const currentEdgeFingerprints = database.getCallEdgeFingerprintsForBranch(branchCatalogKey);
+      for (const filePath of new Set([...recordedEdgeFingerprints.keys(), ...currentEdgeFingerprints.keys()])) {
+        if (recordedEdgeFingerprints.get(filePath) === currentEdgeFingerprints.get(filePath)) continue;
+        callEdgeRepairFilePaths.add(this.toStoredFilePath(filePath));
+      }
+    }
     const knowledgeBaseReuseCandidates: KnowledgeBaseReuseCandidate[] = [];
     const knowledgeBaseProcessedPaths = new Set<string>();
 
@@ -5660,7 +5686,7 @@ export class Indexer {
       };
       allFileDescriptors.set(storedPath, descriptor);
 
-      if (knowledgeBaseReuse?.isCandidate(storedPath, currentHash)) {
+      if (knowledgeBaseReuse?.isCandidate(storedPath, currentHash) && !callEdgeRepairFilePaths.has(storedPath)) {
         knowledgeBaseReuseCandidates.push({
           storedPath,
           hash: currentHash,

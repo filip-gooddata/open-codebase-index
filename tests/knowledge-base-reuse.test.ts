@@ -194,6 +194,31 @@ describe("knowledge-base reuse across branches", () => {
     expect(knowledgeBaseGraph(featureDb, "main")).toEqual(mainGraph);
   });
 
+  it("reprocesses a knowledge-base root whose call edges were marked stale on this branch", async () => {
+    const mainDb = await indexCurrentBranch();
+    const mainGraph = knowledgeBaseGraph(mainDb, "main");
+    git(repo, ["checkout", "-b", "feature"]);
+    const featureDb = await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([]);
+
+    const [sendRequest] = featureDb.getSymbolsByName("sendRequest");
+    const [formatPayload] = featureDb.getSymbolsByName("formatPayload");
+    const sharedEdge = featureDb.getCallees(sendRequest.id, "feature").find((edge) => edge.targetName === "normalizePayload");
+    expect(sharedEdge).toBeDefined();
+    if (!sharedEdge) return;
+    featureDb.upsertCallEdge({ ...sharedEdge, toSymbolId: formatPayload.id, isResolved: true });
+    const clientPath = path.join(canonicalKnowledgeBase, "client.ts");
+    expect(featureDb.getStaleCallEdgeFilePaths("feature")).toContain(clientPath);
+
+    const refreshed = await indexCurrentBranch();
+    expect(knowledgeBaseParses().length).toBeGreaterThan(0);
+    expect(refreshed.getStaleCallEdgeFilePaths("feature")).toEqual([]);
+    expect(knowledgeBaseGraph(refreshed, "feature")).toEqual(mainGraph);
+
+    await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([]);
+  });
+
   it("keeps a resolved cross-file knowledge-base edge identical with and without reuse", async () => {
     fs.writeFileSync(path.join(knowledgeBase, "greet.go"), [
       `// ${KB_MARKER} greet`,
@@ -250,8 +275,10 @@ describe("knowledge-base reuse across branches", () => {
     expect(knowledgeBaseGraph(featureDb, "feature")).toEqual(mainGraph);
     expect(projectToKnowledgeBaseEdge(featureDb, "feature")).toBe("sendRequest:unresolved");
 
-    const cachePath = path.join(repo, ".opencode", "index", "knowledge-base-files.json");
-    fs.rmSync(cachePath);
+    // A new branch with an indexed neighbour is seeded from it, so the baseline starts from an empty index.
+    await indexer?.close();
+    indexer = null;
+    fs.rmSync(path.join(repo, ".opencode", "index"), { recursive: true, force: true });
     git(repo, ["checkout", "-b", "without-reuse"]);
     const freshDb = await indexCurrentBranch();
     expect(new Set(knowledgeBaseParses()).size).toBe(4);
@@ -260,19 +287,26 @@ describe("knowledge-base reuse across branches", () => {
     expect(projectToKnowledgeBaseEdge(freshDb, "without-reuse")).toBe("sendRequest:unresolved");
   });
 
-  it("reprocesses the whole knowledge-base root when one of its files changes", async () => {
+  it("keeps a seeded branch's knowledge-base graph exact when one root file changes", async () => {
     await indexCurrentBranch();
     git(repo, ["checkout", "-b", "feature"]);
     fs.appendFileSync(path.join(knowledgeBase, "format.ts"), "export function extraFormat(): string { return \"x\"; }\n");
 
     const featureDb = await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([path.join(canonicalKnowledgeBase, "format.ts")]);
+    expect(featureDb.getSymbolsForBranch("feature").map((symbol) => symbol.name)).toContain("extraFormat");
+    const seededGraph = knowledgeBaseGraph(featureDb, "feature");
+    expect(seededGraph).toContainEqual(expect.stringMatching(/^sendRequest->normalizePayload:(?!unresolved)/));
+
+    await indexer?.close();
+    indexer = null;
+    fs.rmSync(path.join(repo, ".opencode", "index"), { recursive: true, force: true });
+    const freshDb = await indexCurrentBranch();
     expect(knowledgeBaseParses().sort()).toEqual([
       path.join(canonicalKnowledgeBase, "client.ts"),
       path.join(canonicalKnowledgeBase, "format.ts"),
     ]);
-    expect(featureDb.getSymbolsForBranch("feature").map((symbol) => symbol.name)).toContain("extraFormat");
-    expect(knowledgeBaseGraph(featureDb, "feature"))
-      .toContainEqual(expect.stringMatching(/^sendRequest->normalizePayload:(?!unresolved)/));
+    expect(knowledgeBaseGraph(freshDb, "feature")).toEqual(seededGraph);
 
     git(repo, ["checkout", "-b", "second-feature"]);
     await indexCurrentBranch();
@@ -295,15 +329,16 @@ describe("knowledge-base reuse across branches", () => {
     ]);
   });
 
-  it("reprocesses knowledge-base files when the reuse cache is missing", async () => {
+  it("rebuilds the reuse cache when it is missing", async () => {
     await indexCurrentBranch();
     const cachePath = path.join(repo, ".opencode", "index", "knowledge-base-files.json");
     expect(fs.existsSync(cachePath)).toBe(true);
     fs.rmSync(cachePath);
     git(repo, ["checkout", "-b", "feature"]);
 
-    await indexCurrentBranch();
-    expect(knowledgeBaseParses().length).toBe(2);
+    const featureDb = await indexCurrentBranch();
+    expect(knowledgeBaseParses()).toEqual([]);
+    expect(featureDb.getSymbolsForBranch("feature").map((symbol) => symbol.name)).toContain("formatPayload");
     expect(fs.existsSync(cachePath)).toBe(true);
   });
 
@@ -353,7 +388,7 @@ describe("knowledge-base reuse across branches", () => {
     expect(knowledgeBaseParses()).toEqual([]);
   });
 
-  it("does not record a root whose file failed to parse and retries it on the next branch", async () => {
+  it("does not record a root whose file failed to parse", async () => {
     const failedPath = path.join(canonicalKnowledgeBase, "format.ts");
     const indexWithFailure = async (): Promise<void> => {
       await indexer?.close();
@@ -366,18 +401,8 @@ describe("knowledge-base reuse across branches", () => {
     };
     await indexWithFailure();
     expect(knowledgeBaseParses()).toContain(failedPath);
-    git(repo, ["checkout", "-b", "feature"]);
-
-    const featureDb = await indexCurrentBranch();
-    expect(knowledgeBaseParses().sort()).toEqual([
-      path.join(canonicalKnowledgeBase, "client.ts"),
-      failedPath,
-    ]);
-    expect(featureDb.getSymbolsForBranch("feature").map((symbol) => symbol.name)).toContain("formatPayload");
-
-    git(repo, ["checkout", "-b", "second-feature"]);
-    await indexCurrentBranch();
-    expect(knowledgeBaseParses()).toEqual([]);
+    const cachePath = path.join(repo, ".opencode", "index", "knowledge-base-files.json");
+    expect(JSON.parse(fs.readFileSync(cachePath, "utf-8"))).toEqual({ version: 1, entries: {} });
   });
 });
 

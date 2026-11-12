@@ -1,0 +1,19 @@
+tests/knowledge-base-reuse.test.ts
+  s_8547fcb7c8d965::t_0cdf8a30c680f6 5,223-250,361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "16f4c274a6586722a1770e8ffc272356687573e7",
+  "prompts": {},
+  "sessions": {
+    "s_8547fcb7c8d965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca0f3a08-18cd-4cd7-87ea-45ba21da6fc4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

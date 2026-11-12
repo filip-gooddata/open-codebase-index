@@ -6,10 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ParsedCodebaseIndexConfig } from "../src/config/schema.js";
-import type { Database } from "../src/native/index.js";
 import { parseConfig } from "../src/config/schema.js";
 import { Indexer } from "../src/indexer/index.js";
-import { InvertedIndex } from "../src/native/index.js";
+import { Database, InvertedIndex } from "../src/native/index.js";
 import {
   buildKnowledgeBaseReuseCache,
   computeKnowledgeBaseRoots,
@@ -477,10 +476,15 @@ describe("knowledge-base reuse across branches", () => {
       await indexer?.close();
       indexer = null;
       const keywordPath = path.join(indexPath(), "inverted-index.json");
-      const snapshot = JSON.parse(fs.readFileSync(keywordPath, "utf-8")) as Record<string, unknown>;
-      delete snapshot.tokenizer_version;
-      delete snapshot.legacy_chunks;
-      fs.writeFileSync(keywordPath, JSON.stringify(snapshot));
+      const snapshot = JSON.parse(fs.readFileSync(keywordPath, "utf-8")) as {
+        chunk_tokens: Record<string, Record<string, number>>;
+      };
+      const chunkIds = Object.keys(snapshot.chunk_tokens);
+      fs.writeFileSync(keywordPath, JSON.stringify({
+        term_to_chunks: { legacyonlyterm: chunkIds },
+        chunk_tokens: Object.fromEntries(chunkIds.map((id) => [id, { legacyonlyterm: 1 }])),
+        avg_doc_length: 1,
+      }));
       for (const entry of fs.readdirSync(indexPath())) {
         if (entry.startsWith("file-dependencies.")) fs.rmSync(path.join(indexPath(), entry));
       }
@@ -498,6 +502,16 @@ describe("knowledge-base reuse across branches", () => {
       const keywordIndex = new InvertedIndex(path.join(indexPath(), "inverted-index.json"));
       keywordIndex.load();
       expect(keywordIndex.outdatedTokenizerChunkIds(featureChunkIds)).toEqual([]);
+      const reopened = Database.openReadOnly(path.join(indexPath(), "codebase.db"));
+      try {
+        const knowledgeBaseChunkIds = featureChunkIds.filter((chunkId) =>
+          reopened.getChunk(chunkId)?.filePath.startsWith(canonicalKnowledgeBase));
+        expect(knowledgeBaseChunkIds.length).toBeGreaterThan(0);
+        const payloadHits = new Set(keywordIndex.search("payload").keys());
+        expect(knowledgeBaseChunkIds.some((chunkId) => payloadHits.has(chunkId))).toBe(true);
+      } finally {
+        reopened.close();
+      }
     }
 
     it("retokenizes the reused knowledge-base chunks a new unseeded branch adopts", async () => {

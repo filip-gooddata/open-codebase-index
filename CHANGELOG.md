@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Longer retrieval waits**: `indexing.autoIndexWaitMs` now accepts up to 600000 ms (10 minutes); the cap was 60000. The default stays 10000. A session that follows another session's background index refresh can now wait for it to publish instead of failing after a minute.
+- **Progress while following a refresh**: An MCP retrieval call that waits for another session to publish an index now sends progress notifications when the request carries a progress token, so clients that reset their request timeout on progress keep the call open.
+
 ## [0.38.2-gd.2] - 2026-11-12
 
 Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.1. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.

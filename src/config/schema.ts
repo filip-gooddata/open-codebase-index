@@ -169,6 +169,7 @@ export interface McpConfig {
 }
 
 export const MAX_MCP_STALL_TIMEOUT_MS = 2_147_483_647;
+export const MAX_AUTO_INDEX_WAIT_MS = 600_000;
 
 export interface CustomProviderConfig {
   /** Base URL of the OpenAI-compatible embeddings API. The path /embeddings is appended automatically (e.g. "http://localhost:11434/v1", "https://api.example.com/v1") */
@@ -293,7 +294,7 @@ export function parseConfig(raw: unknown): ParsedCodebaseIndexConfig {
       : defaultIndexing.mode,
     autoIndex: typeof rawIndexing.autoIndex === "boolean" ? rawIndexing.autoIndex : defaultIndexing.autoIndex,
     autoIndexWaitMs: typeof rawIndexing.autoIndexWaitMs === "number"
-      ? Math.min(60_000, Math.max(0, Math.floor(rawIndexing.autoIndexWaitMs)))
+      ? Math.min(MAX_AUTO_INDEX_WAIT_MS, Math.max(0, Math.floor(rawIndexing.autoIndexWaitMs)))
       : defaultIndexing.autoIndexWaitMs,
     autoIndexMaxRetries: typeof rawIndexing.autoIndexMaxRetries === "number"
       ? Math.min(10, Math.max(0, Math.floor(rawIndexing.autoIndexMaxRetries)))

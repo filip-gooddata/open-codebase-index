@@ -1120,7 +1120,7 @@ async function waitForAutoIndexForRetrievalFromCoordinator(
   projectRoot: string,
   host: HostMode,
   coordinator: AutoIndexCoordinator | null,
-  control?: Pick<OperationControl, "heartbeat" | "setPhase" | "signal">,
+  control?: Pick<OperationControl, "heartbeat" | "reportProgress" | "setPhase" | "signal">,
 ): Promise<AutoIndexRetrievalResult> {
   if (!coordinator) return { ready: true };
   const initial = coordinator.snapshot();
@@ -1236,7 +1236,7 @@ interface SearchReadiness {
 }
 
 async function getSearchReadiness(
-  coordinator: AutoIndexCoordinator,
+  coordinator: Pick<AutoIndexCoordinator, "getIndexer">,
   control?: Pick<OperationControl, "heartbeat" | "setPhase" | "signal">,
 ): Promise<SearchReadiness> {
   throwIfOperationAborted(control?.signal);
@@ -1295,15 +1295,17 @@ function startRetrievalRefresh(
   return coordinator.start("retrieval") ?? coordinator.currentJob();
 }
 
-async function waitForPublishedSnapshot(
-  coordinator: AutoIndexCoordinator,
+export async function waitForPublishedSnapshot(
+  coordinator: Pick<AutoIndexCoordinator, "getIndexer">,
   waitMs: number,
-  control?: Pick<OperationControl, "heartbeat" | "setPhase" | "signal">,
+  control?: Pick<OperationControl, "heartbeat" | "reportProgress" | "setPhase" | "signal">,
 ): Promise<void> {
-  const deadline = Date.now() + waitMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + waitMs;
   while (Date.now() < deadline) {
     throwIfOperationAborted(control?.signal);
     if ((await getSearchReadiness(coordinator, control)).searchable) return;
+    await control?.reportProgress?.(Math.floor(((Date.now() - startedAt) / waitMs) * 99));
     await raceWithOperationSignal(
       new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now()))),
       control?.signal,

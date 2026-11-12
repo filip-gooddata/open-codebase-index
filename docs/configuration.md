@@ -287,7 +287,7 @@ Ollama server is stopped. The standard suite uses deterministic HTTP replicas wi
 | Option | Default | Purpose |
 |---|---:|---|
 | `autoIndex` | `false` | Run first-use automatic indexing for retrieval tools |
-| `autoIndexWaitMs` | `10000` | Maximum first-use wait time |
+| `autoIndexWaitMs` | `10000` | Maximum time a retrieval call waits for automatic indexing or for another session's index refresh, in ms. Values are clamped to 0-600000. MCP calls report progress while they wait |
 | `autoIndexMaxRetries` | `5` | Transient lock retries |
 | `autoIndexRetryDelayMs` | `100` | Initial retry delay |
 | `watchFiles` | `true` | Watch files and branches for incremental updates |

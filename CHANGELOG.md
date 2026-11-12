@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.3] - 2026-11-12
+
+Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.2. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.
+
 ### Changed
 
 - **Longer retrieval waits**: `indexing.autoIndexWaitMs` now accepts up to 600000 ms (10 minutes); the cap was 60000. The default stays 10000. A session that follows another session's background index refresh can now wait for it to publish instead of failing after a minute.

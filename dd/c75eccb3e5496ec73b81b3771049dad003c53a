@@ -1,0 +1,31 @@
+CHANGELOG.md
+  s_ee5bc071fa49ff::t_53f68f9595546d 10-13
+src/indexer/index.ts
+  s_d9210c21f660f5::t_47a341b7ba2db0 5436-5440,5442-5446,5730-5731,6325
+tests/knowledge-base-reuse.test.ts
+  s_d9210c21f660f5::t_e1e0db190935d0 12,471-514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ddc75eccb3e5496ec73b81b3771049dad003c53a",
+  "prompts": {},
+  "sessions": {
+    "s_d9210c21f660f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f7b4f213-ee31-420e-b25e-18b6d3d25acb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_ee5bc071fa49ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9c0bce3-5110-4a71-88a1-6b802fb8839d",
+        "model": "unknown"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -601,7 +601,7 @@ pub(crate) fn copy_branch_call_edge_targets(
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }
-    delete_unreachable_branch_call_edges(conn, Some(to_branch))?;
+    delete_unreachable_branch_call_edges(conn, to_branch)?;
     conn.execute(
         r#"
         DELETE FROM branch_call_edges
@@ -656,11 +656,11 @@ pub(crate) fn copy_branch_call_edge_targets(
     Ok(copied)
 }
 
-fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>) -> DbResult<usize> {
+fn delete_unreachable_branch_call_edges(conn: &Connection, branch: &str) -> DbResult<usize> {
     let count = conn.execute(
         r#"
         DELETE FROM branch_call_edges
-        WHERE (?1 IS NULL OR branch = ?1)
+        WHERE branch = ?1
           AND NOT EXISTS (
             SELECT 1
             FROM call_edges ce
@@ -675,7 +675,7 @@ fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>)
         conn.execute(
             r#"
             DELETE FROM branch_call_edges_stale
-            WHERE (?1 IS NULL OR branch = ?1)
+            WHERE branch = ?1
               AND NOT EXISTS (
                 SELECT 1
                 FROM call_edges ce
@@ -690,13 +690,34 @@ fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>)
     Ok(count)
 }
 
-/// Delete branch edge targets and stale marks whose edge is gone or whose
-/// caller is no longer a member of that branch.
-pub(crate) fn gc_orphan_branch_call_edges(conn: &Connection) -> DbResult<usize> {
+/// Delete `branch`'s edge targets and stale marks whose edge is gone or whose
+/// caller is no longer a member of `branch`. Run it after shrinking a
+/// branch's symbol membership (`clear_branch_symbols`), since only that
+/// branch's rows can have lost their caller.
+pub fn gc_unreachable_branch_call_edges(conn: &Connection, branch: &str) -> DbResult<usize> {
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }
-    delete_unreachable_branch_call_edges(conn, None)
+    delete_unreachable_branch_call_edges(conn, branch)
+}
+
+/// Delete edge targets and stale marks in every branch for the call edges
+/// `edge_ids_sql` selects, before those edges are deleted.
+pub(crate) fn delete_branch_call_edges_for_edges(conn: &Connection, edge_ids_sql: &str) -> DbResult<usize> {
+    if !has_branch_call_edges(conn)? {
+        return Ok(0);
+    }
+    let count = conn.execute(
+        &format!("DELETE FROM branch_call_edges WHERE edge_id IN ({edge_ids_sql})"),
+        [],
+    )?;
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute(
+            &format!("DELETE FROM branch_call_edges_stale WHERE edge_id IN ({edge_ids_sql})"),
+            [],
+        )?;
+    }
+    Ok(count)
 }
 
 /// Sorted, distinct file paths of the callers of `branch`'s stale edges: the

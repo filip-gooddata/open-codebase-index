@@ -601,6 +601,42 @@ module.exports = { useCjs };
     expect((await next.index()).reprocessedFiles).toBe(0);
   });
 
+  function unreachableBranchCallEdges(): number {
+    const raw = new DatabaseSync(path.join(repo, ".opencode", "index", "codebase.db"), { readOnly: true });
+    try {
+      const row = raw.prepare(`
+        SELECT count(*) AS n FROM branch_call_edges b
+        WHERE NOT EXISTS (
+          SELECT 1 FROM call_edges ce
+          INNER JOIN branch_symbols bs ON bs.symbol_id = ce.from_symbol_id AND bs.branch = b.branch
+          WHERE ce.id = b.edge_id
+        )`).get() as { n: number };
+      return row.n;
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("leaves no unreachable branch call-edge targets when a caller moves on one branch", async () => {
+    await indexMain();
+    await indexShiftedSibling();
+    const reader = createIndexer(repo);
+    const mainBefore = graphSnapshot(await databaseOf(reader), "main");
+    await closeIndexer(reader);
+    expect(unreachableBranchCallEdges()).toBe(0);
+
+    git(repo, ["checkout", "sibling"]);
+    write(repo, "src/use-mul.ts", `// moved\n${fs.readFileSync(path.join(repo, "src/use-mul.ts"), "utf8")}`);
+    git(repo, ["commit", "-am", "move caller"]);
+    const indexer = createIndexer(repo);
+    expect((await indexer.index()).reprocessedFiles).toBeGreaterThan(0);
+    const database = await databaseOf(indexer);
+    expect(graphSnapshot(database, "main").edges).toEqual(mainBefore.edges);
+    expect(graphSnapshot(database, "sibling").edges).toEqual((await scratchSnapshot("sibling")).snapshot.edges);
+    await closeIndexer(indexer);
+    expect(unreachableBranchCallEdges()).toBe(0);
+  });
+
   it("re-resolves a shared edge target left by a writer without branch targets", async () => {
     await indexMain();
     await indexShiftedSibling();

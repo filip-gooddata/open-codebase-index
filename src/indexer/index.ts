@@ -2080,6 +2080,7 @@ export class Indexer {
     database.addChunksToBranchBatch(branchCatalogKey, [...currentChunkIds]);
     database.clearBranchSymbols(branchCatalogKey);
     database.addSymbolsToBranchBatch(branchCatalogKey, [...currentSymbolIds]);
+    database.gcUnreachableBranchCallEdges(branchCatalogKey);
 
     const currentChunkIdSet = new Set(currentChunkIds);
     const removedChunkCandidates = previousChunkIds.filter((chunkId) => !currentChunkIdSet.has(chunkId));
@@ -2202,6 +2203,7 @@ export class Indexer {
       });
       database.clearBranch(branchCatalogKey);
       database.clearBranchSymbols(branchCatalogKey);
+      database.gcUnreachableBranchCallEdges(branchCatalogKey);
       for (const key of targetMetadataKeys) database.deleteMetadata(key);
       rmSync(this.fileHashCachePath, { force: true });
       rmSync(this.fileDependencyGraphPath, { force: true });

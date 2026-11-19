@@ -1106,6 +1106,15 @@ impl Database {
     }
 
     #[napi]
+    pub fn gc_unreachable_branch_call_edges(&self, branch: String) -> Result<u32> {
+        self.with_conn(|conn| {
+            let count = db::gc_unreachable_branch_call_edges(conn, &branch)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    #[napi]
     pub fn get_transitive_reachability(
         &self,
         root_symbol_ids: Vec<String>,

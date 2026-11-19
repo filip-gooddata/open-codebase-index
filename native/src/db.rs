@@ -1300,13 +1300,31 @@ pub fn chunk_exists_on_branch(conn: &Connection, branch: &str, chunk_id: &str) -
     Ok(count > 0)
 }
 
-/// Get all branches
+/// Get all branches.
+///
+/// Skip-scans the branch-leading primary keys: one index seek per distinct
+/// branch instead of reading every catalog row.
 pub fn get_all_branches(conn: &Connection) -> DbResult<Vec<String>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT branch FROM branch_chunks
+        WITH RECURSIVE
+        chunk_branches(branch) AS (
+            SELECT min(branch) FROM branch_chunks
+            UNION ALL
+            SELECT (SELECT min(branch) FROM branch_chunks WHERE branch > chunk_branches.branch)
+            FROM chunk_branches
+            WHERE chunk_branches.branch IS NOT NULL
+        ),
+        symbol_branches(branch) AS (
+            SELECT min(branch) FROM branch_symbols
+            UNION ALL
+            SELECT (SELECT min(branch) FROM branch_symbols WHERE branch > symbol_branches.branch)
+            FROM symbol_branches
+            WHERE symbol_branches.branch IS NOT NULL
+        )
+        SELECT branch FROM chunk_branches WHERE branch IS NOT NULL
         UNION
-        SELECT branch FROM branch_symbols
+        SELECT branch FROM symbol_branches WHERE branch IS NOT NULL
         "#,
     )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -1370,14 +1388,22 @@ pub fn delete_metadata(conn: &Connection, key: &str) -> DbResult<bool> {
 // Garbage Collection
 // ============================================================================
 
+// The orphan GCs below use NOT EXISTS, which probes an index per row, where
+// `NOT IN (SELECT ...)` materialized the whole subquery first. They keep NOT
+// IN's NULL semantics: a NULL key is deleted only when the referencing table
+// is empty, and a NULL in the referenced column deletes nothing. Keys that are
+// `TEXT PRIMARY KEY` on rowid tables (embeddings.content_hash, chunks.chunk_id,
+// symbols.id) can hold NULL; the other compared columns are NOT NULL.
+
 /// Delete orphaned embeddings (not referenced by any chunk)
 pub fn gc_orphan_embeddings(conn: &Connection) -> DbResult<usize> {
     let count = conn.execute(
         r#"
         DELETE FROM embeddings
-        WHERE content_hash NOT IN (
-            SELECT DISTINCT content_hash FROM chunks
-        )
+        WHERE NOT EXISTS (
+            SELECT 1 FROM chunks c WHERE c.content_hash = embeddings.content_hash
+          )
+          AND (embeddings.content_hash IS NOT NULL OR NOT EXISTS (SELECT 1 FROM chunks))
         "#,
         [],
     )?;
@@ -1389,52 +1415,60 @@ pub fn gc_orphan_chunks(conn: &Connection) -> DbResult<usize> {
     let count = conn.execute(
         r#"
         DELETE FROM chunks
-        WHERE chunk_id NOT IN (
-            SELECT DISTINCT chunk_id FROM branch_chunks
-        )
+        WHERE NOT EXISTS (
+            SELECT 1 FROM branch_chunks bc WHERE bc.chunk_id = chunks.chunk_id
+          )
+          AND (chunks.chunk_id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM branch_chunks))
         "#,
         [],
     )?;
     Ok(count)
 }
 
+const CALL_EDGE_CALLER_IN_NO_BRANCH: &str = r#"
+    NOT EXISTS (
+        SELECT 1 FROM branch_symbols bs WHERE bs.symbol_id = call_edges.from_symbol_id
+    )
+"#;
+
+const CALL_EDGE_CALLER_NOT_A_SYMBOL: &str = r#"
+    NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = call_edges.from_symbol_id)
+    AND NOT EXISTS (SELECT 1 FROM symbols WHERE id IS NULL)
+"#;
+
 /// Delete orphaned symbols (not referenced by any branch)
 pub fn gc_orphan_symbols(conn: &Connection) -> DbResult<usize> {
-    // First, delete call edges referencing orphan symbols to avoid FK violation
-    conn.execute(
-        r#"
-        DELETE FROM call_edges
-        WHERE from_symbol_id NOT IN (
-            SELECT DISTINCT symbol_id FROM branch_symbols
-        )
-        "#,
-        [],
-    )?;
+    // First, delete call edges referencing orphan symbols to avoid FK violation.
+    // The symbol delete's FK cascade then has no edges left to remove.
+    delete_call_edges_with_branch_targets(conn, CALL_EDGE_CALLER_IN_NO_BRANCH)?;
     let count = conn.execute(
         r#"
         DELETE FROM symbols
-        WHERE id NOT IN (
-            SELECT DISTINCT symbol_id FROM branch_symbols
-        )
+        WHERE NOT EXISTS (
+            SELECT 1 FROM branch_symbols bs WHERE bs.symbol_id = symbols.id
+          )
+          AND (symbols.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM branch_symbols))
         "#,
         [],
     )?;
-    gc_orphan_branch_call_edges(conn)?;
     Ok(count)
 }
 
 /// Delete orphaned call edges (from_symbol not in symbols table)
 pub fn gc_orphan_call_edges(conn: &Connection) -> DbResult<usize> {
-    let count = conn.execute(
-        r#"
-        DELETE FROM call_edges
-        WHERE from_symbol_id NOT IN (
-            SELECT DISTINCT id FROM symbols
-        )
-        "#,
-        [],
+    delete_call_edges_with_branch_targets(conn, CALL_EDGE_CALLER_NOT_A_SYMBOL)
+}
+
+/// Delete the call edges matching `predicate` (a condition on `call_edges`),
+/// with their branch targets and stale marks in every branch. Branch rows whose
+/// caller left a branch are removed per branch by
+/// `gc_unreachable_branch_call_edges`.
+fn delete_call_edges_with_branch_targets(conn: &Connection, predicate: &str) -> DbResult<usize> {
+    delete_branch_call_edges_for_edges(
+        conn,
+        &format!("SELECT call_edges.id FROM call_edges WHERE {predicate}"),
     )?;
-    gc_orphan_branch_call_edges(conn)?;
+    let count = conn.execute(&format!("DELETE FROM call_edges WHERE {predicate}"), [])?;
     Ok(count)
 }
 
@@ -3311,7 +3345,7 @@ mod tests {
 
         clear_branch_symbols(&conn, "feature").unwrap();
         assert_eq!(overlay_rows(&conn).len(), 2);
-        gc_orphan_call_edges(&conn).unwrap();
+        gc_unreachable_branch_call_edges(&conn, "feature").unwrap();
         let remaining: Vec<String> = overlay_rows(&conn).into_iter().map(|row| row.0).collect();
         assert_eq!(remaining, vec![String::from("main")]);
         assert_eq!(callee_target(&conn, "caller", "main"), None);
@@ -3629,7 +3663,7 @@ mod tests {
 
         clear_branch_symbols(&conn, "gone").unwrap();
         assert_eq!(stale_rows(&conn).len(), 3);
-        gc_orphan_call_edges(&conn).unwrap();
+        gc_unreachable_branch_call_edges(&conn, "gone").unwrap();
         assert_eq!(stale_rows(&conn), vec![pair("feature", "edge"), pair("main", "edge")]);
 
         delete_branch_symbols_for_branch(&conn, "feature", &[String::from("caller")]).unwrap();
@@ -4086,5 +4120,274 @@ mod tests {
         assert_eq!(callee_target(&conn, "caller", "a").as_deref(), Some("target_b"));
         assert_eq!(callee_target(&conn, "caller", "d").as_deref(), Some("target_c"));
         assert_eq!(callee_target(&conn, "caller", "e"), None);
+    }
+
+    fn sorted_rowids(conn: &Connection, sql: &str) -> Vec<i64> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let mut ids = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        ids.sort();
+        ids
+    }
+
+    fn table_count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// Runs `gc` and checks it deleted exactly the rows the pre-0.38.2-gd.4
+    /// `NOT IN (SELECT DISTINCT ...)` predicate selects.
+    fn assert_gc_matches_not_in(
+        conn: &Connection,
+        table: &str,
+        legacy_predicate: &str,
+        gc: fn(&Connection) -> DbResult<usize>,
+    ) {
+        let before = sorted_rowids(conn, &format!("SELECT rowid FROM {table}"));
+        let doomed =
+            sorted_rowids(conn, &format!("SELECT rowid FROM {table} WHERE {legacy_predicate}"));
+        let deleted = gc(conn).unwrap();
+        let after = sorted_rowids(conn, &format!("SELECT rowid FROM {table}"));
+        let expected: Vec<i64> = before.into_iter().filter(|id| !doomed.contains(id)).collect();
+        assert_eq!(after, expected, "{table}: {legacy_predicate}");
+        assert_eq!(deleted, doomed.len(), "{table}: {legacy_predicate}");
+    }
+
+    const LEGACY_ORPHAN_CHUNKS: &str = "chunk_id NOT IN (SELECT DISTINCT chunk_id FROM branch_chunks)";
+    const LEGACY_ORPHAN_EMBEDDINGS: &str =
+        "content_hash NOT IN (SELECT DISTINCT content_hash FROM chunks)";
+    const LEGACY_ORPHAN_SYMBOLS: &str = "id NOT IN (SELECT DISTINCT symbol_id FROM branch_symbols)";
+    const LEGACY_ORPHAN_CALL_EDGES: &str = "from_symbol_id NOT IN (SELECT DISTINCT id FROM symbols)";
+
+    #[test]
+    fn get_all_branches_matches_union_of_branch_catalogs() {
+        let (_temp_dir, conn) = setup_test_db();
+        assert!(get_all_branches(&conn).unwrap().is_empty());
+
+        conn.execute_batch(
+            "INSERT INTO branch_chunks (branch, chunk_id) VALUES \
+                ('main', 'c1'), ('main', 'c2'), ('feature/x', 'c1'), ('Zeta', 'c3'), ('', 'c4'); \
+             INSERT INTO branch_symbols (branch, symbol_id) VALUES \
+                ('main', 's1'), ('symbols-only', 's1'), ('symbols-only', 's2'), \
+                ('feature/x', 's2'), ('é-branch', 's3');",
+        )
+        .unwrap();
+
+        let mut legacy = {
+            let mut stmt = conn
+                .prepare("SELECT branch FROM branch_chunks UNION SELECT branch FROM branch_symbols")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        legacy.sort();
+        let mut branches = get_all_branches(&conn).unwrap();
+        branches.sort();
+        assert_eq!(branches, legacy);
+        assert_eq!(branches.len(), 6);
+
+        conn.execute("DELETE FROM branch_chunks", []).unwrap();
+        let mut symbol_only = get_all_branches(&conn).unwrap();
+        symbol_only.sort();
+        assert_eq!(symbol_only, vec!["feature/x", "main", "symbols-only", "é-branch"]);
+    }
+
+    #[test]
+    fn get_all_branches_seeks_the_branch_leading_keys() {
+        let (_temp_dir, conn) = setup_test_db();
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN \
+                 SELECT (SELECT min(branch) FROM branch_chunks WHERE branch > 'a'), \
+                        (SELECT min(branch) FROM branch_symbols WHERE branch > 'a')",
+            )
+            .unwrap();
+        let details = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for table in ["branch_chunks", "branch_symbols"] {
+            assert!(
+                details
+                    .iter()
+                    .any(|detail| detail.starts_with(&format!("SEARCH {table} USING")) && detail.contains("INDEX")),
+                "{table} is not seeked by an index: {details:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn orphan_gcs_keep_not_in_null_semantics() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        for hash in ["h_live", "h_dead", "h_null"] {
+            upsert_embedding(&conn, hash, &[1, 2, 3], "content", "model").unwrap();
+        }
+        conn.execute("UPDATE embeddings SET content_hash = NULL WHERE content_hash = 'h_null'", [])
+            .unwrap();
+        for chunk_id in ["c_live", "c_dead", "c_null"] {
+            upsert_chunk(
+                &conn,
+                chunk_id,
+                "h_live",
+                "src/a.rs",
+                1,
+                2,
+                Some("function"),
+                Some(chunk_id),
+                "rust",
+            )
+            .unwrap();
+        }
+        conn.execute("UPDATE chunks SET chunk_id = NULL WHERE chunk_id = 'c_null'", [])
+            .unwrap();
+        add_chunks_to_branch(&conn, "main", &[String::from("c_live")]).unwrap();
+        upsert_symbols_batch(
+            &mut conn,
+            &[
+                call_graph_symbol("s_live", "live", "rust"),
+                call_graph_symbol("s_dead", "dead", "rust"),
+                call_graph_symbol("s_null", "null", "rust"),
+            ],
+        )
+        .unwrap();
+        conn.execute("UPDATE symbols SET id = NULL WHERE id = 's_null'", []).unwrap();
+        add_symbols_to_branch_batch(&mut conn, "main", &[String::from("s_live")]).unwrap();
+
+        // A NULL key survives while the referencing table has rows.
+        assert_gc_matches_not_in(&conn, "chunks", LEGACY_ORPHAN_CHUNKS, gc_orphan_chunks);
+        assert_gc_matches_not_in(&conn, "embeddings", LEGACY_ORPHAN_EMBEDDINGS, gc_orphan_embeddings);
+        assert_gc_matches_not_in(&conn, "symbols", LEGACY_ORPHAN_SYMBOLS, gc_orphan_symbols);
+        assert_eq!(table_count(&conn, "chunks"), 2);
+        assert_eq!(table_count(&conn, "embeddings"), 2);
+        assert_eq!(table_count(&conn, "symbols"), 2);
+
+        // NOT IN over an empty set is true, so NULL keys go too.
+        conn.execute_batch("DELETE FROM branch_chunks; DELETE FROM branch_symbols;")
+            .unwrap();
+        assert_gc_matches_not_in(&conn, "chunks", LEGACY_ORPHAN_CHUNKS, gc_orphan_chunks);
+        assert_gc_matches_not_in(&conn, "embeddings", LEGACY_ORPHAN_EMBEDDINGS, gc_orphan_embeddings);
+        assert_gc_matches_not_in(&conn, "symbols", LEGACY_ORPHAN_SYMBOLS, gc_orphan_symbols);
+        assert_eq!(table_count(&conn, "chunks"), 0);
+        assert_eq!(table_count(&conn, "embeddings"), 0);
+        assert_eq!(table_count(&conn, "symbols"), 0);
+    }
+
+    #[test]
+    fn gc_orphan_call_edges_deletes_nothing_while_a_symbol_id_is_null() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_divergent_graph(&mut conn, &["main"]);
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        legacy_0_34_write(&conn, &call_graph_edge("kept", "caller", "helper", None));
+        legacy_0_34_write(&conn, &call_graph_edge("orphan", "ghost", "helper", None));
+        conn.execute("UPDATE symbols SET id = NULL WHERE id = 'target_b'", []).unwrap();
+
+        assert_gc_matches_not_in(&conn, "call_edges", LEGACY_ORPHAN_CALL_EDGES, gc_orphan_call_edges);
+        assert_eq!(table_count(&conn, "call_edges"), 2);
+
+        conn.execute("UPDATE symbols SET id = 'target_b' WHERE id IS NULL", []).unwrap();
+        assert_gc_matches_not_in(&conn, "call_edges", LEGACY_ORPHAN_CALL_EDGES, gc_orphan_call_edges);
+        assert_eq!(table_count(&conn, "call_edges"), 1);
+    }
+
+    fn overlay_keys(conn: &Connection) -> Vec<(String, String)> {
+        overlay_rows(conn).into_iter().map(|row| (row.0, row.1)).collect()
+    }
+
+    /// `seed_stale_graph` plus an edge `kept` whose caller stays in `main`.
+    fn seed_stale_graph_with_kept_edge(conn: &mut Connection, branches: &[&str]) {
+        seed_stale_graph(conn, branches);
+        upsert_symbols_batch(conn, &[call_graph_symbol("keeper", "keeper", "typescript")]).unwrap();
+        add_symbols_to_branch_batch(conn, "main", &[String::from("keeper")]).unwrap();
+        upsert_call_edges_batch_for_branch(
+            conn,
+            &[call_graph_edge("kept", "keeper", "helper", Some("target_a"))],
+            Some("main"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO branch_call_edges_stale (branch, edge_id) VALUES ('main', 'kept')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn gc_orphan_symbols_drops_deleted_edges_targets_in_every_branch() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature"]);
+        assert!(overlay_keys(&conn).contains(&pair("feature", "edge")));
+
+        // The caller leaves every branch without per-symbol overlay cleanup.
+        conn.execute("DELETE FROM branch_symbols WHERE symbol_id = 'caller'", [])
+            .unwrap();
+        gc_orphan_symbols(&conn).unwrap();
+
+        assert_eq!(overlay_keys(&conn), vec![pair("main", "kept")]);
+        assert_eq!(stale_rows(&conn), vec![pair("main", "kept")]);
+        assert_eq!(table_count(&conn, "call_edges"), 1);
+    }
+
+    #[test]
+    fn gc_orphan_call_edges_drops_deleted_edges_targets_in_every_branch() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature"]);
+
+        conn.execute_batch("PRAGMA foreign_keys = OFF; DELETE FROM symbols WHERE id = 'caller';")
+            .unwrap();
+        assert_eq!(gc_orphan_call_edges(&conn).unwrap(), 1);
+
+        assert_eq!(overlay_keys(&conn), vec![pair("main", "kept")]);
+        assert_eq!(stale_rows(&conn), vec![pair("main", "kept")]);
+    }
+
+    #[test]
+    fn orphan_gcs_leave_other_branches_rows_while_their_edges_live() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature", "gone"]);
+        let overlays = overlay_keys(&conn);
+
+        clear_branch_symbols(&conn, "gone").unwrap();
+        gc_orphan_symbols(&conn).unwrap();
+        gc_orphan_call_edges(&conn).unwrap();
+        // The all-branch sweep is gone: only the scoped pass removes `gone`'s rows.
+        assert_eq!(overlay_keys(&conn), overlays);
+
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, "gone").unwrap(), 1);
+        let expected: Vec<(String, String)> =
+            overlays.into_iter().filter(|row| row.0 != "gone").collect();
+        assert_eq!(overlay_keys(&conn), expected);
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("feature", "edge"), pair("main", "edge"), pair("main", "kept")]
+        );
+    }
+
+    #[test]
+    fn branch_call_edge_gcs_work_without_overlay_tables() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature"]);
+        downgrade_overlay_to_marker_1(&conn);
+        clear_branch_symbols(&conn, "feature").unwrap();
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, "feature").unwrap(), 1);
+        conn.execute("DELETE FROM branch_symbols WHERE symbol_id = 'caller'", [])
+            .unwrap();
+        gc_orphan_symbols(&conn).unwrap();
+        assert_eq!(overlay_keys(&conn), vec![pair("main", "kept")]);
+
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main"]);
+        drop_overlay(&conn);
+        conn.execute("DELETE FROM branch_symbols WHERE symbol_id = 'caller'", [])
+            .unwrap();
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, "main").unwrap(), 0);
+        assert_eq!(gc_orphan_symbols(&conn).unwrap(), 1);
+        assert_eq!(gc_orphan_call_edges(&conn).unwrap(), 0);
+        assert_eq!(table_count(&conn, "call_edges"), 1);
     }
 }

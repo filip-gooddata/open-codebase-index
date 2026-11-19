@@ -432,6 +432,11 @@ export class Database {
     return this.inner.gcOrphanCallEdges();
   }
 
+  gcUnreachableBranchCallEdges(branch: string): number {
+    this.throwIfClosed();
+    return this.inner.gcUnreachableBranchCallEdges(branch);
+  }
+
   getTransitiveReachability(
     rootSymbolIds: string[],
     branch: string,

@@ -1,0 +1,33 @@
+CHANGELOG.md
+  s_4c55006e162bd0::t_2089ffa7b3b82e 12
+docs/installation.md
+  s_4c55006e162bd0::t_fcac6b1041eaf0 224
+native/src/bindings/database.rs
+  s_4c55006e162bd0::t_585685807f8c8b 584-590
+native/src/db/branch_prune.rs
+  s_4c55006e162bd0::t_e636758043d5e9 43-76,256-273
+src/indexer/branch-prune.ts
+  s_4c55006e162bd0::t_07197ac8f6de42 107,117-118,144-156,235-239
+src/indexer/index.ts
+  s_4c55006e162bd0::t_c79e1dc3687c0e 49,2106,2109-2112,2118,2128-2132,2134
+src/native/database.ts
+  s_4c55006e162bd0::t_6e2cf38106c9f8 242-246
+tests/branch-prune.test.ts
+  s_4c55006e162bd0::t_37072134ff1f3a 11,197,201,207,210-219,224-272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3622e5408573c80fba7c83bc97772d691e852cd3",
+  "prompts": {},
+  "sessions": {
+    "s_4c55006e162bd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb7729c6-370f-475d-aed4-0408b1d96620",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

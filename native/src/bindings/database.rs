@@ -32,6 +32,33 @@ pub struct ChunkData {
 }
 
 #[napi(object)]
+pub struct BranchCatalogRows {
+    pub branch: String,
+    pub branch_chunks: u32,
+    pub branch_symbols: u32,
+    pub branch_call_edges: u32,
+    pub branch_call_edges_stale: u32,
+}
+
+#[napi(object)]
+pub struct BranchCatalogPrune {
+    pub branches: Vec<BranchCatalogRows>,
+    pub metadata: u32,
+}
+
+impl From<db::BranchCatalogRows> for BranchCatalogRows {
+    fn from(rows: db::BranchCatalogRows) -> Self {
+        Self {
+            branch: rows.branch,
+            branch_chunks: rows.branch_chunks as u32,
+            branch_symbols: rows.branch_symbols as u32,
+            branch_call_edges: rows.branch_call_edges as u32,
+            branch_call_edges_stale: rows.branch_call_edges_stale as u32,
+        }
+    }
+}
+
+#[napi(object)]
 pub struct BranchDelta {
     pub added: Vec<String>,
     pub removed: Vec<String>,
@@ -551,6 +578,38 @@ impl Database {
     pub fn get_all_branches(&self) -> Result<Vec<String>> {
         self.with_conn(|conn| {
             db::get_all_branches(conn).map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn get_call_edge_overlay_branches(&self) -> Result<Vec<String>> {
+        self.with_conn(|conn| {
+            db::get_call_edge_overlay_branches(conn).map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn count_branch_catalog_rows(&self, branches: Vec<String>) -> Result<Vec<BranchCatalogRows>> {
+        self.with_conn(|conn| {
+            let rows = db::count_branch_catalog_rows(conn, &branches)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(rows.into_iter().map(BranchCatalogRows::from).collect())
+        })
+    }
+
+    #[napi]
+    pub fn delete_branch_catalogs(
+        &self,
+        branches: Vec<String>,
+        metadata_keys: Vec<String>,
+    ) -> Result<BranchCatalogPrune> {
+        self.with_conn(|conn| {
+            let pruned = db::delete_branch_catalogs(conn, &branches, &metadata_keys)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            Ok(BranchCatalogPrune {
+                branches: pruned.branches.into_iter().map(BranchCatalogRows::from).collect(),
+                metadata: pruned.metadata as u32,
+            })
         })
     }
 

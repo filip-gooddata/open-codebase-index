@@ -21,7 +21,8 @@ export type IndexMutationOperation =
   | "health-check"
   | "retry-failed-batches"
   | "recovery"
-  | "worktree";
+  | "worktree"
+  | "prune";
 
 export interface IndexLockOwner {
   pid: number;
@@ -83,6 +84,7 @@ const VALID_OPERATIONS = new Set<IndexMutationOperation>([
   "retry-failed-batches",
   "recovery",
   "worktree",
+  "prune",
 ]);
 
 let temporaryCounter = 0;

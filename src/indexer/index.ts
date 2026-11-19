@@ -46,6 +46,8 @@ import type { PrImpactResult } from "./pr-impact-types.js";
 import { UnsupportedIndexOperationError } from "./errors.js";
 export { UnsupportedIndexOperationError } from "./errors.js";
 import { getChunkGitBlame, type GitBlameMetadata } from "./git-blame.js";
+import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, collectBranchPruneOrphans, planBranchPrune, withoutLiveCatalogs, type BranchPruneResult } from "./branch-prune.js";
+import { listWorktreeCatalogIdentities } from "../git/worktree-catalogs.js";
 import { analyzeQueryIntent, extractFilePathHint, isExplicitIdentifierLookup, stripFilePathHint } from "./intent-aware-ranking.js";
 import {
   applyCommunityBoost,
@@ -246,18 +248,6 @@ function parseEdgeFingerprints(value: unknown): Map<string, string> | null {
   return fingerprints;
 }
 const SEED_SYMBOL_NAMESPACE_SAMPLE = 64;
-const BRANCH_SEED_METADATA_PREFIXES = [
-  "index.callGraphResolutionVersion",
-  "index.localModuleResolutionConfigHash",
-  "index.scipTypeScriptState",
-  "index.parser.javascriptVersion",
-  "index.parser.swiftVersion",
-  "index.parser.metalVersion",
-  "index.parser.markupVersion",
-  "index.parser.kotlinVersion",
-  "index.parser.rubyVersion",
-  "index.symbolExtractorVersion",
-] as const;
 const PHP_FUNCTION_SYMBOL_CHUNK_TYPES = new Set([
   "function_declaration",
   "function",
@@ -2131,6 +2121,80 @@ export class Indexer {
     database.gcOrphanEmbeddings();
 
     return removableChunkIds.length > 0;
+  }
+
+  /**
+   * Remove branch catalogs no checked-out worktree uses. Apply holds the index
+   * lock and commits only after a fresh worktree read still finds them unused.
+   */
+  async pruneBranchCatalogs(
+    options: { keys?: readonly string[]; apply?: boolean; signal?: AbortSignal } = {},
+  ): Promise<BranchPruneResult> {
+    const startedAt = Date.now();
+    const readLiveKeys = async (): Promise<ReadonlySet<string>> => {
+      const identities = await listWorktreeCatalogIdentities(this.projectRoot, { signal: options.signal });
+      throwIfOperationAborted(options.signal);
+      // A project root without its own .git (a subdirectory, a non-Git tree) indexes into
+      // "default", which no worktree listing names; keep it and this checkout's own catalog.
+      identities.add("default");
+      identities.add(getBranchOrDefault(this.projectRoot));
+      return new Set(Array.from(identities, (identity) => this.getBranchCatalogKeyFor(identity)));
+    };
+    const prune = async (apply: boolean, resumingPrune = false): Promise<BranchPruneResult> => {
+      const liveKeys = await readLiveKeys();
+      const dbPath = path.join(this.indexPath, "codebase.db");
+      if (!existsSync(dbPath)) throw new Error(`No index database at ${dbPath}.`);
+      const database = apply ? new Database(dbPath) : Database.openReadOnly(dbPath);
+      try {
+        const projectKeyPrefix = `${this.projectIdentityHash}:`;
+        let plan = planBranchPrune({
+          database,
+          indexPath: this.indexPath,
+          liveKeys,
+          keys: options.keys,
+          candidateKeyFilter: this.config.scope === "global"
+            ? (key) => key.startsWith(projectKeyPrefix)
+            : () => true,
+        });
+        const result = (applied: Awaited<ReturnType<typeof applyBranchPrune>> | null): BranchPruneResult => ({
+          applied: applied?.applied === true,
+          indexPath: this.indexPath,
+          catalogCount: plan.catalogCount,
+          liveCatalogCount: plan.liveCatalogCount,
+          catalogs: applied?.applied ? applied.catalogs : plan.catalogs,
+          refused: plan.refused,
+          removed: applied?.applied ? applied.removed : null,
+          // The lease clears an interrupted prune's recovery marker once this run returns,
+          // so even a refused request first finishes that prune's orphan collection.
+          gc: applied?.applied ? applied.gc : resumingPrune ? collectBranchPruneOrphans(database) : null,
+          elapsedMs: Date.now() - startedAt,
+        });
+        // A refused explicit key means the request was wrong: apply none of it.
+        if (!apply || plan.refused.length > 0) return result(null);
+
+        // Git takes no index lock to check out a worktree, so the deletes commit
+        // only if a fresh read after them still finds every catalog unused.
+        for (let attempt = 1; ; attempt += 1) {
+          const applied = await applyBranchPrune(database, plan, readLiveKeys);
+          if (applied.applied) return result(applied);
+          plan = withoutLiveCatalogs(plan, applied.liveKeys);
+          if (options.keys) return result(null);
+          if (attempt === 3) throw new Error("Worktrees kept changing while pruning; nothing was removed. Retry.");
+        }
+      } finally {
+        database.close();
+      }
+    };
+
+    if (!options.apply) return prune(false);
+    return this.withIndexMutationLease("prune", async (recoveredOwners) => {
+      // An interrupted prune is resumable: its deletes committed or rolled back, and this
+      // run's orphan collection finishes them. Any other writer's recovery comes first.
+      if (recoveredOwners.some((owner) => owner.operation !== "prune")) {
+        throw new Error("An interrupted index writer left recovery pending. Run `ocbi index` before pruning.");
+      }
+      return prune(true, recoveredOwners.length > 0);
+    }, options.signal);
   }
 
   private chunkMetadataFromData(chunk: ChunkData): ChunkMetadata {

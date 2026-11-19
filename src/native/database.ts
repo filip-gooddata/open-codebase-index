@@ -1,4 +1,6 @@
 import type {
+  BranchCatalogPrune,
+  BranchCatalogRows,
   BranchDelta,
   CallEdgeData,
   CentralityData,
@@ -235,6 +237,23 @@ export class Database {
   getAllBranches(): string[] {
     this.throwIfClosed();
     return this.inner.getAllBranches();
+  }
+
+  getCallEdgeOverlayBranches(): string[] {
+    this.throwIfClosed();
+    return this.inner.getCallEdgeOverlayBranches();
+  }
+
+  countBranchCatalogRows(branches: string[]): BranchCatalogRows[] {
+    this.throwIfClosed();
+    if (branches.length === 0) return [];
+    return this.inner.countBranchCatalogRows(branches);
+  }
+
+  deleteBranchCatalogs(branches: string[], metadataKeys: string[]): BranchCatalogPrune {
+    this.throwIfClosed();
+    if (branches.length === 0 && metadataKeys.length === 0) return { branches: [], metadata: 0 };
+    return this.inner.deleteBranchCatalogs(branches, metadataKeys);
   }
 
   getMetadata(key: string): string | null {

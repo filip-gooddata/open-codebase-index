@@ -221,6 +221,14 @@ ocbi index --project /path/to/repo --host omp
 ocbi impact --working-tree --json --project /path/to/repo --host omp
 ```
 
+A store shared by many worktrees keeps a catalog for every branch it has indexed. `ocbi prune` lists the catalogs whose key is neither the branch of a checked-out worktree of the project's repository nor the seven-character SHA of a detached worktree HEAD, with their rows per table. Nothing changes until you add `--apply`, which removes those catalogs under the index lock and then collects chunks, symbols, edges and embeddings no remaining catalog references. Name catalog keys to prune only those; if one of them is the catalog of a checked-out worktree, the command removes nothing and exits 1. Git offers no lock to hold, so a branch checked out in the milliseconds between prune's final worktree check and its commit can still lose its catalog; that catalog is rebuilt on the branch's next index.
+
+```bash
+ocbi prune --project /path/to/worktree --host claude          # dry run
+ocbi prune --apply --project /path/to/worktree --host claude  # remove stale catalogs
+ocbi prune old-branch 1a2b3c4 --apply --json --project /path/to/worktree --host claude
+```
+
 Use `ocbi index --dry-run` for a parse-only embedding-token total, `--estimate-only` for an estimate, and `ocbi --help` for command usage.
 
 Ordinary status reports stored catalog facts with freshness explicitly not checked. `--check-freshness` compares current selected source/configuration and HEAD with the index; it does not refresh the index or request embeddings. A successfully inspected missing/stale index still exits successfully; operational failures exit nonzero. The `--check-freshness` and status `--json` flags apply only to status (workspace status retains its separate JSON contract).

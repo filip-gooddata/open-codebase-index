@@ -1,0 +1,21 @@
+native/src/db/call_graph.rs
+  s_21bfa4fbcfac44::t_d451f41e41cec0 660-663,665,667-668,672-693
+src/indexer/index.ts
+  s_21bfa4fbcfac44::t_7373ef93ce4f06 2072-2073
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "40cb0381052453d9c6f826452b557809565d10f2",
+  "prompts": {},
+  "sessions": {
+    "s_21bfa4fbcfac44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "91c52c48-8070-4b7e-81d1-9f809dd27865",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

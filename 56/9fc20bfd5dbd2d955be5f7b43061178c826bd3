@@ -1,0 +1,47 @@
+src/config/defaults.ts
+  s_55a86ebfa4494b::t_21accc17215303 19
+src/config/merger.ts
+  s_55a86ebfa4494b::t_f8c96b47728206 7,27-30,163-167,241-320
+src/config/paths.ts
+  s_55a86ebfa4494b::t_30c0d018130120 8,70-74,91-97,205-209
+src/config/repository-route.ts
+  s_520d3b214cb9f0::t_a6b3236cb0c51b 1-354
+src/config/schema.ts
+  s_55a86ebfa4494b::t_3c2c06296df0a6 47-51,301-303
+src/git/layout.ts
+  s_520d3b214cb9f0::t_624b18b5081cb0 1-107
+src/indexer/index.ts
+  s_55a86ebfa4494b::t_88893ea13682f2 43,1632-1638,4405,8119-8125
+src/tools/execute-common.ts
+  s_55a86ebfa4494b::t_62918c404cd866 29-30,99-100
+src/utils/background-worker.ts
+  s_55a86ebfa4494b::t_419791f4a45b55 812
+tests/setup/isolated-home.ts
+  s_55a86ebfa4494b::t_cddb42eda49b72 1-14
+vitest.config.ts
+  s_55a86ebfa4494b::t_1e2fb7ffb01142 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "569fc20bfd5dbd2d955be5f7b43061178c826bd3",
+  "prompts": {},
+  "sessions": {
+    "s_520d3b214cb9f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f43f-e2ea-79d2-a878-dd88f319aac3",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_55a86ebfa4494b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca0f59ce-32e4-4e8a-ad49-8d6d6c4402de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

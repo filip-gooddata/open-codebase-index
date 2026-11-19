@@ -1,0 +1,33 @@
+src/config/merger.ts
+  s_e3469d9e180d92::t_32715489c8eb30 265,281-284,287-290,292-295,301
+src/config/paths.ts
+  s_55a86ebfa4494b::t_0cb6e8b8e0d860 70,91
+src/config/repository-route.ts
+  s_e3469d9e180d92::t_2fc76be3fd2b66 7,10-13,16-17,24-28,65-67,70-74,77,85,107-114,119,122,125,129,139-140,172,177-178,184,187,189-190,192-193,196,198-199,202,220-222,234,237,240,246-247,249,252,255-256,259,276-280
+src/indexer/index.ts
+  s_55a86ebfa4494b::t_865d4df94f5be6 1633
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "42eb88155bc59f83c33a19080068db0870cf4392",
+  "prompts": {},
+  "sessions": {
+    "s_55a86ebfa4494b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca0f59ce-32e4-4e8a-ad49-8d6d6c4402de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_e3469d9e180d92": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f45b-e182-7b22-9026-55c469549f3d",
+        "model": "gpt-6.2-sol"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

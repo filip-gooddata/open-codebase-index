@@ -1,0 +1,23 @@
+src/config/merger.ts
+  s_353cdf3fc83324::t_bc57cf74d95d29 1,125-129,131-133,135,137,139,143,145,147-153,161-171,190-191,193-197,238-239,241-252,254-255,259
+tests/adapter-indexing-control.test.ts
+  s_353cdf3fc83324::t_d4decf7af70aaf 161
+tests/host-mode-paths.test.ts
+  s_353cdf3fc83324::t_6974808732d141 83-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ec673681114f86c4be7408f8bcd627edff5132c8",
+  "prompts": {},
+  "sessions": {
+    "s_353cdf3fc83324": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0e6a8c6f-f417-4e0b-a889-4b5021610e04",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

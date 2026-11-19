@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import * as path from "path";
 
 import {
@@ -122,21 +122,35 @@ function isMissingPathError(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+interface ConfigLayer {
+  path: string;
+  config: Record<string, unknown> | null;
+}
+
 /**
- * Path resolution treats any existsSync failure as absence. Strict loads walk the same candidates
- * in order and stop at the first one that exists, throwing when one cannot be inspected.
+ * Path resolution treats any existsSync failure as absence. Strict loads read the same candidates
+ * directly, in the same order, and fall through only when a candidate is missing, so a config that
+ * cannot be read is an error rather than an absent layer.
  */
-function assertConfigCandidatesInspectable(candidates: string[]): void {
+function readStrictConfigLayer(candidates: string[]): ConfigLayer {
   for (const candidate of candidates) {
+    let content: string;
     try {
-      statSync(candidate);
-      return;
+      content = readFileSync(candidate, "utf-8");
     } catch (error: unknown) {
       if (isMissingPathError(error)) continue;
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Cannot inspect config file ${candidate}: ${message}`, { cause: error });
+      throw new Error(`Cannot read config file ${candidate}: ${message}`, { cause: error });
     }
+    return { path: candidate, config: parseJsonConfig(content, candidate) as Record<string, unknown> };
   }
+  return { path: candidates[0], config: null };
+}
+
+function getGlobalConfigCandidatePaths(host: HostMode): string[] {
+  return host === "opencode"
+    ? [getGlobalConfigPath(host)]
+    : [getGlobalConfigPath(host), getGlobalConfigPath("opencode")];
 }
 
 function loadJsonFile(filePath: string): unknown {
@@ -144,8 +158,18 @@ function loadJsonFile(filePath: string): unknown {
     return null;
   }
 
+  let content: string;
   try {
-    const content = readFileSync(filePath, "utf-8");
+    content = readFileSync(filePath, "utf-8");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load config file ${filePath}: ${message}`, { cause: error });
+  }
+  return parseJsonConfig(content, filePath);
+}
+
+function parseJsonConfig(content: string, filePath: string): unknown {
+  try {
     return validateConfigLayerShape(JSON.parse(content), filePath);
   } catch (error: unknown) {
     if (error instanceof Error && error.message.startsWith("Config file ")) {
@@ -154,7 +178,6 @@ function loadJsonFile(filePath: string): unknown {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to load config file ${filePath}: ${message}`, { cause: error });
   }
-
 }
 
 export function loadConfigFile(filePath: string): unknown {
@@ -164,7 +187,14 @@ export function loadConfigFile(filePath: string): unknown {
 export function loadProjectConfigLayer(projectRoot: string, host: HostMode): Record<string, unknown> {
   const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
   const projectConfig = loadJsonFile(projectConfigPath) as Record<string, unknown> | null;
+  return normalizeProjectConfigLayer(projectConfig, projectConfigPath, projectRoot);
+}
 
+function normalizeProjectConfigLayer(
+  projectConfig: Record<string, unknown> | null,
+  projectConfigPath: string,
+  projectRoot: string,
+): Record<string, unknown> {
   if (!projectConfig) {
     return {};
   }
@@ -202,29 +232,31 @@ export interface LoadMergedConfigOptions {
 }
 
 export function loadMergedConfig(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions = {}): unknown {
-  const globalConfigPath = resolveGlobalConfigPath(host);
-  const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
   let globalConfig: Record<string, unknown> | null = null;
   let globalConfigError: Error | null = null;
 
+  let projectConfig: Record<string, unknown> | null;
+  let normalizedProjectConfig: Record<string, unknown>;
   if (options.strict === true) {
-    assertConfigCandidatesInspectable(host === "opencode"
-      ? [getGlobalConfigPath(host)]
-      : [getGlobalConfigPath(host), getGlobalConfigPath("opencode")]);
-    assertConfigCandidatesInspectable(getProjectConfigCandidatePaths(projectRoot, host));
-  }
+    globalConfig = readStrictConfigLayer(getGlobalConfigCandidatePaths(host)).config;
+    const projectLayer = readStrictConfigLayer(getProjectConfigCandidatePaths(projectRoot, host));
+    projectConfig = projectLayer.config;
+    normalizedProjectConfig = normalizeProjectConfigLayer(projectConfig, projectLayer.path, projectRoot);
+  } else {
+    const globalConfigPath = resolveGlobalConfigPath(host);
+    const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
+    try {
+      globalConfig = loadJsonFile(globalConfigPath) as Record<string, unknown> | null;
+    } catch (error: unknown) {
+      globalConfigError = error instanceof Error ? error : new Error(String(error));
+    }
 
-  try {
-    globalConfig = loadJsonFile(globalConfigPath) as Record<string, unknown> | null;
-  } catch (error: unknown) {
-    globalConfigError = error instanceof Error ? error : new Error(String(error));
+    projectConfig = loadJsonFile(projectConfigPath) as Record<string, unknown> | null;
+    normalizedProjectConfig = loadProjectConfigLayer(projectRoot, host);
   }
-
-  const projectConfig = loadJsonFile(projectConfigPath) as Record<string, unknown> | null;
-  const normalizedProjectConfig = loadProjectConfigLayer(projectRoot, host);
 
   if (globalConfigError) {
-    if (!projectConfig || options.strict === true) {
+    if (!projectConfig) {
       throw globalConfigError;
     }
     globalConfig = null;

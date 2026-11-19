@@ -80,6 +80,29 @@ describe("host-aware path resolution", () => {
     expect(mergedIndexing()).toEqual({ watchFiles: false });
   });
 
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "fails a strict load on an unreadable global config that ordinary loads treat as absent",
+    () => {
+      const globalPath = resolveGlobalConfigPath("claude");
+      const projectPath = resolveWritableProjectConfigPath(mainRepoDir, "claude");
+      fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+      fs.mkdirSync(path.dirname(projectPath), { recursive: true });
+      fs.writeFileSync(globalPath, JSON.stringify({ indexing: { allowForceRebuild: false } }));
+      fs.writeFileSync(projectPath, JSON.stringify({ indexing: { watchFiles: false } }));
+      expect(loadMergedConfig(mainRepoDir, "claude", { strict: true })).toMatchObject({
+        indexing: { watchFiles: false, allowForceRebuild: false },
+      });
+
+      fs.chmodSync(path.dirname(globalPath), 0o000);
+      try {
+        expect(() => loadMergedConfig(mainRepoDir, "claude", { strict: true })).toThrow("Cannot read config file");
+        expect(loadMergedConfig(mainRepoDir, "claude")).toEqual({ indexing: { watchFiles: false } });
+      } finally {
+        fs.chmodSync(path.dirname(globalPath), 0o755);
+      }
+    },
+  );
+
   afterEach(() => {
     vi.unstubAllEnvs();
     fs.rmSync(homeDir, { recursive: true, force: true });

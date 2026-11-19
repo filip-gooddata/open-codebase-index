@@ -158,7 +158,7 @@ describe("adapter indexing cancellation and progress", () => {
         try {
           const inaccessibleGlobal = await run(true)
             .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
-          expect(inaccessibleGlobal).toContain("Cannot inspect config file");
+          expect(inaccessibleGlobal).toContain("Cannot read config file");
         } finally {
           fs.chmodSync(globalConfigDir, 0o755);
         }

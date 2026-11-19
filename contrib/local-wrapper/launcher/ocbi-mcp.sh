@@ -52,10 +52,10 @@
 #                    OCBI_REQUIRE_PROJECT=<name> it runs only when this checkout is linked to
 #                    the shared store of <name> (any listed project for "*") and exits 3
 #                    otherwise, so a forced or background index never lands on a local or
-#                    global index. A guarded run also refuses --config and any --host or
-#                    --project other than claude and this root, adds both when missing, and
-#                    checks that the linked config is project-scoped. The hook and the rebuild
-#                    set it.
+#                    global index. A guarded run accepts only the `index` subcommand, refuses
+#                    --config and any --host or --project other than claude and this root,
+#                    passes its own --host claude --project <absolute root>, and checks that
+#                    the linked config is project-scoped. The hook and the rebuild set it.
 #   --stale-check    for the listed project of the current directory, count branch catalogs
 #                    whose branch or worktree is gone and, once they reach OCBI_STALE_THRESHOLD
 #                    (15), notify through $OCBI_HOME/ocbi-notify.sh when it is installed. The
@@ -535,27 +535,39 @@ if [ "${1:-}" = "--cbi" ]; then
     log "refusing to run the CLI: $root is not linked to the shared store of $(if [ "$want" = "*" ]; then echo "a listed project"; else echo "$want"; fi) (route ${route:-none}${project:+, project $project})"
     exit 3
   fi
-  # A guarded run must index exactly what was checked: this root, the claude host paths and the
-  # linked config. Arguments that could point it elsewhere are refused.
+  # A guarded run only indexes, and indexes exactly what was checked: this root, the claude host
+  # paths and the linked config. Any --host must be claude and any --project must resolve, as the
+  # kernel and the CLI resolve it, to this root; both are then replaced by the launcher's own
+  # --host claude --project <absolute root>. Every other subcommand and --config are refused.
   if [ -n "$want" ]; then
-    prev=""
-    for arg in "$@"; do
-      case "$prev" in
-        --project) [ "$(phys_dir "$arg")" = "$(phys_dir "$root")" ] || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; } ;;
-        --host) [ "$arg" = claude ] || { log "refusing to run the CLI: --host $arg is not claude"; exit 3; } ;;
+    [ "${1:-}" = index ] || { log "refusing to run the CLI: only \`index\` runs with OCBI_REQUIRE_PROJECT, not \`${1:-}\`"; exit 3; }
+    real_root="$(cd -P "$root" 2>/dev/null && pwd -P)"
+    n=$#
+    pending=""
+    while [ "$n" -gt 0 ]; do
+      arg="$1"
+      shift
+      n=$((n - 1))
+      case "$pending" in
+        --project)
+          [ "$(cd -P "$arg" 2>/dev/null && pwd -P)" = "$real_root" ] || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; }
+          pending=""
+          continue
+          ;;
+        --host)
+          [ "$arg" = claude ] || { log "refusing to run the CLI: --host $arg is not claude"; exit 3; }
+          pending=""
+          continue
+          ;;
       esac
       case "$arg" in
+        --project | --host) pending="$arg"; continue ;;
         --config | --config=* | --project=* | --host=*) log "refusing to run the CLI: $arg is not allowed with OCBI_REQUIRE_PROJECT"; exit 3 ;;
       esac
-      prev="$arg"
+      set -- "$@" "$arg"
     done
-    # The CLI defaults to another host's paths and to the working directory, so name both.
-    has_host=0 has_project=0
-    for arg in "$@"; do
-      case "$arg" in --host) has_host=1 ;; --project) has_project=1 ;; esac
-    done
-    [ "$has_host" = 1 ] || set -- "$@" --host claude
-    [ "$has_project" = 1 ] || set -- "$@" --project "$root"
+    [ -z "$pending" ] || { log "refusing to run the CLI: $pending needs a value"; exit 3; }
+    set -- "$@" --host claude --project "$real_root"
     # The config the CLI reads is the one linked into this checkout; it must stay project-scoped.
     if ! "$node_bin" -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit(c && c.scope === "project" ? 0 : 1)' \
       "$root/.claude/codebase-index.json" 2>/dev/null; then

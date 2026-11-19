@@ -261,7 +261,18 @@ expect_eq "guarded --cbi refuses --config" 3 "$?"
 (cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --host codex >/dev/null 2>&1)
 expect_eq "guarded --cbi refuses another --host" 3 "$?"
 out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --host claude --project "$W/" 2>/dev/null)"
-expect_eq "guarded --cbi accepts its own --host and --project" "CBI index --host claude --project $W/ cwd=$W" "$out"
+expect_eq "guarded --cbi replaces its own --host and --project with the absolute root" "CBI index --host claude --project $W cwd=$W" "$out"
+# From a symlinked working directory, ../x means different directories to the shell's logical cd
+# and to the CLI; the guard resolves it as the CLI does and refuses the other checkout.
+mkdir -p "$T/lnk" && ln -s "$W" "$T/lnk/wt" && ln -s "$W" "$T/lnk/demo"
+(cd "$T/lnk/wt" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project ../demo >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses a relative --project that resolves to another checkout" 3 "$?"
+out="$(cd "$T/lnk/wt" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --force --project . 2>/dev/null)"
+expect_match "guarded --cbi accepts --project . and passes the physical root" "^CBI index --force --host claude --project $W cwd=" "$out"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi workspace status >/dev/null 2>&1)
+expect_eq "guarded --cbi runs only index" 3 "$?"
+out="$(cd "$W" && bash "$L" --cbi workspace status --json 2>/dev/null)"
+expect_eq "unguarded --cbi passes arguments unchanged" "CBI workspace status --json cwd=$W" "$out"
 # A store config without an explicit project scope is never linked, so guarded runs refuse.
 cp "$H/demo/codebase-index.json" "$T/demo-config.json"
 for scope in none global; do

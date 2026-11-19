@@ -112,7 +112,8 @@ or, on any git version, by linking it as the repository's `post-checkout` hook i
   runs the forced index through the launcher with `OCBI_REQUIRE_PROJECT=<project>`, so the
   launcher refuses it (exit 3) unless that checkout is linked to the project's store at that
   moment. The post-checkout hook does the same with `OCBI_REQUIRE_PROJECT='*'`, so it never
-  indexes a local or global index.
+  indexes a local or global index. A guarded run accepts only `index`, and always runs it with
+  `--host claude --project <absolute root>`.
 - One process indexes a store at a time (`indexing.lock`). The CLI returns `INDEX_BUSY`; MCP
   retrieval waits up to `autoIndexWaitMs`.
 - The guard does not restart a server that dies. After a server is killed, reconnect the MCP

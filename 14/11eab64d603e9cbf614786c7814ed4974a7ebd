@@ -1,0 +1,19 @@
+.github/workflows/fork-release.yml
+  s_20c158207d2860::t_58ee8b39300956 125-127,129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1411eab64d603e9cbf614786c7814ed4974a7ebd",
+  "prompts": {},
+  "sessions": {
+    "s_20c158207d2860": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f44e-f847-7b93-9b30-6c2a95c054f6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+src/indexer/index.ts
+  s_4a78f267859098::t_592d6b4f11f864 43,1639-1666,4123-4127,4141-4146,4157-4161,4491-4497,4952-4964,8022,8044,8185
+tests/repository-route-indexer-guards.test.ts
+  s_4a78f267859098::t_5ff843e31bfcc0 1-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dedf416dc168f43db489e7cbac1549a4d795439d",
+  "prompts": {},
+  "sessions": {
+    "s_4a78f267859098": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d9da0c60-fe41-4f3b-b004-75e8b83b9f64",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

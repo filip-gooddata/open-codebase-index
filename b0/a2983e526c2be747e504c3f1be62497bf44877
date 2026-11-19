@@ -1,0 +1,21 @@
+contrib/local-wrapper/launcher/ocbi-mcp.sh
+  s_bd362efb6487a9::t_043ca79783af18 546-556,565-566
+contrib/local-wrapper/test/run-tests.sh
+  s_bd362efb6487a9::t_f83f8a71112848 280-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b0a2983e526c2be747e504c3f1be62497bf44877",
+  "prompts": {},
+  "sessions": {
+    "s_bd362efb6487a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a80945e2-76af-44b1-880e-f2cce5721021",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

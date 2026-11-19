@@ -1,0 +1,63 @@
+CHANGELOG.md
+  s_4c55006e162bd0::t_5c9ee7d96d8937 10-13
+docs/installation.md
+  s_4c55006e162bd0::t_c015be488aa676 224-231
+native/src/bindings/database.rs
+  s_4c55006e162bd0::t_a641f35b012657 34-60,582-606
+native/src/db.rs
+  s_4c55006e162bd0::t_218874928b8170 6,8
+native/src/db/branch_prune.rs
+  s_6e988806a95bc1::t_300e2c8f40849e 1-239
+src/adapters/cbi.ts
+  s_4c55006e162bd0::t_60ec7ac7050f19 13,34-38,56,65-66,87,115,125-129,173,216,286-299
+src/git/worktree-catalogs.ts
+  s_923616aa74ca1f::t_4a2c56a87f8d1e 1-68
+src/indexer/branch-prune.ts
+  s_4c55006e162bd0::t_bbfd51b5326924 1-221
+src/indexer/index-lock.ts
+  s_4c55006e162bd0::t_9185c7c5f197b2 24-25,87
+src/indexer/index.ts
+  s_4c55006e162bd0::t_3931e09ccfe1ec 49-50,2098-2145
+src/native/database.ts
+  s_4c55006e162bd0::t_e29ca85f5fafba 2-3,242-253
+src/native/index.ts
+  s_4c55006e162bd0::t_e7a955220df3d2 2-3
+src/native/types.ts
+  s_4c55006e162bd0::t_993eaaf81cc4a3 292-304
+src/tools/operations.ts
+  s_4c55006e162bd0::t_5dccff0cc81490 38,793-802
+tests/branch-prune.test.ts
+  s_4c55006e162bd0::t_40d766e0e412de 1-319
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b8ce92db732c527e2103f59c7152659dc8678390",
+  "prompts": {},
+  "sessions": {
+    "s_4c55006e162bd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb7729c6-370f-475d-aed4-0408b1d96620",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_6e988806a95bc1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07f228f7-b75f-4902-bc99-0ea40c7fd5ac",
+        "model": "unknown"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_923616aa74ca1f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f2f3-297c-7af1-84a8-77299dd79fab",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+CHANGELOG.md
+  s_34eab3217eea7f::t_924aa10d03c394 12-13
+docs/configuration.md
+  s_34eab3217eea7f::t_d588f8980a7018 71-73,78,85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a77dcf27dd3bbf71e3c1a1f2e62b6f4adcc1b7b8",
+  "prompts": {},
+  "sessions": {
+    "s_34eab3217eea7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7498582-06d6-40df-aec7-83d8d45f2731",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

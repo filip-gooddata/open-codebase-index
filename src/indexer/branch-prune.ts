@@ -104,7 +104,7 @@ function catalogSidecarPaths(indexPath: string, entries: readonly string[], key:
 }
 
 export function planBranchPrune(input: BranchPrunePlanInput): BranchPrunePlan {
-  const listed = input.database.getAllBranches();
+  const listed = [...new Set([...input.database.getAllBranches(), ...input.database.getCallEdgeOverlayBranches()])];
   const refused: BranchPruneRefusal[] = [];
   let targets: string[];
   if (input.keys) {
@@ -114,6 +114,8 @@ export function planBranchPrune(input: BranchPrunePlanInput): BranchPrunePlan {
         refused.push({ key, reason: "catalog of a checked-out worktree" });
       } else if (key === "") {
         refused.push({ key, reason: "empty catalog key" });
+      } else if (!input.candidateKeyFilter(key)) {
+        refused.push({ key, reason: "catalog of another project in this global index" });
       } else {
         targets.push(key);
       }
@@ -136,6 +138,19 @@ export function planBranchPrune(input: BranchPrunePlanInput): BranchPrunePlan {
     catalogs,
     refused,
     metadataKeys: targets.flatMap(catalogMetadataKeys),
+  };
+}
+
+/** Drop catalogs whose worktree was checked out after the plan was made. */
+export function withoutLiveCatalogs(plan: BranchPrunePlan, liveKeys: ReadonlySet<string>): BranchPrunePlan {
+  const checkedOut = plan.catalogs.filter((catalog) => liveKeys.has(catalog.key));
+  if (checkedOut.length === 0) return plan;
+  const kept = plan.catalogs.filter((catalog) => !liveKeys.has(catalog.key));
+  return {
+    ...plan,
+    catalogs: kept,
+    refused: [...plan.refused, ...checkedOut.map(({ key }) => ({ key, reason: "checked out while pruning" }))],
+    metadataKeys: kept.flatMap(({ key }) => catalogMetadataKeys(key)),
   };
 }
 
@@ -217,7 +232,11 @@ export function formatBranchPruneResult(result: BranchPruneResult): string {
       + `chunks=${result.gc.chunks} embeddings=${result.gc.embeddings}`,
     );
   }
-  if (!result.applied && result.catalogs.length > 0) lines.push("Dry run. Re-run with --apply to remove them.");
+  if (!result.applied && result.catalogs.length > 0) {
+    lines.push(result.refused.length > 0
+      ? "Nothing removed. Drop the refused keys and re-run."
+      : "Dry run. Re-run with --apply to remove them.");
+  }
   lines.push(`Elapsed: ${result.elapsedMs} ms`);
   return lines.join("\n");
 }

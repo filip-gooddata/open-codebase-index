@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCbiCli } from "../src/adapters/cbi.js";
 import { parseConfig } from "../src/config/schema.js";
 import { parseWorktreeCatalogIdentities } from "../src/git/worktree-catalogs.js";
+import { planBranchPrune } from "../src/indexer/branch-prune.js";
 import { Indexer } from "../src/indexer/index.js";
 import { acquireIndexLock, IndexLockContentionError, releaseIndexLock } from "../src/indexer/index-lock.js";
 import { Database, hashContent } from "../src/native/index.js";
@@ -193,19 +194,80 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(again.catalogs).toEqual([]);
   });
 
-  it("refuses explicit keys of checked-out worktrees, including a detached HEAD, and prunes the rest", async () => {
+  it("refuses explicit keys of checked-out worktrees, including a detached HEAD, and applies none of the request", async () => {
     seedStore();
     const result = await createIndexer().pruneBranchCatalogs({ keys: ["feature", detachedKey, "gone"], apply: true });
 
+    expect(result.applied).toBe(false);
     expect(result.refused).toEqual([
       { key: "feature", reason: "catalog of a checked-out worktree" },
       { key: detachedKey, reason: "catalog of a checked-out worktree" },
     ]);
     expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["gone"]);
+    expect(result.removed).toBeNull();
     expect(catalogRows("feature")).toBe(5);
     expect(catalogRows(detachedKey)).toBe(5);
+    expect(catalogRows("gone")).toBe(5);
+    expect(sidecarCount("gone")).toBe(3);
+  });
+
+  it("prunes explicitly named catalogs only", async () => {
+    seedStore();
+    const result = await createIndexer().pruneBranchCatalogs({ keys: ["gone", "never-indexed"], apply: true });
+
+    expect(result.applied).toBe(true);
+    expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["gone", "never-indexed"]);
     expect(catalogRows("gone")).toBe(0);
     expect(catalogRows("pr/42")).toBe(5);
+  });
+
+  it("lists and prunes a catalog left only in the call-edge overlay", async () => {
+    seedStore();
+    sql("INSERT INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved) VALUES ('edges-only', 'e-main-only', NULL, 0);");
+
+    const result = await createIndexer().pruneBranchCatalogs({ apply: true });
+
+    expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["edges-only", "gone", "pr/42"]);
+    expect(count("SELECT COUNT(*) AS n FROM branch_call_edges WHERE branch = 'edges-only'")).toBe(0);
+  });
+
+  it("keeps a catalog whose worktree is checked out while the prune plans", async () => {
+    seedStore();
+    git(repo, ["branch", "gone"]);
+    const original = Database.prototype.countBranchCatalogRows;
+    vi.spyOn(Database.prototype, "countBranchCatalogRows").mockImplementation(function (this: Database, ...args) {
+      git(repo, ["worktree", "add", path.join(tempDir, "wt-gone"), "gone"]);
+      return original.apply(this, args);
+    });
+
+    const result = await createIndexer().pruneBranchCatalogs({ apply: true });
+
+    expect(result.applied).toBe(true);
+    expect(result.refused).toEqual([{ key: "gone", reason: "checked out while pruning" }]);
+    expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["pr/42"]);
+    expect(catalogRows("gone")).toBe(5);
+    expect(sidecarCount("gone")).toBe(3);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key = 'index.branchCommit.${hashContent("gone").slice(0, 24)}'`)).toBe(1);
+    expect(catalogRows("pr/42")).toBe(0);
+  });
+
+  it("refuses explicit keys outside this project in a global index", () => {
+    seedStore();
+    const database = Database.openReadOnly(dbPath);
+    try {
+      const plan = planBranchPrune({
+        database,
+        indexPath,
+        liveKeys: new Set(),
+        keys: ["gone", "pr/42"],
+        candidateKeyFilter: (key) => key === "pr/42",
+        namespacedSidecars: false,
+      });
+      expect(plan.refused).toEqual([{ key: "gone", reason: "catalog of another project in this global index" }]);
+      expect(plan.catalogs.map((catalog) => ({ key: catalog.key, sidecars: catalog.sidecars }))).toEqual([{ key: "pr/42", sidecars: [] }]);
+    } finally {
+      database.close();
+    }
   });
 
   it("prunes a detached-HEAD catalog once its worktree is gone", async () => {

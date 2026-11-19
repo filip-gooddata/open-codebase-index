@@ -582,6 +582,13 @@ impl Database {
     }
 
     #[napi]
+    pub fn get_call_edge_overlay_branches(&self) -> Result<Vec<String>> {
+        self.with_conn(|conn| {
+            db::get_call_edge_overlay_branches(conn).map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
     pub fn count_branch_catalog_rows(&self, branches: Vec<String>) -> Result<Vec<BranchCatalogRows>> {
         self.with_conn(|conn| {
             let rows = db::count_branch_catalog_rows(conn, &branches)

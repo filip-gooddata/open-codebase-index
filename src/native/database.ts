@@ -239,6 +239,11 @@ export class Database {
     return this.inner.getAllBranches();
   }
 
+  getCallEdgeOverlayBranches(): string[] {
+    this.throwIfClosed();
+    return this.inner.getCallEdgeOverlayBranches();
+  }
+
   countBranchCatalogRows(branches: string[]): BranchCatalogRows[] {
     this.throwIfClosed();
     if (branches.length === 0) return [];

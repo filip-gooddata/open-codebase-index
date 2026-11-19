@@ -40,6 +40,40 @@ fn count_rows(conn: &Connection, table: &str, branch: &str) -> DbResult<usize> {
     Ok(count as usize)
 }
 
+fn distinct_branches(conn: &Connection, table: &str, out: &mut Vec<String>) -> DbResult<()> {
+    // Skip-scan the (branch, ...) primary key: one seek per catalog, not one per row.
+    let mut stmt = conn.prepare(&format!(
+        "WITH RECURSIVE keys(branch) AS (
+            SELECT MIN(branch) FROM {table}
+            UNION ALL
+            SELECT (SELECT MIN(branch) FROM {table} WHERE branch > keys.branch)
+            FROM keys WHERE keys.branch IS NOT NULL
+        )
+        SELECT branch FROM keys WHERE branch IS NOT NULL"
+    ))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(())
+}
+
+/// Catalog keys that hold call-edge overlay rows, which the chunk and symbol
+/// catalog listing does not see.
+pub fn get_call_edge_overlay_branches(conn: &Connection) -> DbResult<Vec<String>> {
+    let tables = branch_tables(conn)?;
+    let mut branches = Vec::new();
+    if tables.call_edges {
+        distinct_branches(conn, "branch_call_edges", &mut branches)?;
+    }
+    if tables.call_edges_stale {
+        distinct_branches(conn, "branch_call_edges_stale", &mut branches)?;
+    }
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
+}
+
 /// Count each catalog's rows without changing the store. Overlay tables an
 /// older store lacks count as zero.
 pub fn count_branch_catalog_rows(
@@ -219,6 +253,24 @@ mod tests {
         );
         let pruned = delete_branch_catalogs(&mut conn, &strings(&["gone"]), &[]).unwrap();
         assert_eq!(pruned.branches, vec![rows("gone", 2, 1, 0, 0)]);
+        assert!(get_call_edge_overlay_branches(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lists_catalogs_present_only_in_the_call_edge_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = init_db(&dir.path().join("overlay.db")).unwrap();
+        seed(&conn, "both", true);
+        conn.execute_batch(
+            "INSERT INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved) VALUES ('edges-only', 'e1', NULL, 0), ('edges-only', 'e2', NULL, 0);
+             INSERT INTO branch_call_edges_stale (branch, edge_id) VALUES ('stale-only', 'e1');",
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_call_edge_overlay_branches(&conn).unwrap(),
+            strings(&["both", "edges-only", "stale-only"])
+        );
     }
 
     #[test]

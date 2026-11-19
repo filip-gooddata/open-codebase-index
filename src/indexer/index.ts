@@ -46,7 +46,7 @@ import type { PrImpactResult } from "./pr-impact-types.js";
 import { UnsupportedIndexOperationError } from "./errors.js";
 export { UnsupportedIndexOperationError } from "./errors.js";
 import { getChunkGitBlame, type GitBlameMetadata } from "./git-blame.js";
-import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, planBranchPrune, type BranchPruneResult } from "./branch-prune.js";
+import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, planBranchPrune, withoutLiveCatalogs, type BranchPruneResult } from "./branch-prune.js";
 import { listWorktreeCatalogIdentities } from "../git/worktree-catalogs.js";
 import { analyzeQueryIntent, extractFilePathHint, isExplicitIdentifierLookup, stripFilePathHint } from "./intent-aware-ranking.js";
 import {
@@ -2103,16 +2103,19 @@ export class Indexer {
     options: { keys?: readonly string[]; apply?: boolean; signal?: AbortSignal } = {},
   ): Promise<BranchPruneResult> {
     const startedAt = Date.now();
-    const prune = async (apply: boolean): Promise<BranchPruneResult> => {
+    const readLiveKeys = async (): Promise<Set<string>> => {
       const worktrees = await listWorktreeCatalogIdentities(this.projectRoot, { signal: options.signal });
       throwIfOperationAborted(options.signal);
-      const liveKeys = new Set(worktrees.map(({ identity }) => this.getBranchCatalogKeyFor(identity)));
+      return new Set(worktrees.map(({ identity }) => this.getBranchCatalogKeyFor(identity)));
+    };
+    const prune = async (apply: boolean): Promise<BranchPruneResult> => {
+      const liveKeys = await readLiveKeys();
       const dbPath = path.join(this.indexPath, "codebase.db");
       if (!existsSync(dbPath)) throw new Error(`No index database at ${dbPath}.`);
       const database = apply ? new Database(dbPath) : Database.openReadOnly(dbPath);
       try {
         const projectKeyPrefix = `${this.projectIdentityHash}:`;
-        const plan = planBranchPrune({
+        let plan = planBranchPrune({
           database,
           indexPath: this.indexPath,
           liveKeys,
@@ -2122,9 +2125,13 @@ export class Indexer {
             : () => true,
           namespacedSidecars: this.config.scope === "project",
         });
-        const applied = apply ? applyBranchPrune(database, plan) : null;
+        // A refused explicit key means the request was wrong: apply none of it.
+        const applying = apply && plan.refused.length === 0;
+        // Git does not take the index lock to add a worktree; re-read just before deleting.
+        if (applying) plan = withoutLiveCatalogs(plan, await readLiveKeys());
+        const applied = applying ? applyBranchPrune(database, plan) : null;
         return {
-          applied: apply,
+          applied: applying,
           indexPath: this.indexPath,
           catalogCount: plan.catalogCount,
           liveCatalogCount: plan.liveCatalogCount,

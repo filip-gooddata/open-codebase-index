@@ -221,7 +221,7 @@ ocbi index --project /path/to/repo --host omp
 ocbi impact --working-tree --json --project /path/to/repo --host omp
 ```
 
-A store shared by many worktrees keeps a catalog for every branch it has indexed. `ocbi prune` lists the catalogs whose key is neither the branch of a checked-out worktree of the project's repository nor the seven-character SHA of a detached worktree HEAD, with their rows per table. Nothing changes until you add `--apply`, which removes those catalogs under the index lock and then collects chunks, symbols, edges and embeddings no remaining catalog references. Name catalog keys to prune only those; the command refuses the catalog of a checked-out worktree and exits 1.
+A store shared by many worktrees keeps a catalog for every branch it has indexed. `ocbi prune` lists the catalogs whose key is neither the branch of a checked-out worktree of the project's repository nor the seven-character SHA of a detached worktree HEAD, with their rows per table. Nothing changes until you add `--apply`, which removes those catalogs under the index lock and then collects chunks, symbols, edges and embeddings no remaining catalog references. Name catalog keys to prune only those; if one of them is the catalog of a checked-out worktree, the command removes nothing and exits 1.
 
 ```bash
 ocbi prune --project /path/to/worktree --host claude          # dry run

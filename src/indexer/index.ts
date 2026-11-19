@@ -46,7 +46,7 @@ import type { PrImpactResult } from "./pr-impact-types.js";
 import { UnsupportedIndexOperationError } from "./errors.js";
 export { UnsupportedIndexOperationError } from "./errors.js";
 import { getChunkGitBlame, type GitBlameMetadata } from "./git-blame.js";
-import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, collectBranchPruneOrphans, planBranchPrune, withoutLiveCatalogs, type BranchPruneResult } from "./branch-prune.js";
+import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, collectBranchPruneOrphans, planBranchPrune, withoutLiveCatalogs, type BranchPrunePlan, type BranchPruneResult } from "./branch-prune.js";
 import { listWorktreeCatalogIdentities } from "../git/worktree-catalogs.js";
 import { analyzeQueryIntent, extractFilePathHint, isExplicitIdentifierLookup, stripFilePathHint } from "./intent-aware-ranking.js";
 import {
@@ -2144,11 +2144,15 @@ export class Indexer {
       const liveKeys = await readLiveKeys();
       const dbPath = path.join(this.indexPath, "codebase.db");
       if (!existsSync(dbPath)) throw new Error(`No index database at ${dbPath}.`);
-      const database = apply ? new Database(dbPath) : Database.openReadOnly(dbPath);
+      const projectKeyPrefix = `${this.projectIdentityHash}:`;
+      // Plan from a read-only open: a writable open of an older store installs the
+      // call-edge GC queue, whose one-time sweep drops overlay rows no member holds,
+      // so a catalog left only in the overlay would be missing from a later plan.
+      const planning = Database.openReadOnly(dbPath);
+      let plan: BranchPrunePlan;
       try {
-        const projectKeyPrefix = `${this.projectIdentityHash}:`;
-        let plan = planBranchPrune({
-          database,
+        plan = planBranchPrune({
+          database: planning,
           indexPath: this.indexPath,
           liveKeys,
           keys: options.keys,
@@ -2156,21 +2160,33 @@ export class Indexer {
             ? (key) => key.startsWith(projectKeyPrefix)
             : () => true,
         });
-        const result = (applied: Awaited<ReturnType<typeof applyBranchPrune>> | null): BranchPruneResult => ({
-          applied: applied?.applied === true,
-          indexPath: this.indexPath,
-          catalogCount: plan.catalogCount,
-          liveCatalogCount: plan.liveCatalogCount,
-          catalogs: applied?.applied ? applied.catalogs : plan.catalogs,
-          refused: plan.refused,
-          removed: applied?.applied ? applied.removed : null,
-          // The lease clears an interrupted prune's recovery marker once this run returns,
-          // so even a refused request first finishes that prune's orphan collection.
-          gc: applied?.applied ? applied.gc : resumingPrune ? collectBranchPruneOrphans(database) : null,
-          elapsedMs: Date.now() - startedAt,
-        });
-        // A refused explicit key means the request was wrong: apply none of it.
-        if (!apply || plan.refused.length > 0) return result(null);
+      } finally {
+        planning.close();
+      }
+      const result = (
+        applied: Awaited<ReturnType<typeof applyBranchPrune>> | null,
+        gc: BranchPruneResult["gc"] = null,
+      ): BranchPruneResult => ({
+        applied: applied?.applied === true,
+        indexPath: this.indexPath,
+        catalogCount: plan.catalogCount,
+        liveCatalogCount: plan.liveCatalogCount,
+        catalogs: applied?.applied ? applied.catalogs : plan.catalogs,
+        refused: plan.refused,
+        removed: applied?.applied ? applied.removed : null,
+        gc: applied?.applied ? applied.gc : gc,
+        elapsedMs: Date.now() - startedAt,
+      });
+      // A refused explicit key means the request was wrong: apply none of it, and
+      // leave the store unopened for writing unless an interrupted prune needs it.
+      const refused = plan.refused.length > 0;
+      if (!apply || (refused && !resumingPrune)) return result(null);
+
+      const database = new Database(dbPath);
+      try {
+        // The lease clears an interrupted prune's recovery marker once this run returns,
+        // so even a refused request first finishes that prune's orphan collection.
+        if (refused) return result(null, collectBranchPruneOrphans(database));
 
         // Git takes no index lock to check out a worktree, so the deletes commit
         // only if a fresh read after them still finds every catalog unused.

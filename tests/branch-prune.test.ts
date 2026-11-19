@@ -232,6 +232,54 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(count("SELECT COUNT(*) AS n FROM branch_call_edges WHERE branch = 'edges-only'")).toBe(0);
   });
 
+  function seedOverlayOnlyCatalogInMarker3Store(branch: string): void {
+    seedStore();
+    seedCatalog(branch, false);
+    // A gd.3 store: no GC queue or delete triggers, so dropping membership queues nothing,
+    // and the next writable open sweeps the overlay row no member of the branch holds.
+    sql(`
+      DROP TRIGGER branch_call_edges_edge_deleted;
+      DROP TRIGGER branch_call_edges_member_deleted;
+      DROP TABLE branch_call_edges_pending_gc;
+      UPDATE metadata SET value = '3' WHERE key = 'branch_call_edges_version';
+      DELETE FROM branch_chunks WHERE branch = '${branch}';
+      DELETE FROM branch_symbols WHERE branch = '${branch}';
+    `);
+  }
+
+  function overlayVersion(): string {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'branch_call_edges_version'").get() as { value: string };
+    db.close();
+    return row.value;
+  }
+
+  it("prunes an overlay-only catalog of a store the prune's own open upgrades", async () => {
+    seedOverlayOnlyCatalogInMarker3Store("edges-only");
+
+    const result = await createIndexer().pruneBranchCatalogs({ apply: true });
+
+    expect(result.applied).toBe(true);
+    expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["edges-only", "gone", "pr/42"]);
+    expect(overlayVersion()).toBe("4");
+    expect(catalogRows("edges-only")).toBe(0);
+    expect(sidecarCount("edges-only")).toBe(0);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key LIKE '%.${hashContent("edges-only").slice(0, 24)}'`)).toBe(0);
+  });
+
+  it("leaves an older store untouched when it refuses a request", async () => {
+    seedOverlayOnlyCatalogInMarker3Store("edges-only");
+
+    const result = await createIndexer().pruneBranchCatalogs({ keys: ["edges-only", "feature"], apply: true });
+
+    expect(result.applied).toBe(false);
+    expect(result.refused).toEqual([{ key: "feature", reason: "catalog of a checked-out worktree" }]);
+    expect(overlayVersion()).toBe("3");
+    expect(catalogRows("edges-only")).toBe(1);
+    expect(sidecarCount("edges-only")).toBe(3);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key LIKE '%.${hashContent("edges-only").slice(0, 24)}'`)).toBe(2);
+  });
+
   it("keeps a catalog whose worktree is checked out while the prune plans", async () => {
     seedStore();
     git(repo, ["branch", "gone"]);

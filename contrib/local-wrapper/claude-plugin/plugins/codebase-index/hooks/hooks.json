@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"@OCBI_HOME@/ocbi-mcp.sh\" --session-hint"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_codebase-index_codebase-index__index_codebase",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"@OCBI_HOME@/ocbi-mcp.sh\" --guard-force"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__plugin_codebase-index_codebase-index__index_status",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"@OCBI_HOME@/ocbi-mcp.sh\" --status-output"
+          }
+        ]
+      }
+    ]
+  }
+}

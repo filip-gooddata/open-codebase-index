@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Usage: ocbi-rebuild PROJECT
+# Starts a full rebuild of PROJECT's shared index in the background ($OCBI_HOME/ocbi-rebuild.sh).
+# macOS: through the launchd job @LABEL@ when it is loaded, so the run outlives the terminal and
+# the session. Elsewhere, or without the job: detached with nohup.
+set -u
+OCBI_HOME="${OCBI_HOME:-@OCBI_HOME@}"
+label="${OCBI_REBUILD_LABEL:-@LABEL@}"
+project="${1:-}"
+[ -n "$project" ] || { echo "usage: ocbi-rebuild PROJECT (a name from $OCBI_HOME/projects.conf)" >&2; exit 64; }
+grep -q "^$project|" "$OCBI_HOME/projects.conf" 2>/dev/null ||
+  { echo "$project is not listed in $OCBI_HOME/projects.conf" >&2; exit 64; }
+mkdir -p "$OCBI_HOME/logs"
+
+if [ "$(uname -s)" = Darwin ] && launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+  printf '%s\n' "$project" >"$OCBI_HOME/rebuild.request"
+  launchctl kickstart "gui/$(id -u)/$label" || exit 1
+else
+  nohup bash "$OCBI_HOME/ocbi-rebuild.sh" "$project" </dev/null >>"$OCBI_HOME/logs/rebuild-nohup.log" 2>&1 &
+fi
+echo "Rebuild of $project started in the background. Logs: $OCBI_HOME/logs/"

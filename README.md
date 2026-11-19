@@ -298,6 +298,7 @@ Native changes require Rust and `npm run build:native`. See [Contributing](CONTR
 - [Provider-free structural indexing](docs/structural-indexing.md)
 - [API impact evidence](docs/api-impact.md)
 - [Workspace readiness](docs/workspace-status.md)
+- [Local wrapper for shared worktree indexes](docs/local-wrapper.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [Architecture](ARCHITECTURE.md)
 - [Evaluation](docs/evaluation.md)

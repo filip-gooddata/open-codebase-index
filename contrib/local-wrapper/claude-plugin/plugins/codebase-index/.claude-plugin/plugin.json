@@ -1,0 +1,14 @@
+{
+  "name": "codebase-index",
+  "version": "@VERSION@",
+  "description": "open-codebase-index skills, commands and MCP server, launched through @OCBI_HOME@/ocbi-mcp.sh",
+  "homepage": "https://github.com/Helweg/open-codebase-index",
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": {
+    "codebase-index": {
+      "command": "/bin/bash",
+      "args": ["@OCBI_HOME@/ocbi-mcp.sh"]
+    }
+  }
+}

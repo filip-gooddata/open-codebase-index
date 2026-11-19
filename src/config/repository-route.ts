@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, realpathSync } from "fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 
 import type { HostMode } from "./host.js";
+import { validateConfigLayerShape } from "./layer-shape.js";
 import { resolveRepositoryLayout, type RepositoryLayout } from "../git/layout.js";
 import { getHostProjectIndexRelativePath } from "./paths.js";
 
@@ -104,29 +105,59 @@ function getRoutingShapeError(configPath: string, config: unknown): string | nul
   return null;
 }
 
+function getErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** True when nothing, not even a dangling symbolic link, exists at the path. */
+function isAbsentPath(filePath: string): boolean {
+  try {
+    lstatSync(filePath);
+    return false;
+  } catch (error: unknown) {
+    if (getErrorCode(error) === "ENOENT") return true;
+    throw new Error(`Failed to read repository config ${filePath}: ${getErrorMessage(error)}`, { cause: error });
+  }
+}
+
 /**
- * Reads the repository config file. Returns null when it does not exist and
- * throws a config error naming the file when it cannot be read or parsed or
- * its routing fields are invalid (fail closed: never fall back to a local store).
+ * Reads the repository config file. Returns null only when the file is
+ * genuinely absent (ENOENT with nothing at the path). Any other read failure,
+ * a dangling symbolic link, unparsable JSON, or an invalid routing or section
+ * shape throws a config error naming the file (fail closed: never fall back
+ * to a local store).
  */
 function readRepositoryConfig(configPath: string): Record<string, unknown> | null {
-  if (!existsSync(configPath)) {
-    return null;
+  let content: string;
+  try {
+    content = readFileSync(configPath, "utf-8");
+  } catch (error: unknown) {
+    if (getErrorCode(error) === "ENOENT" && isAbsentPath(configPath)) {
+      return null;
+    }
+    const reason = getErrorCode(error) === "ENOENT"
+      ? "it is a symbolic link whose target does not exist"
+      : getErrorMessage(error);
+    throw new Error(`Failed to read repository config ${configPath}: ${reason}`, { cause: error });
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+    parsed = JSON.parse(content);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to load repository config ${configPath}: ${message}`, { cause: error });
+    throw new Error(`Failed to load repository config ${configPath}: ${getErrorMessage(error)}`, { cause: error });
   }
 
   const shapeError = getRoutingShapeError(configPath, parsed);
   if (shapeError) {
     throw new Error(shapeError);
   }
-  return parsed as Record<string, unknown>;
+  return validateConfigLayerShape(parsed, configPath);
 }
 
 interface RoleDecision {
@@ -248,8 +279,7 @@ function describeRouteDrift(route: RepositoryRoute): string | null {
   try {
     current = readRepositoryConfig(route.configPath);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    return `Repository config changed since start: ${message}`;
+    return `Repository config changed since start: ${getErrorMessage(error)}`;
   }
 
   const before = route.config === null ? null : JSON.stringify(route.config);
@@ -259,33 +289,52 @@ function describeRouteDrift(route: RepositoryRoute): string | null {
     : `Repository config ${route.configPath} changed since start; restart to apply it.`;
 }
 
+export interface RepositoryRouteStatusOptions {
+  /** Effective config scope; a global-scope store is never repository-routed. */
+  scope?: "project" | "global";
+  /** Return an empty string for a legacy checkout with nothing to warn about. */
+  omitLegacy?: boolean;
+}
+
 /**
  * Status lines for the repository route of a checkout. `indexPath` is the
- * store the indexer actually uses.
+ * store the indexer actually uses. A global-scope store gets no checkout role.
  */
-export function formatRepositoryRouteStatus(projectRoot: string, host: HostMode, indexPath: string): string {
+export function formatRepositoryRouteStatus(
+  projectRoot: string,
+  host: HostMode,
+  indexPath: string,
+  options: RepositoryRouteStatusOptions = {},
+): string {
+  const scope = options.scope ?? "project";
   let route: RepositoryRoute;
   try {
     route = resolveRepositoryRoute(projectRoot, host);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    return `Repository route error: ${message}`;
+    return `Repository route error: ${getErrorMessage(error)}`;
   }
 
   const lines: string[] = [];
-  if (route.config !== null) {
+  const warnings: string[] = [];
+  if (scope === "global") {
+    lines.push(`Store: ${indexPath} (global scope)`);
+  } else if (route.config !== null) {
     const source = route.storeSource === "repository config"
       ? `repository config ${route.configPath ?? ""}`
       : "repository default store";
     lines.push(`Store: ${indexPath} (${source})`);
     lines.push(`Checkout role: ${route.role} - ${route.roleReason}`);
+    warnings.push(...route.warnings);
   } else {
     lines.push(`Store: ${indexPath} (host default)`);
+    warnings.push(...route.warnings);
   }
 
-  const warnings = [...route.warnings];
   const drift = describeRouteDrift(route);
   if (drift) warnings.push(drift);
+  if (options.omitLegacy && route.config === null && warnings.length === 0) {
+    return "";
+  }
   for (const warning of warnings) {
     lines.push(`Warning: ${warning}`);
   }

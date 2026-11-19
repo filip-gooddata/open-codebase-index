@@ -14,13 +14,12 @@ import { loadMergedConfig } from "../../config/merger.js";
 import { formatCostEstimate, formatDryRunEstimate } from "../../utils/cost.js";
 import { formatPrImpact } from "../../tools/format-pr-impact.js";
 import { formatCodeCommunities } from "../../tools/format-communities.js";
-import { executeArchitectureContext } from "../../tools/execute-common.js";
+import { executeArchitectureContext, executeIndexStatus } from "../../tools/execute-common.js";
 import {
   addKnowledgeBase,
   findSimilarCode,
   getIndexLogs,
   getIndexMetrics,
-  getIndexStatus,
   getPrImpact,
   getIndexerForProject,
   getCodeCommunities,
@@ -39,7 +38,6 @@ import {
   formatHealthCheck,
   formatIndexStats,
   formatSearchResults,
-  formatStatus,
   MAX_CONTEXT_PACK_TOKEN_BUDGET,
   MIN_CONTEXT_PACK_TOKEN_BUDGET,
 } from "../../tools/utils.js";
@@ -380,8 +378,8 @@ export function registerCodebaseIndexTools(pi: CodebaseIndexExtensionAPI, schema
       checkFreshness: schema.Optional(schema.Boolean({ default: false, description: "Check selected source against the index at this point in time without indexing" })),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const status = await getIndexStatus(projectRoot(ctx), HOST, params, { signal });
-      return text(formatStatus(status), status);
+      const result = await executeIndexStatus(projectRoot(ctx), HOST, params, { signal }, { omitLegacyRoute: true });
+      return text(result.text, result.details);
     },
   });
 

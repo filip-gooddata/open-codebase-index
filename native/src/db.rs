@@ -217,6 +217,7 @@ fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
         if branch_call_edges_marker_is_current(conn)? {
             return Ok(());
         }
+        let creates_queue = !has_branch_call_edges_pending_gc(conn)?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS branch_call_edges (
@@ -298,6 +299,11 @@ fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
             END;
             "#,
         )?;
+        if creates_queue {
+            // Rows that earlier writers orphaned were never queued; the one
+            // all-branch sweep at install removes them, as refresh used to.
+            gc_unreachable_branch_call_edges(conn, None)?;
+        }
         conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
             params![BRANCH_CALL_EDGES_MARKER_KEY, BRANCH_CALL_EDGES_MARKER_VERSION],
@@ -4818,6 +4824,43 @@ mod tests {
         gc_orphan_symbols(&conn).unwrap();
         assert!(pending_gc_keys(&conn).is_empty());
         assert_eq!(overlay_rows(&conn), vec![overlay("e", "target_c")]);
+    }
+
+    #[test]
+    fn installing_the_queue_sweeps_rows_a_0_34_writer_orphaned_before_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("marker3-legacy.db");
+        {
+            let mut conn = init_db(&db_path).unwrap();
+            seed_shared_target_b(&mut conn);
+            conn.execute_batch(
+                "DROP TRIGGER branch_call_edges_edge_deleted; \
+                 DROP TRIGGER branch_call_edges_member_deleted; \
+                 DROP TABLE branch_call_edges_pending_gc;",
+            )
+            .unwrap();
+            set_metadata(&conn, "branch_call_edges_version", "3").unwrap();
+            // 0.34.0 drops the caller from `a` while the store has no queue.
+            legacy_leave(&conn, "a", "caller");
+        }
+
+        let conn = init_db(&db_path).unwrap();
+        assert_eq!(
+            get_metadata(&conn, "branch_call_edges_version")
+                .unwrap()
+                .as_deref(),
+            Some("4")
+        );
+        refresh_main_gcs(&conn);
+        legacy_join(&conn, "a", "caller");
+        assert_eq!(
+            callee_target(&conn, "caller", "a").as_deref(),
+            Some("target_b")
+        );
+        assert_eq!(
+            overlay_rows(&conn),
+            vec![overlay("b", "target_b"), overlay("e", "target_c")]
+        );
     }
 
     #[test]

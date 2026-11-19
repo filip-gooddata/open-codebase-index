@@ -736,9 +736,9 @@ fn delete_unreachable_branch_call_edges(
 /// Delete edge targets and stale marks whose edge is gone or whose caller is no
 /// longer a member of their branch: in `branch` only, or in every branch for
 /// `None`. The seed fallback runs it for the branch it emptied. The all-branch
-/// pass reads every overlay row, so it belongs to maintenance GC, where it
-/// repairs rows that no queue recorded, such as rows left before the queue
-/// existed.
+/// pass reads every overlay row, so it runs once when the queue is installed
+/// and otherwise belongs to maintenance GC, where it repairs rows that no
+/// queue recorded.
 pub fn gc_unreachable_branch_call_edges(
     conn: &Connection,
     branch: Option<&str>,

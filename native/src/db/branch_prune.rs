@@ -134,18 +134,22 @@ pub fn delete_branch_catalogs(
         let mut metadata = conn.prepare("DELETE FROM metadata WHERE key = ?1")?;
 
         for branch in branches {
+            // Overlay rows go before the branch's symbols, so the member-deleted
+            // trigger finds none of them to queue for the orphan GCs.
+            let branch_call_edges = match edges.as_mut() {
+                Some(statement) => statement.execute(params![branch])?,
+                None => 0,
+            };
+            let branch_call_edges_stale = match stale.as_mut() {
+                Some(statement) => statement.execute(params![branch])?,
+                None => 0,
+            };
             result.branches.push(BranchCatalogRows {
                 branch: branch.clone(),
                 branch_chunks: chunks.execute(params![branch])?,
                 branch_symbols: symbols.execute(params![branch])?,
-                branch_call_edges: match edges.as_mut() {
-                    Some(statement) => statement.execute(params![branch])?,
-                    None => 0,
-                },
-                branch_call_edges_stale: match stale.as_mut() {
-                    Some(statement) => statement.execute(params![branch])?,
-                    None => 0,
-                },
+                branch_call_edges,
+                branch_call_edges_stale,
             });
         }
         for key in metadata_keys {
@@ -187,6 +191,43 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    /// Reduce a current store to the marker-1 overlay: the target table
+    /// alone, without the stale table, the queue, or any trigger. Dropping a
+    /// table that a remaining trigger names would leave a store no opener
+    /// produces, where deletes fail with "no such table".
+    fn downgrade_overlay_to_marker_1(conn: &Connection) {
+        conn.execute_batch(
+            "DROP TRIGGER branch_call_edges_legacy_write; \
+             DROP TRIGGER branch_call_edges_edge_deleted; \
+             DROP TRIGGER branch_call_edges_member_deleted; \
+             DROP TABLE branch_call_edges_pending_gc; \
+             DROP TABLE branch_call_edges_stale;",
+        )
+        .unwrap();
+    }
+
+    fn pending_gc_rows(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM branch_call_edges_pending_gc", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn deleting_a_catalog_queues_none_of_its_overlay_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = init_db(&dir.path().join("queue.db")).unwrap();
+        seed(&conn, "gone", true);
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO call_edges (id, from_symbol_id, target_name, to_symbol_id, call_type, line, col, is_resolved)
+             VALUES ('e1', 's1', 'callee', NULL, 'Call', 1, 1, 0);",
+        )
+        .unwrap();
+
+        let pruned = delete_in_tx(&conn, &strings(&["gone"]), &[]).unwrap();
+        assert_eq!(pruned.branches, vec![rows("gone", 2, 1, 1, 1)]);
+        assert_eq!(pending_gc_rows(&conn), 0);
     }
 
     fn delete_in_tx(conn: &Connection, branches: &[String], keys: &[String]) -> DbResult<BranchCatalogPrune> {
@@ -274,8 +315,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = init_db(&dir.path().join("legacy.db")).unwrap();
         seed(&conn, "gone", false);
-        conn.execute_batch("DROP TABLE branch_call_edges_stale; DROP TABLE branch_call_edges;")
-            .unwrap();
+        downgrade_overlay_to_marker_1(&conn);
+        conn.execute_batch("DROP TABLE branch_call_edges;").unwrap();
 
         assert_eq!(
             count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(),
@@ -313,7 +354,7 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute_batch("DROP TABLE branch_call_edges_stale;").unwrap();
+        downgrade_overlay_to_marker_1(&conn);
 
         let pruned = delete_in_tx(&conn, &strings(&["gone"]), &[]).unwrap();
         assert_eq!(pruned.branches, vec![rows("gone", 2, 1, 1, 0)]);

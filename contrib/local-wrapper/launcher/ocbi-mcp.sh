@@ -543,8 +543,17 @@ if [ "${1:-}" = "--cbi" ]; then
     [ "${1:-}" = index ] || { log "refusing to run the CLI: only \`index\` runs with OCBI_REQUIRE_PROJECT, not \`${1:-}\`"; exit 3; }
     # Paths are compared as the CLI sees them: path.resolve from this working directory (which the
     # CLI inherits), then realpath. The shell's cd, logical or -P, resolves ".." differently.
-    node_real() { "$node_bin" -e 'try { process.stdout.write(require("fs").realpathSync(require("path").resolve(process.argv[1]))); } catch { process.exit(1); }' "$1"; }
-    real_root="$(node_real "$root")" || { log "refusing to run the CLI: cannot resolve $root"; exit 3; }
+    # Both paths are compared inside Node, so no shell substitution can alter them; "--" keeps
+    # them from being read as Node options.
+    same_path() {
+      "$node_bin" -e 'const fs = require("fs"), path = require("path");
+        const real = (p) => fs.realpathSync(path.resolve(p));
+        try { process.exit(real(process.argv[1]) === real(process.argv[2]) ? 0 : 1); } catch { process.exit(1); }' -- "$1" "$2"
+    }
+    if ! real_root="$(cd -P "$root" 2>/dev/null && pwd -P)" || ! same_path "$real_root" "$root"; then
+      log "refusing to run the CLI: cannot resolve $root"
+      exit 3
+    fi
     n=$#
     pending=""
     while [ "$n" -gt 0 ]; do
@@ -553,7 +562,8 @@ if [ "${1:-}" = "--cbi" ]; then
       n=$((n - 1))
       case "$pending" in
         --project)
-          [ "$(node_real "$arg")" = "$real_root" ] || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; }
+          case "$arg" in "" | -*) log "refusing to run the CLI: --project needs a path, not '$arg'"; exit 3 ;; esac
+          same_path "$arg" "$root" || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; }
           pending=""
           continue
           ;;

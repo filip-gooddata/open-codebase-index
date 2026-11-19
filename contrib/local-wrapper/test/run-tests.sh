@@ -277,6 +277,18 @@ expect_eq "guarded --cbi refuses ../demo/redirect/.. (the CLI resolves it to the
 out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project redirect/.. 2>/dev/null)"
 expect_eq "guarded --cbi accepts redirect/.. (the CLI resolves it to this checkout)" "CBI index --host claude --project $W cwd=$W" "$out"
 rm -f "$W/redirect"
+# Values that must never reach a resolver or the CLI: empty, option-shaped, and a sibling whose
+# name differs only by a trailing newline.
+for bad in "" "--require=$T/x.js" "-e"; do
+  out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project "$bad" 2>&1)"
+  expect_eq "guarded --cbi refuses --project '$bad' without starting the CLI" "3 no-cli" "$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project "$bad" >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
+done
+nl_sibling="$W
+"
+mkdir -p "$nl_sibling"
+out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project "$nl_sibling" 2>&1)"
+expect_eq "guarded --cbi refuses a sibling named like the root plus a newline" "3 no-cli" "$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project "$nl_sibling" >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
+rm -rf "$nl_sibling"
 (cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project >/dev/null 2>&1)
 expect_eq "guarded --cbi refuses --project without a value" 3 "$?"
 (cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --host >/dev/null 2>&1)

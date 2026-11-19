@@ -10,6 +10,7 @@ import codebaseIndexPiExtension from "../src/adapters/pi/extension.js";
 import codebaseIndexOmpExtension from "../src/adapters/omp/extension.js";
 import { index_codebase } from "../src/adapters/opencode/tools.js";
 import { parseConfig } from "../src/config/schema.js";
+import { executeIndexCodebase } from "../src/tools/execute-common.js";
 import { getIndexerForProject, initializeTools } from "../src/tools/operation-runtime.js";
 import { OperationCancelledError } from "../src/utils/operation-control.js";
 
@@ -76,6 +77,61 @@ describe("adapter indexing cancellation and progress", () => {
       const results = await indexer.search("worker39", 1, { definitionIntent: true, metadataOnly: true });
       expect(results[0]).toMatchObject({ name: "worker39", filePath: path.join(root, "worker-39.ts") });
     } finally {
+      await indexer.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["Pi", "omp", "OpenCode"] as const)("%s refuses force when indexing.allowForceRebuild is false", async (host) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "adapter-force-refusal-"));
+    const hostMode: HostMode = host === "OpenCode" ? "opencode" : "pi";
+    for (let i = 0; i < 3; i++) {
+      fs.writeFileSync(path.join(root, `kept-${i}.ts`), `export function kept${i}() { return ${i}; }\n`);
+    }
+    const baseIndexing = { mode: "structural", autoIndex: false, watchFiles: false, requireProjectMarker: false } as const;
+    const configFor = (allowForceRebuild: boolean) => parseConfig({
+      indexing: { ...baseIndexing, allowForceRebuild },
+      include: ["**/*.ts"],
+      exclude: [],
+      search: { minScore: 0 },
+    });
+    initializeTools(root, configFor(false), hostMode);
+    const indexer = getIndexerForProject(root, hostMode);
+    const nativeTool = host === "OpenCode" ? undefined : nativeIndexTool(host);
+    const run = async (force: boolean): Promise<string> => {
+      if (nativeTool) {
+        const result = await nativeTool.execute("force-refusal", { force }, new AbortController().signal, () => {},
+          { cwd: root } as ExtensionContext);
+        return result.content.map((part) => ("text" in part ? part.text : "")).join("\n");
+      }
+      return index_codebase.execute({ force }, {
+        worktree: root,
+        abort: new AbortController().signal,
+        metadata: () => {},
+      } as Parameters<typeof index_codebase.execute>[1]);
+    };
+    try {
+      await run(false);
+      const before = await indexer.getStatus();
+      expect(before.indexed).toBe(true);
+
+      const refused = await run(true);
+      expect(refused).toContain("FORCE_REBUILD_DISABLED: forced rebuild refused");
+      expect(refused).toContain("ocbi index --force --allow-shared-rebuild");
+      const results = await indexer.search("kept2", 1, { definitionIntent: true, metadataOnly: true });
+      expect(results[0]).toMatchObject({ name: "kept2" });
+
+      const overridden = await executeIndexCodebase(root, hostMode, { force: true }, undefined, undefined, {
+        allowForceRebuildOverride: true,
+      });
+      expect(overridden.isError).not.toBe(true);
+      expect(overridden.text).not.toContain("FORCE_REBUILD_DISABLED");
+
+      initializeTools(root, configFor(true), hostMode);
+      const allowed = await run(true);
+      expect(allowed).not.toContain("FORCE_REBUILD_DISABLED");
+    } finally {
+      await getIndexerForProject(root, hostMode).close();
       await indexer.close();
       fs.rmSync(root, { recursive: true, force: true });
     }

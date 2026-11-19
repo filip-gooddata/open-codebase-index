@@ -52,6 +52,12 @@ export interface IndexingConfig {
   autoIndexRetryDelayMs: number;
   watchFiles: boolean;
   /**
+   * Allow forced rebuilds (index_codebase force=true) from tools and the CLI.
+   * When false, forced rebuilds are refused; the CLI accepts --allow-shared-rebuild
+   * as an explicit override. Default: true
+   */
+  allowForceRebuild: boolean;
+  /**
    * On macOS, defer automatic indexing while the computer is using battery power.
    * Manual index requests are never blocked. Default: false
    */
@@ -303,6 +309,9 @@ export function parseConfig(raw: unknown): ParsedCodebaseIndexConfig {
       ? Math.min(10_000, Math.max(10, Math.floor(rawIndexing.autoIndexRetryDelayMs)))
       : defaultIndexing.autoIndexRetryDelayMs,
     watchFiles: typeof rawIndexing.watchFiles === "boolean" ? rawIndexing.watchFiles : defaultIndexing.watchFiles,
+    allowForceRebuild: typeof rawIndexing.allowForceRebuild === "boolean"
+      ? rawIndexing.allowForceRebuild
+      : defaultIndexing.allowForceRebuild,
     pauseBackgroundIndexingOnBattery: typeof rawIndexing.pauseBackgroundIndexingOnBattery === "boolean"
       ? rawIndexing.pauseBackgroundIndexingOnBattery
       : defaultIndexing.pauseBackgroundIndexingOnBattery,

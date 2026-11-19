@@ -59,6 +59,7 @@ import {
   getIndexerForProject,
   indexerCache,
   getProjectRoot,
+  getRuntimeConfigForProject,
   getSharedIndexer,
   initializeTools,
   isToolEffectivenessEnabled,
@@ -87,6 +88,26 @@ export type IndexStatusResult = StatusResult & {
 type HealthCheckResult = Awaited<ReturnType<Indexer["healthCheck"]>>;
 type PrImpactResult = Awaited<ReturnType<Indexer["getPrImpact"]>>;
 type IndexMessageResult = { kind: "message"; text: string };
+
+export const FORCE_REBUILD_DISABLED_CODE = "FORCE_REBUILD_DISABLED" as const;
+export const FORCE_REBUILD_OVERRIDE_FLAG = "--allow-shared-rebuild" as const;
+export type IndexForceRefusedResult = {
+  kind: "refused";
+  code: typeof FORCE_REBUILD_DISABLED_CODE;
+  text: string;
+};
+
+export interface IndexCodebaseOptions {
+  /** Explicit operator override for indexing.allowForceRebuild=false. Only the CLI sets this. */
+  allowForceRebuildOverride?: boolean;
+}
+
+export const FORCE_REBUILD_REFUSED_TEXT = [
+  `${FORCE_REBUILD_DISABLED_CODE}: forced rebuild refused because indexing.allowForceRebuild is false for this project.`,
+  "A forced rebuild clears every branch catalog in the index and re-embeds the whole codebase.",
+  "Run index_codebase without force for a normal incremental refresh.",
+  `If a full rebuild is really needed, ask the user to run \`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG}\` in a terminal.`,
+].join("\n");
 
 type ProgressCb = (title: string, metadata: Record<string, unknown>) => void | Promise<void>;
 const MAX_CALL_GRAPH_CANDIDATES = 5;
@@ -656,14 +677,25 @@ export async function runIndexCodebase(
   args: { force?: boolean; estimateOnly?: boolean; dryRun?: boolean; verbose?: boolean },
   onProgress?: ProgressCb,
   control?: OperationControl,
+  options: IndexCodebaseOptions = {},
 ): Promise<
   | { kind: "estimate"; estimate: CostEstimate }
   | { kind: "dryrun"; dryrun: DryRunEstimate }
   | { kind: "stats"; stats: IndexStats; providerError?: import("../utils/operation-control.js").ProviderRequestError }
   | IndexMessageResult
   | IndexBusyResult
+  | IndexForceRefusedResult
 > {
   const root = getProjectRoot(projectRoot, host);
+  if (
+    args.force === true
+    && args.estimateOnly !== true
+    && args.dryRun !== true
+    && options.allowForceRebuildOverride !== true
+    && !getRuntimeConfigForProject(root, host).indexing.allowForceRebuild
+  ) {
+    return { kind: "refused", code: FORCE_REBUILD_DISABLED_CODE, text: FORCE_REBUILD_REFUSED_TEXT };
+  }
   const indexer = getIndexerForProject(root, host);
   await runOperationPhase(control, "preparing_index");
   let providerError: import("../utils/operation-control.js").ProviderRequestError | undefined;

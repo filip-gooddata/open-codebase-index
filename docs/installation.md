@@ -182,6 +182,15 @@ codex plugin add codebase-index@helweg-plugins
 
 Codex uses `.codebase-index/` project storage.
 
+Codex stops waiting for an MCP tool after its `tool_timeout_sec`. Set it above `indexing.autoIndexWaitMs` (converted to seconds) for this server, or a retrieval call that waits for first-use indexing is cut off before the index is ready:
+
+```toml
+[mcp_servers.codebase-index]
+tool_timeout_sec = 120
+```
+
+The idle engine shuts down after 900 seconds by default for `--host codex`; pass `--mcp-idle-timeout 0` to keep it running and watching files.
+
 ## Claude Code
 
 From Claude Code, add the marketplace and install the plugin:
@@ -230,6 +239,14 @@ ocbi prune old-branch 1a2b3c4 --apply --json --project /path/to/worktree --host 
 ```
 
 Use `ocbi index --dry-run` for a parse-only embedding-token total, `--estimate-only` for an estimate, and `ocbi --help` for command usage.
+
+A forced rebuild clears every branch catalog in the index and re-embeds the whole codebase. When several checkouts or sessions share one index, set `"indexing": { "allowForceRebuild": false }` so that `index_codebase` with `force: true` is refused in every host. An operator who really needs a full rebuild, for example after changing the embedding model, runs it from a terminal in the checkout that owns the index:
+
+```bash
+ocbi index --force --allow-shared-rebuild --project /path/to/repo --host claude
+```
+
+`--allow-shared-rebuild` is accepted only together with `--force`. Linked worktrees catch up through their normal incremental refresh afterwards.
 
 Ordinary status reports stored catalog facts with freshness explicitly not checked. `--check-freshness` compares current selected source/configuration and HEAD with the index; it does not refresh the index or request embeddings. A successfully inspected missing/stale index still exits successfully; operational failures exit nonzero. The `--check-freshness` and status `--json` flags apply only to status (workspace status retains its separate JSON contract).
 

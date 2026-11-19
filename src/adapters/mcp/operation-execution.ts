@@ -8,6 +8,7 @@ import type {
 
 import { isIndexLockContentionError } from "../../indexer/index-lock.js";
 import { UnsupportedIndexOperationError } from "../../indexer/errors.js";
+import { FORCE_REBUILD_DISABLED_CODE, FORCE_REBUILD_OVERRIDE_FLAG } from "../../tools/operations.js";
 import {
   AutoIndexRetrievalUnavailableError,
   getRuntimeConfigForProject,
@@ -29,6 +30,7 @@ export type McpOperationErrorCode =
   | "PROVIDER_ERROR"
   | "INDEX_BUSY"
   | "INDEX_UNAVAILABLE"
+  | "FORCE_REBUILD_DISABLED"
   | "UNSUPPORTED_OPERATION"
   | "INTERNAL_ERROR";
 
@@ -54,7 +56,7 @@ export function hasActiveMcpExecutions(): boolean {
 
 class ReportedToolError extends Error {
   constructor(
-    readonly kind: "busy" | "unavailable" | "internal",
+    readonly kind: "busy" | "unavailable" | "refused" | "internal",
     readonly safeText?: string,
   ) {
     super("The operation reported an error result.");
@@ -123,6 +125,10 @@ function errorDetails(
     code = "INDEX_BUSY";
     retryable = true;
     nextAction = "Wait for the current index operation to finish, then retry.";
+  } else if (error instanceof ReportedToolError && error.kind === "refused") {
+    code = "FORCE_REBUILD_DISABLED";
+    retryable = false;
+    nextAction = `Run index_codebase without force for a normal refresh. A full rebuild needs the user to run \`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG}\` in a terminal.`;
   } else if (error instanceof AutoIndexRetrievalUnavailableError
     || (error instanceof ReportedToolError && error.kind === "unavailable")) {
     code = "INDEX_UNAVAILABLE";
@@ -159,6 +165,7 @@ function operationErrorResult(error: McpOperationError, safeText?: string): Call
 function classifyReportedResult(result: CallToolResult): ReportedToolError {
   const text = getText(result);
   if (text.startsWith("INDEX_BUSY:")) return new ReportedToolError("busy", text);
+  if (text.startsWith(`${FORCE_REBUILD_DISABLED_CODE}:`)) return new ReportedToolError("refused", text);
   if (/index (?:is )?(?:not found|unavailable|not ready)/i.test(text)) {
     return new ReportedToolError("unavailable");
   }
@@ -356,7 +363,11 @@ export async function executeMcpOperation(
       );
       if (executionFailure) throw executionFailure;
     }
-    if (operation === "index_status") {
+    if (operation === "index_status" && runtime.host === "claude") {
+      // Claude Code shows structuredContent instead of the text block when both are present.
+      result = { ...result };
+      delete result.structuredContent;
+    } else if (operation === "index_status") {
       const diagnostics = await raceWithOperationSignal(
         runtime.diagnostics.snapshot(tracked.id, stallTimeoutMs),
         operationController.signal,

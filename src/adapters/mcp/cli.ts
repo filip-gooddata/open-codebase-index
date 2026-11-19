@@ -20,7 +20,7 @@ import {
   markMcpServerOrderedShutdown,
 } from "../../mcp-server.js";
 import { loadConfigFile, loadMergedConfig } from "../../config/merger.js";
-import { getIndexerForProject } from "../../tools/operations.js";
+import { FORCE_REBUILD_OVERRIDE_FLAG, getIndexerForProject, type IndexCodebaseOptions } from "../../tools/operations.js";
 import { initializeTools } from "../../tools/operation-runtime.js";
 import { executeIndexCodebase } from "../../tools/execute-common.js";
 import { hasProjectMarker } from "../../utils/files.js";
@@ -36,6 +36,7 @@ export interface CliIndexArgs {
   host: HostMode;
   config?: string;
   force: boolean;
+  allowSharedRebuild: boolean;
   estimateOnly: boolean;
   dryRun: boolean;
   verbose: boolean;
@@ -53,6 +54,7 @@ export function parseIndexArgs(argv: string[], cwd: string): CliIndexArgs {
   let host: HostMode = "opencode";
   let config: string | undefined;
   let force = false;
+  let allowSharedRebuild = false;
   let estimateOnly = false;
   let dryRun = false;
   let verbose = false;
@@ -113,6 +115,11 @@ export function parseIndexArgs(argv: string[], cwd: string): CliIndexArgs {
       continue;
     }
 
+    if (arg === FORCE_REBUILD_OVERRIDE_FLAG) {
+      allowSharedRebuild = true;
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       throw new Error("help-requested");
     }
@@ -120,7 +127,20 @@ export function parseIndexArgs(argv: string[], cwd: string): CliIndexArgs {
     throw new Error(`Unknown index option: ${arg}`);
   }
 
-  return { project: project ?? resolveDefaultProjectRoot(cwd), host, config, force, estimateOnly, dryRun, verbose };
+  if (allowSharedRebuild && !force) {
+    throw new Error(`${FORCE_REBUILD_OVERRIDE_FLAG} requires --force.`);
+  }
+
+  return {
+    project: project ?? resolveDefaultProjectRoot(cwd),
+    host,
+    config,
+    force,
+    allowSharedRebuild,
+    estimateOnly,
+    dryRun,
+    verbose,
+  };
 }
 
 export function printUsage(output: (text: string) => void = (text) => console.error(text)): void {
@@ -133,6 +153,7 @@ Options:
   --host <mode>          opencode, codex, claude, pi (alias: omp), or jcode
   --config <path>        Explicit JSON config path
   --force                Rebuild index even if already up to date
+  --allow-shared-rebuild With --force: override indexing.allowForceRebuild=false
   --estimate-only        Estimate indexing cost only
   --dry-run              Parse only; report the exact embedding token total without indexing
   --verbose              Include detailed final index statistics
@@ -393,6 +414,8 @@ interface CliIndexCommandDeps {
     host: HostMode,
     args: SharedIndexCodebaseArgs,
     onProgress?: (title: string, metadata: Record<string, unknown>) => void,
+    control?: undefined,
+    options?: IndexCodebaseOptions,
   ) => Promise<{ text: string; isError?: boolean }>;
   initializeRuntimeForConfig?: (projectRoot: string, parsedConfig: ReturnType<typeof parseConfig>, host: HostMode) => void;
   readCliConfigFile?: (filePath: string) => unknown;
@@ -455,7 +478,7 @@ export async function handleIndexCommand(
 
     const result = await runIndex(parsedArgs.project, parsedArgs.host, indexArgs, (title, metadata) => {
       printIndexProgress(printStderr, title, metadata);
-    });
+    }, undefined, { allowForceRebuildOverride: parsedArgs.allowSharedRebuild });
 
     if (result.isError) {
       printStderr(result.text);

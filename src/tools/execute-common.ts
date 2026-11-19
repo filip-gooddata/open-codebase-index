@@ -38,6 +38,7 @@ import {
 } from "./utils.js";
 import { formatCodeCommunities } from "./format-communities.js";
 import type { OperationControl } from "../utils/operation-control.js";
+import type { IndexCodebaseOptions } from "./operations.js";
 import { runOperationPhase } from "../utils/operation-control.js";
 
 export interface ExecutionResult {
@@ -75,11 +76,13 @@ export async function executeIndexCodebase(
   args: SharedIndexCodebaseArgs,
   onProgress?: IndexProgressCallback,
   control?: OperationControl,
+  options?: IndexCodebaseOptions,
 ): Promise<ExecutionResult> {
-  const result = await runIndexCodebase(projectRoot, host, args, onProgress, control);
+  const result = await runIndexCodebase(projectRoot, host, args, onProgress, control, options);
   if (result.kind === "estimate") return { text: formatCostEstimate(result.estimate) };
   if (result.kind === "dryrun") return { text: formatDryRunEstimate(result.dryrun) };
   if (result.kind === "busy") return { text: result.text, isError: true };
+  if (result.kind === "refused") return { text: result.text, isError: true };
   if (result.kind === "message") return { text: result.text };
   return {
     text: formatIndexStats(result.stats, args.verbose ?? false),

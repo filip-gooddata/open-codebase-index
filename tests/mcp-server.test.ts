@@ -1441,6 +1441,69 @@ describe("MCP server tools and prompts", () => {
     expect(indexerMockState.instances[0]?.getStatus).not.toHaveBeenCalled();
   });
 
+  async function connectWithConfig(config: ReturnType<typeof parseConfig>, host: "opencode" | "claude" | "codex"): Promise<void> {
+    server = createMcpServer("/tmp/test-project", config, host);
+    client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+  }
+
+  it.each(["opencode", "claude", "codex"] as const)(
+    "should refuse index_codebase force=true when allowForceRebuild is false (%s)",
+    async (host) => {
+      await connectWithConfig(parseConfig({ indexing: { allowForceRebuild: false } }), host);
+
+      const result = await client.callTool({ name: "index_codebase", arguments: { force: true } });
+
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text?: string }>;
+      expect(content[0].text).toContain("FORCE_REBUILD_DISABLED: forced rebuild refused");
+      expect(content[0].text).toContain("ocbi index --force --allow-shared-rebuild");
+      expect(result.structuredContent).toMatchObject({ error: { code: "FORCE_REBUILD_DISABLED", retryable: false } });
+      for (const instance of indexerMockState.instances) {
+        expect(instance.forceIndex).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("should still run incremental index_codebase when allowForceRebuild is false", async () => {
+    await connectWithConfig(parseConfig({ indexing: { allowForceRebuild: false } }), "opencode");
+
+    const result = await client.callTool({ name: "index_codebase", arguments: {} });
+
+    expect(result.isError).not.toBe(true);
+    expect((result.content as Array<{ text?: string }>)[0].text).not.toContain("FORCE_REBUILD_DISABLED");
+    for (const instance of indexerMockState.instances) {
+      expect(instance.forceIndex).not.toHaveBeenCalled();
+    }
+  });
+
+  it("should return index_status as text only for the claude host", async () => {
+    await connectWithConfig(parseConfig({}), "claude");
+
+    const result = await client.callTool({ name: "index_status", arguments: {} });
+
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content).toHaveLength(1);
+    expect(content[0].type).toBe("text");
+    expect(content[0].text).toContain("Indexed chunks");
+    expect(content[0].text).toContain("Compatibility: Index is compatible");
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  it("should keep structured index_status content for non-claude hosts", async () => {
+    await connectWithConfig(parseConfig({}), "codex");
+
+    const result = await client.callTool({ name: "index_status", arguments: {} });
+
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content[0].text).toContain("Indexed chunks");
+    expect(result.structuredContent).toMatchObject({ mcpDiagnostics: { schemaVersion: 1 } });
+  });
+
   it("should execute index_health_check tool", async () => {
     const result = await client.callTool({
       name: "index_health_check",

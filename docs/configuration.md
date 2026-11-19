@@ -291,6 +291,7 @@ Ollama server is stopped. The standard suite uses deterministic HTTP replicas wi
 | `autoIndexMaxRetries` | `5` | Transient lock retries |
 | `autoIndexRetryDelayMs` | `100` | Initial retry delay |
 | `watchFiles` | `true` | Watch files and branches for incremental updates |
+| `allowForceRebuild` | `true` | Allow forced rebuilds (`index_codebase` with `force: true`, `/reindex`, `ocbi index --force`). When `false`, every host refuses them with `FORCE_REBUILD_DISABLED`; incremental indexing is unaffected. The CLI override is `ocbi index --force --allow-shared-rebuild` |
 | `pauseBackgroundIndexingOnBattery` | `false` | On macOS, defer automatic background indexing on battery |
 | `maxFileSize` | `1048576` | Maximum file size in bytes |
 | `maxChunksPerFile` | `100` | Maximum semantic chunks per file |
@@ -583,6 +584,8 @@ For example:
 ```sh
 open-codebase-index-mcp --host codex --project /path/to/project --mcp-idle-timeout 900
 ```
+
+To keep a Codex server watching files while it is idle, pass `--mcp-idle-timeout 0`.
 
 Calls, automatic indexing, and pending watcher work prevent idle shutdown. MCP
 pings and background lease renewal do not reset the timeout. Sleeping stops file

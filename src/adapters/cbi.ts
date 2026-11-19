@@ -85,7 +85,7 @@ function printCommandUsage(output: TextSink, command: string): void {
     status: "Usage: ocbi status [--check-freshness] [--json] [--project <path>] [--host <mode>] [--config <path>]",
     impact: "Usage: ocbi impact --working-tree [--json] [--project <path>] [--host <mode>] [--config <path>]",
     prune: "Usage: ocbi prune [<catalog-key>...] [--apply] [--json] [--project <path>] [--host <mode>] [--config <path>]",
-    index: "Usage: ocbi index [--project <path>] [--host <mode>] [--config <path>] [--force] [--estimate-only] [--dry-run] [--verbose]",
+    index: "Usage: ocbi index [--project <path>] [--host <mode>] [--config <path>] [--force [--allow-shared-rebuild]] [--estimate-only] [--dry-run] [--verbose]",
     search: "Usage: ocbi search <query> [--limit <n>] [--project <path>] [--host <mode>] [--config <path>]",
     definition: "Usage: ocbi definition <symbol> [--project <path>] [--host <mode>] [--config <path>]",
     graph: "Usage: ocbi graph <callers|callees> <symbol> [--file <path>] [--project <path>] [--host <mode>] [--config <path>]",

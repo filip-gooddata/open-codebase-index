@@ -90,6 +90,7 @@ describe("config schema", () => {
       expect(config.exclude).toHaveLength(DEFAULT_EXCLUDE.length);
       expect(isDefaultExcludePatterns(config.exclude)).toBe(true);
       expect(config.indexing.pauseBackgroundIndexingOnBattery).toBe(false);
+      expect(config.indexing.allowForceRebuild).toBe(true);
       expect(config.indexing.maxDepth).toBe(-1);
       expect(config.indexing.includeIgnored).toEqual([]);
       expect(config.indexing.includeExcluded).toEqual([]);
@@ -284,8 +285,11 @@ describe("config schema", () => {
             pauseBackgroundIndexingOnBattery: true,
             semanticOnly: true,
             autoGc: false,
+            allowForceRebuild: false,
           },
         });
+
+        expect(config.indexing.allowForceRebuild).toBe(false);
 
         expect(config.indexing.autoIndex).toBe(true);
         expect(config.indexing.watchFiles).toBe(false);
@@ -300,8 +304,11 @@ describe("config schema", () => {
             autoIndex: "true",
             watchFiles: 1,
             pauseBackgroundIndexingOnBattery: "yes",
+            allowForceRebuild: "false",
           },
         });
+
+        expect(config.indexing.allowForceRebuild).toBe(true);
 
         expect(config.indexing.autoIndex).toBe(false);
         expect(config.indexing.watchFiles).toBe(true);

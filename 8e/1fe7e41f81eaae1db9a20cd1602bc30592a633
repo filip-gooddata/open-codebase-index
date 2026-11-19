@@ -1,0 +1,47 @@
+contrib/local-wrapper/README.md
+  s_bd362efb6487a9::t_5dc74e974e46c9 15,55
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/call-graph.md
+  s_bd362efb6487a9::t_d5a38ac3aeb37e 1-29
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/definition.md
+  s_bd362efb6487a9::t_a6f3785f61483a 1-24
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/find.md
+  s_bd362efb6487a9::t_ffb98987d03cbf 1-25
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/index.md
+  s_bd362efb6487a9::t_5bea92ecd90ac0 11
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/peek.md
+  s_bd362efb6487a9::t_67b3844fb2f66d 1-29
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/pr-impact.md
+  s_bd362efb6487a9::t_e1f51056db6a6f 1-23
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/search.md
+  s_bd362efb6487a9::t_8ae59dca9ddea0 1-29
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/skills/codebase-search/SKILL.md
+  s_bd362efb6487a9::t_d2985759fa6d5c 1-47
+contrib/local-wrapper/hook/ocbi-post-checkout.sh
+  s_bd362efb6487a9::t_9cc3734c4c863d 6-7
+contrib/local-wrapper/install.sh
+  s_bd362efb6487a9::t_d5b634dc79ce95 80,121-122,154,161-162,164,253
+contrib/local-wrapper/launcher/ocbi-mcp.sh
+  s_bd362efb6487a9::t_6f084cc65d8ccb 176-177,433-440,535-549,599-601
+contrib/local-wrapper/rebuild/ocbi-rebuild.sh
+  s_bd362efb6487a9::t_a45155554aab2c 25,104-119,122-124
+contrib/local-wrapper/test/run-tests.sh
+  s_bd362efb6487a9::t_3db43fa41b0023 50-53,57,109,112-119,257-278,354-377,397-402,404,406,408-419
+docs/local-wrapper.md
+  s_bd362efb6487a9::t_31abad19a73cf8 33-37,80,105-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8e1fe7e41f81eaae1db9a20cd1602bc30592a633",
+  "prompts": {},
+  "sessions": {
+    "s_bd362efb6487a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a80945e2-76af-44b1-880e-f2cce5721021",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

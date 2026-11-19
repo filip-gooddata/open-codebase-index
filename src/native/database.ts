@@ -432,9 +432,10 @@ export class Database {
     return this.inner.gcOrphanCallEdges();
   }
 
-  gcUnreachableBranchCallEdges(branch: string): number {
+  /** Sweeps one branch, or every branch when `branch` is omitted (maintenance only). */
+  gcUnreachableBranchCallEdges(branch?: string): number {
     this.throwIfClosed();
-    return this.inner.gcUnreachableBranchCallEdges(branch);
+    return this.inner.gcUnreachableBranchCallEdges(branch ?? null);
   }
 
   getTransitiveReachability(

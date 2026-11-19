@@ -1300,13 +1300,7 @@ pub fn chunk_exists_on_branch(conn: &Connection, branch: &str, chunk_id: &str) -
     Ok(count > 0)
 }
 
-/// Get all branches.
-///
-/// Skip-scans the branch-leading primary keys: one index seek per distinct
-/// branch instead of reading every catalog row.
-pub fn get_all_branches(conn: &Connection) -> DbResult<Vec<String>> {
-    let mut stmt = conn.prepare(
-        r#"
+const GET_ALL_BRANCHES_SQL: &str = r#"
         WITH RECURSIVE
         chunk_branches(branch) AS (
             SELECT min(branch) FROM branch_chunks
@@ -1325,7 +1319,15 @@ pub fn get_all_branches(conn: &Connection) -> DbResult<Vec<String>> {
         SELECT branch FROM chunk_branches WHERE branch IS NOT NULL
         UNION
         SELECT branch FROM symbol_branches WHERE branch IS NOT NULL
-        "#,
+        "#;
+
+/// Get all branches.
+///
+/// Skip-scans the branch-leading primary keys: one index seek per distinct
+/// branch instead of reading every catalog row.
+pub fn get_all_branches(conn: &Connection) -> DbResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        GET_ALL_BRANCHES_SQL,
     )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
@@ -1461,8 +1463,7 @@ pub fn gc_orphan_call_edges(conn: &Connection) -> DbResult<usize> {
 
 /// Delete the call edges matching `predicate` (a condition on `call_edges`),
 /// with their branch targets and stale marks in every branch. Branch rows whose
-/// caller left a branch are removed per branch by
-/// `gc_unreachable_branch_call_edges`.
+/// caller left a branch are removed by `gc_unreachable_branch_call_edges`.
 fn delete_call_edges_with_branch_targets(conn: &Connection, predicate: &str) -> DbResult<usize> {
     delete_branch_call_edges_for_edges(
         conn,
@@ -3345,7 +3346,7 @@ mod tests {
 
         clear_branch_symbols(&conn, "feature").unwrap();
         assert_eq!(overlay_rows(&conn).len(), 2);
-        gc_unreachable_branch_call_edges(&conn, "feature").unwrap();
+        gc_unreachable_branch_call_edges(&conn, Some("feature")).unwrap();
         let remaining: Vec<String> = overlay_rows(&conn).into_iter().map(|row| row.0).collect();
         assert_eq!(remaining, vec![String::from("main")]);
         assert_eq!(callee_target(&conn, "caller", "main"), None);
@@ -3663,7 +3664,7 @@ mod tests {
 
         clear_branch_symbols(&conn, "gone").unwrap();
         assert_eq!(stale_rows(&conn).len(), 3);
-        gc_unreachable_branch_call_edges(&conn, "gone").unwrap();
+        gc_unreachable_branch_call_edges(&conn, Some("gone")).unwrap();
         assert_eq!(stale_rows(&conn), vec![pair("feature", "edge"), pair("main", "edge")]);
 
         delete_branch_symbols_for_branch(&conn, "feature", &[String::from("caller")]).unwrap();
@@ -4197,15 +4198,9 @@ mod tests {
         assert_eq!(symbol_only, vec!["feature/x", "main", "symbols-only", "é-branch"]);
     }
 
-    #[test]
-    fn get_all_branches_seeks_the_branch_leading_keys() {
-        let (_temp_dir, conn) = setup_test_db();
+    fn assert_get_all_branches_seeks(conn: &Connection, variant: &str) {
         let mut stmt = conn
-            .prepare(
-                "EXPLAIN QUERY PLAN \
-                 SELECT (SELECT min(branch) FROM branch_chunks WHERE branch > 'a'), \
-                        (SELECT min(branch) FROM branch_symbols WHERE branch > 'a')",
-            )
+            .prepare(&format!("EXPLAIN QUERY PLAN {GET_ALL_BRANCHES_SQL}"))
             .unwrap();
         let details = stmt
             .query_map([], |row| row.get::<_, String>(3))
@@ -4214,12 +4209,33 @@ mod tests {
             .unwrap();
         for table in ["branch_chunks", "branch_symbols"] {
             assert!(
-                details
-                    .iter()
-                    .any(|detail| detail.starts_with(&format!("SEARCH {table} USING")) && detail.contains("INDEX")),
-                "{table} is not seeked by an index: {details:?}"
+                details.iter().all(|detail| !detail.starts_with(&format!("SCAN {table}"))),
+                "{variant}: {table} is scanned: {details:?}"
+            );
+            assert!(
+                details.iter().any(|detail| detail.starts_with(&format!("SEARCH {table} USING"))),
+                "{variant}: {table} is not seeked: {details:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_all_branches_seeks_the_branch_leading_keys_in_every_schema_variant() {
+        let (temp_dir, conn) = setup_test_db();
+        assert_get_all_branches_seeks(&conn, "fresh");
+
+        // A store from before the call-edge overlay, migrated on open.
+        drop_overlay(&conn);
+        drop(conn);
+        let conn = init_db(&temp_dir.path().join("test.db")).unwrap();
+        assert_get_all_branches_seeks(&conn, "migrated");
+
+        // Only the (branch, id) primary keys, as a writer without the branch indexes leaves.
+        conn.execute_batch(
+            "DROP INDEX idx_branch_chunks_branch; DROP INDEX idx_branch_symbols_branch;",
+        )
+        .unwrap();
+        assert_get_all_branches_seeks(&conn, "primary keys only");
     }
 
     #[test]
@@ -4358,7 +4374,7 @@ mod tests {
         // The all-branch sweep is gone: only the scoped pass removes `gone`'s rows.
         assert_eq!(overlay_keys(&conn), overlays);
 
-        assert_eq!(gc_unreachable_branch_call_edges(&conn, "gone").unwrap(), 1);
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, Some("gone")).unwrap(), 1);
         let expected: Vec<(String, String)> =
             overlays.into_iter().filter(|row| row.0 != "gone").collect();
         assert_eq!(overlay_keys(&conn), expected);
@@ -4374,7 +4390,7 @@ mod tests {
         seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature"]);
         downgrade_overlay_to_marker_1(&conn);
         clear_branch_symbols(&conn, "feature").unwrap();
-        assert_eq!(gc_unreachable_branch_call_edges(&conn, "feature").unwrap(), 1);
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, Some("feature")).unwrap(), 1);
         conn.execute("DELETE FROM branch_symbols WHERE symbol_id = 'caller'", [])
             .unwrap();
         gc_orphan_symbols(&conn).unwrap();
@@ -4385,9 +4401,74 @@ mod tests {
         drop_overlay(&conn);
         conn.execute("DELETE FROM branch_symbols WHERE symbol_id = 'caller'", [])
             .unwrap();
-        assert_eq!(gc_unreachable_branch_call_edges(&conn, "main").unwrap(), 0);
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, Some("main")).unwrap(), 0);
         assert_eq!(gc_orphan_symbols(&conn).unwrap(), 1);
         assert_eq!(gc_orphan_call_edges(&conn).unwrap(), 0);
         assert_eq!(table_count(&conn, "call_edges"), 1);
+    }
+
+    /// gd.4 refreshes `main`: its scoped pass and the orphan GCs, without the
+    /// maintenance sweep.
+    fn refresh_main_gcs(conn: &Connection) {
+        gc_unreachable_branch_call_edges(conn, Some("main")).unwrap();
+        gc_orphan_symbols(conn).unwrap();
+        gc_orphan_call_edges(conn).unwrap();
+    }
+
+    #[test]
+    fn maintenance_sweep_removes_rows_of_an_edge_a_0_34_writer_deleted() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature"]);
+
+        // 0.34.0 deletes the shared edge and leaves every branch's rows for it.
+        conn.execute("DELETE FROM call_edges WHERE id = 'edge'", []).unwrap();
+        refresh_main_gcs(&conn);
+        assert_eq!(overlay_keys(&conn), vec![pair("feature", "edge"), pair("main", "kept")]);
+        assert!(get_callees(&conn, "caller", "feature", None).unwrap().is_empty());
+
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, None).unwrap(), 1);
+        assert_eq!(overlay_keys(&conn), vec![pair("main", "kept")]);
+        assert_eq!(stale_rows(&conn), vec![pair("main", "kept")]);
+        assert_eq!(callee_target(&conn, "keeper", "main").as_deref(), Some("target_a"));
+    }
+
+    #[test]
+    fn maintenance_sweep_removes_rows_of_a_caller_a_0_34_writer_dropped_from_one_branch() {
+        let (_temp_dir, mut conn) = setup_test_db();
+        seed_stale_graph_with_kept_edge(&mut conn, &["main", "feature"]);
+        let main_target = callee_target(&conn, "caller", "main");
+
+        // 0.34.0 rewrites `feature` without the caller; the shared edge lives on in `main`.
+        clear_branch_symbols(&conn, "feature").unwrap();
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "feature",
+            &[String::from("target_a"), String::from("target_b")],
+        )
+        .unwrap();
+        // A clear-and-readd of `main` that keeps its callers keeps their rows.
+        clear_branch_symbols(&conn, "main").unwrap();
+        add_symbols_to_branch_batch(
+            &mut conn,
+            "main",
+            &[
+                String::from("caller"),
+                String::from("keeper"),
+                String::from("target_a"),
+                String::from("target_b"),
+            ],
+        )
+        .unwrap();
+        refresh_main_gcs(&conn);
+        assert!(get_callees(&conn, "caller", "feature", None).unwrap().is_empty());
+        assert!(overlay_keys(&conn).contains(&pair("feature", "edge")));
+
+        assert_eq!(gc_unreachable_branch_call_edges(&conn, None).unwrap(), 1);
+        assert_eq!(overlay_keys(&conn), vec![pair("main", "edge"), pair("main", "kept")]);
+        assert_eq!(
+            stale_rows(&conn),
+            vec![pair("main", "edge"), pair("main", "kept")]
+        );
+        assert_eq!(callee_target(&conn, "caller", "main"), main_target);
     }
 }

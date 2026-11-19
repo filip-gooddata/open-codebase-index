@@ -1106,9 +1106,9 @@ impl Database {
     }
 
     #[napi]
-    pub fn gc_unreachable_branch_call_edges(&self, branch: String) -> Result<u32> {
+    pub fn gc_unreachable_branch_call_edges(&self, branch: Option<String>) -> Result<u32> {
         self.with_conn(|conn| {
-            let count = db::gc_unreachable_branch_call_edges(conn, &branch)
+            let count = db::gc_unreachable_branch_call_edges(conn, branch.as_deref())
                 .map_err(|e| Error::from_reason(e.to_string()))?;
             Ok(count as u32)
         })

@@ -8195,6 +8195,9 @@ export class Indexer {
       throwIfOperationAborted(options.signal);
       gcOrphanCallEdges = database.gcOrphanCallEdges();
       throwIfOperationAborted(options.signal);
+      // Repairs branch call-edge rows that writers without overlay cleanup left.
+      database.gcUnreachableBranchCallEdges();
+      throwIfOperationAborted(options.signal);
     } catch (error) {
       if (isOperationInterruption(error)) throw error;
       throwIfOperationAborted(options.signal);

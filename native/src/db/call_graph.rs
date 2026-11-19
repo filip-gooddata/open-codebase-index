@@ -601,7 +601,7 @@ pub(crate) fn copy_branch_call_edge_targets(
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }
-    delete_unreachable_branch_call_edges(conn, to_branch)?;
+    delete_unreachable_branch_call_edges(conn, Some(to_branch))?;
     conn.execute(
         r#"
         DELETE FROM branch_call_edges
@@ -656,11 +656,11 @@ pub(crate) fn copy_branch_call_edge_targets(
     Ok(copied)
 }
 
-fn delete_unreachable_branch_call_edges(conn: &Connection, branch: &str) -> DbResult<usize> {
+fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>) -> DbResult<usize> {
     let count = conn.execute(
         r#"
         DELETE FROM branch_call_edges
-        WHERE branch = ?1
+        WHERE (?1 IS NULL OR branch = ?1)
           AND NOT EXISTS (
             SELECT 1
             FROM call_edges ce
@@ -675,7 +675,7 @@ fn delete_unreachable_branch_call_edges(conn: &Connection, branch: &str) -> DbRe
         conn.execute(
             r#"
             DELETE FROM branch_call_edges_stale
-            WHERE branch = ?1
+            WHERE (?1 IS NULL OR branch = ?1)
               AND NOT EXISTS (
                 SELECT 1
                 FROM call_edges ce
@@ -690,11 +690,12 @@ fn delete_unreachable_branch_call_edges(conn: &Connection, branch: &str) -> DbRe
     Ok(count)
 }
 
-/// Delete `branch`'s edge targets and stale marks whose edge is gone or whose
-/// caller is no longer a member of `branch`. Run it after shrinking a
-/// branch's symbol membership (`clear_branch_symbols`), since only that
-/// branch's rows can have lost their caller.
-pub fn gc_unreachable_branch_call_edges(conn: &Connection, branch: &str) -> DbResult<usize> {
+/// Delete edge targets and stale marks whose edge is gone or whose caller is no
+/// longer a member of their branch: in `branch` only, or in every branch for
+/// `None`. Refresh runs it for the branch whose membership it rewrote. The
+/// all-branch pass reads every overlay row, so it belongs to maintenance GC,
+/// where it repairs rows that writers without overlay cleanup (0.34.0) leave.
+pub fn gc_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>) -> DbResult<usize> {
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }

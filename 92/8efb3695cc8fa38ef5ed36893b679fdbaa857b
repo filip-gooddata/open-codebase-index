@@ -1,0 +1,45 @@
+contrib/local-wrapper/README.md
+  s_520d3b214cb9f0::t_49deeb31789c01 78-81
+contrib/local-wrapper/hook/ocbi-post-checkout.sh
+  s_bd362efb6487a9::t_e292338aeae7e8 13-15,33-35,42-45,59
+contrib/local-wrapper/install.sh
+  s_bd362efb6487a9::t_31cb5536ee4f2c 59-68,84-85,111-115,117-120,188-191,199-214,217-220,222
+contrib/local-wrapper/launcher/mcp-force-guard.mjs
+  s_520d3b214cb9f0::t_16623805b1677a 45-49
+contrib/local-wrapper/launcher/ocbi-mcp.sh
+  s_bd362efb6487a9::t_b8096cb56ddc56 51-55,516-517,520-525,568
+contrib/local-wrapper/launcher/profiles.conf.example
+  s_bd362efb6487a9::t_8ae642f07137b6 3-4
+contrib/local-wrapper/notify/notifier/build.sh
+  s_bd362efb6487a9::t_e3140ea3f3da00 11-16,18,44-47
+contrib/local-wrapper/rebuild/ocbi-rebuild.sh
+  s_bd362efb6487a9::t_ee6e0e35829a11 53-55,72-74,78,88,90-91,104-105,107-108,111,116,137-139
+contrib/local-wrapper/test/run-tests.sh
+  s_bd362efb6487a9::t_4c88710dc6653e 113-118,243-249,265-268,274,289-290,292,301,337,342-343,345-363
+docs/local-wrapper.md
+  s_bd362efb6487a9::t_eaf325d96beab7 41,90-95,109-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "928efb3695cc8fa38ef5ed36893b679fdbaa857b",
+  "prompts": {},
+  "sessions": {
+    "s_520d3b214cb9f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f43f-e2ea-79d2-a878-dd88f319aac3",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_bd362efb6487a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a80945e2-76af-44b1-880e-f2cce5721021",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

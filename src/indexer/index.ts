@@ -46,7 +46,7 @@ import type { PrImpactResult } from "./pr-impact-types.js";
 import { UnsupportedIndexOperationError } from "./errors.js";
 export { UnsupportedIndexOperationError } from "./errors.js";
 import { getChunkGitBlame, type GitBlameMetadata } from "./git-blame.js";
-import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, collectBranchPruneOrphans, planBranchPrune, withoutLiveCatalogs, type BranchPrunePlan, type BranchPruneResult } from "./branch-prune.js";
+import { applyBranchPrune, BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY, BRANCH_SEED_METADATA_PREFIXES, collectBranchPruneOrphans, planBranchPrune, withoutLiveCatalogs, type BranchPrunePlan, type BranchPruneResult } from "./branch-prune.js";
 import { listWorktreeCatalogIdentities } from "../git/worktree-catalogs.js";
 import { analyzeQueryIntent, extractFilePathHint, isExplicitIdentifierLookup, stripFilePathHint } from "./intent-aware-ranking.js";
 import {
@@ -2150,6 +2150,7 @@ export class Indexer {
       // so a catalog left only in the overlay would be missing from a later plan.
       const planning = Database.openReadOnly(dbPath);
       let plan: BranchPrunePlan;
+      let committedPruneLeftOrphans: boolean;
       try {
         plan = planBranchPrune({
           database: planning,
@@ -2160,6 +2161,10 @@ export class Indexer {
             ? (key) => key.startsWith(projectKeyPrefix)
             : () => true,
         });
+        // Only a prune that committed left orphans to collect. One that died before its
+        // commit left a store whose first drain would sweep overlay-only catalogs away.
+        committedPruneLeftOrphans = resumingPrune
+          && planning.getMetadata(BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY) !== null;
       } finally {
         planning.close();
       }
@@ -2180,12 +2185,12 @@ export class Indexer {
       // A refused explicit key means the request was wrong: apply none of it, and
       // leave the store unopened for writing unless an interrupted prune needs it.
       const refused = plan.refused.length > 0;
-      if (!apply || (refused && !resumingPrune)) return result(null);
+      if (!apply || (refused && !committedPruneLeftOrphans)) return result(null);
 
       const database = new Database(dbPath);
       try {
         // The lease clears an interrupted prune's recovery marker once this run returns,
-        // so even a refused request first finishes that prune's orphan collection.
+        // so even a refused request first finishes a committed prune's orphan collection.
         if (refused) return result(null, collectBranchPruneOrphans(database));
 
         // Git takes no index lock to check out a worktree, so the deletes commit

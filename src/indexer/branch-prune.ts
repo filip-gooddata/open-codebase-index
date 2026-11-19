@@ -173,6 +173,12 @@ function unlinkExisting(filePath: string): boolean {
  * Sidecars go before the commit, so an interrupted run leaves the catalog's
  * rows for a retry to find. Orphans are collected after the commit.
  */
+/**
+ * Set in the catalog delete's transaction and cleared by the orphan collection, so a
+ * recovered lease tells a prune that committed from one that died before its commit.
+ */
+export const BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY = "prune.orphanGcPending";
+
 export async function applyBranchPrune(
   database: Database,
   plan: BranchPrunePlan,
@@ -197,6 +203,7 @@ export async function applyBranchPrune(
       database.rollbackWriteTransaction();
       return { applied: false, liveKeys };
     }
+    database.setMetadata(BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY, "1");
     removed.metadata = pruned.metadata;
     catalogs = plan.catalogs.map((catalog, index) => {
       const { branchChunks, branchSymbols, branchCallEdges, branchCallEdgesStale } = pruned.branches[index];
@@ -220,12 +227,14 @@ export async function applyBranchPrune(
 
 /** Collect the chunks, symbols, edges and embeddings no remaining catalog references. */
 export function collectBranchPruneOrphans(database: Database): BranchPruneGc {
-  return {
+  const gc = {
     symbols: database.gcOrphanSymbols(),
     callEdges: database.gcOrphanCallEdges(),
     chunks: database.gcOrphanChunks(),
     embeddings: database.gcOrphanEmbeddings(),
   };
+  database.deleteMetadata(BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY);
+  return gc;
 }
 
 function plural(count: number, noun: string): string {

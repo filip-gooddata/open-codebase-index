@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCbiCli } from "../src/adapters/cbi.js";
 import { parseConfig } from "../src/config/schema.js";
 import { parseWorktreeList } from "../src/git/worktree-catalogs.js";
-import { planBranchPrune } from "../src/indexer/branch-prune.js";
+import { BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY, planBranchPrune } from "../src/indexer/branch-prune.js";
 import { Indexer } from "../src/indexer/index.js";
 import { acquireIndexLock, IndexLockContentionError, releaseIndexLock } from "../src/indexer/index-lock.js";
 import { Database, hashContent } from "../src/native/index.js";
@@ -538,9 +538,7 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock"))).toBe(false);
   });
 
-  it("finishes an interrupted prune's orphan collection before refusing a request", async () => {
-    seedStore();
-    sql("DELETE FROM branch_chunks WHERE branch = 'gone'; DELETE FROM branch_symbols WHERE branch = 'gone'; DELETE FROM branch_call_edges WHERE branch = 'gone';");
+  function leaveDeadPruneOwner(token: string): void {
     const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
     const lockPath = path.join(indexPath, "indexing.lock");
     fs.mkdirSync(lockPath);
@@ -549,8 +547,15 @@ describe("Indexer.pruneBranchCatalogs", () => {
       hostname: os.hostname(),
       startedAt: new Date().toISOString(),
       operation: "prune",
-      token: "33333333-3333-4333-8333-333333333333",
+      token,
     }));
+  }
+
+  it("finishes an interrupted prune's orphan collection before refusing a request", async () => {
+    seedStore();
+    sql(`DELETE FROM branch_chunks WHERE branch = 'gone'; DELETE FROM branch_symbols WHERE branch = 'gone'; DELETE FROM branch_call_edges WHERE branch = 'gone';
+      INSERT INTO metadata (key, value) VALUES ('${BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY}', '1');`);
+    leaveDeadPruneOwner("33333333-3333-4333-8333-333333333333");
 
     const refused = await createIndexer().pruneBranchCatalogs({ keys: ["main"], apply: true });
 
@@ -560,6 +565,30 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(count("SELECT COUNT(*) AS n FROM chunks WHERE chunk_id = 'c-gone-only'")).toBe(0);
     expect(catalogRows("main")).toBe(5);
     expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock"))).toBe(false);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key = '${BRANCH_PRUNE_ORPHAN_GC_PENDING_KEY}'`)).toBe(0);
+  });
+
+  it("keeps an older store's overlay-only catalog when a request after a prune that died before its commit is refused", async () => {
+    seedOverlayOnlyCatalogInMarker3Store("edges-only");
+    // The overlay edge's caller stays indexed elsewhere, so only the install's sweep can remove the row.
+    sql("INSERT INTO branch_symbols (branch, symbol_id) VALUES ('pr/42', 's-edges-only-only');");
+    // The dead prune's writable open installed the queue and left its sweep pending.
+    new Database(dbPath).close();
+    expect(count("SELECT COUNT(*) AS n FROM metadata WHERE key = 'branch_call_edges_sweep_pending'")).toBe(1);
+    leaveDeadPruneOwner("44444444-4444-4444-8444-444444444444");
+
+    const refused = await createIndexer().pruneBranchCatalogs({ keys: ["edges-only", "main"], apply: true });
+
+    expect(refused.applied).toBe(false);
+    expect(refused.refused).toEqual([{ key: "main", reason: "catalog of a checked-out worktree" }]);
+    expect(refused.gc).toBeNull();
+    expect(catalogRows("edges-only")).toBe(1);
+
+    const retry = await createIndexer().pruneBranchCatalogs({ apply: true });
+    expect(retry.catalogs.map((catalog) => catalog.key)).toEqual(["edges-only", "gone", "pr/42"]);
+    expect(catalogRows("edges-only")).toBe(0);
+    expect(sidecarCount("edges-only")).toBe(0);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key LIKE '%.${hashContent("edges-only").slice(0, 24)}'`)).toBe(0);
   });
 
   it("keeps the default catalog of a subdirectory project through the CLI", async () => {

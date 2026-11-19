@@ -1,6 +1,6 @@
 import type { BranchCatalogRows, Database } from "../native/index.js";
 
-import { existsSync, statSync, unlinkSync } from "node:fs";
+import { readdirSync, statSync, unlinkSync } from "node:fs";
 import * as path from "node:path";
 
 import { hashContent } from "../native/index.js";
@@ -90,16 +90,17 @@ function catalogMetadataKeys(key: string): string[] {
   return BRANCH_CATALOG_METADATA_PREFIXES.map((prefix) => `${prefix}.${hash}`);
 }
 
-function catalogSidecarPaths(indexPath: string, key: string): string[] {
+/** A catalog's sidecars and the temp files an interrupted atomic publish of one left behind. */
+function catalogSidecarPaths(indexPath: string, entries: readonly string[], key: string): string[] {
   const namespace = hashContent(key).slice(0, 16);
-  return BRANCH_CATALOG_SIDECARS.map((fileName) => {
+  const names = BRANCH_CATALOG_SIDECARS.map((fileName) => {
     const extension = path.extname(fileName);
-    return path.join(indexPath, `${fileName.slice(0, -extension.length)}.${namespace}${extension}`);
+    return `${fileName.slice(0, -extension.length)}.${namespace}${extension}`;
   });
-}
-
-function isFile(filePath: string): boolean {
-  return existsSync(filePath) && statSync(filePath).isFile();
+  return entries
+    .filter((entry) => names.some((name) => entry === name || (entry.startsWith(`.${name}.`) && entry.endsWith(".tmp"))))
+    .map((entry) => path.join(indexPath, entry))
+    .filter((filePath) => statSync(filePath, { throwIfNoEntry: false })?.isFile() === true);
 }
 
 export function planBranchPrune(input: BranchPrunePlanInput): BranchPrunePlan {
@@ -123,10 +124,11 @@ export function planBranchPrune(input: BranchPrunePlanInput): BranchPrunePlan {
   targets.sort();
 
   const rows = input.database.countBranchCatalogRows(targets);
+  const entries = input.namespacedSidecars ? readdirSync(input.indexPath) : [];
   const catalogs = rows.map(({ branch, ...counts }) => ({
     key: branch,
     rows: counts,
-    sidecars: input.namespacedSidecars ? catalogSidecarPaths(input.indexPath, branch).filter(isFile) : [],
+    sidecars: catalogSidecarPaths(input.indexPath, entries, branch),
   }));
   return {
     catalogCount: listed.length,

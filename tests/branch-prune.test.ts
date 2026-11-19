@@ -130,6 +130,7 @@ describe("Indexer.pruneBranchCatalogs", () => {
     const namespace = hashContent(branch).slice(0, 16);
     fs.writeFileSync(path.join(indexPath, `file-hashes.${namespace}.json`), "{}");
     fs.writeFileSync(path.join(indexPath, `file-dependencies.${namespace}.json`), "{}");
+    fs.writeFileSync(path.join(indexPath, `.failed-batches.${namespace}.json.${"a".repeat(40)}.tmp`), "");
   }
 
   function seedStore(): void {
@@ -157,10 +158,10 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(result.liveCatalogCount).toBe(3);
     expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["gone", "pr/42"]);
     expect(result.catalogs[0].rows).toEqual({ branchChunks: 2, branchSymbols: 2, branchCallEdges: 1, branchCallEdgesStale: 0 });
-    expect(result.catalogs[0].sidecars).toHaveLength(2);
+    expect(result.catalogs[0].sidecars).toHaveLength(3);
     expect(result.removed).toBeNull();
     expect(catalogRows("gone")).toBe(5);
-    expect(sidecarCount("gone")).toBe(2);
+    expect(sidecarCount("gone")).toBe(3);
     expect(fs.existsSync(path.join(indexPath, "indexing.lock"))).toBe(false);
   });
 
@@ -171,7 +172,7 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(result.applied).toBe(true);
     expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["gone", "pr/42"]);
     expect(result.removed).toEqual({
-      branchChunks: 4, branchSymbols: 4, branchCallEdges: 2, branchCallEdgesStale: 0, metadata: 4, sidecars: 4,
+      branchChunks: 4, branchSymbols: 4, branchCallEdges: 2, branchCallEdgesStale: 0, metadata: 4, sidecars: 6,
     });
     expect(result.gc).toEqual({ symbols: 2, callEdges: 0, chunks: 2, embeddings: 2 });
     for (const branch of ["gone", "pr/42"]) {
@@ -180,7 +181,7 @@ describe("Indexer.pruneBranchCatalogs", () => {
     }
     for (const branch of ["main", "feature", detachedKey]) {
       expect(catalogRows(branch)).toBe(5);
-      expect(sidecarCount(branch)).toBe(2);
+      expect(sidecarCount(branch)).toBe(3);
     }
     expect(count("SELECT COUNT(*) AS n FROM metadata WHERE key LIKE 'index.branchCommit.%'")).toBe(3);
     expect(count("SELECT COUNT(*) AS n FROM chunks WHERE chunk_id = 'c-shared'")).toBe(1);
@@ -259,7 +260,7 @@ describe("Indexer.pruneBranchCatalogs", () => {
       releaseIndexLock(lease);
     }
     expect(catalogRows("gone")).toBe(5);
-    expect(sidecarCount("gone")).toBe(2);
+    expect(sidecarCount("gone")).toBe(3);
   });
 
   it("holds the index lock while it deletes", async () => {

@@ -46,7 +46,7 @@ import type { PrImpactResult } from "./pr-impact-types.js";
 import { UnsupportedIndexOperationError } from "./errors.js";
 export { UnsupportedIndexOperationError } from "./errors.js";
 import { getChunkGitBlame, type GitBlameMetadata } from "./git-blame.js";
-import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, planBranchPrune, withoutLiveCatalogs, type BranchPruneResult } from "./branch-prune.js";
+import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, collectBranchPruneOrphans, planBranchPrune, withoutLiveCatalogs, type BranchPruneResult } from "./branch-prune.js";
 import { listWorktreeCatalogIdentities } from "../git/worktree-catalogs.js";
 import { analyzeQueryIntent, extractFilePathHint, isExplicitIdentifierLookup, stripFilePathHint } from "./intent-aware-ranking.js";
 import {
@@ -2112,7 +2112,7 @@ export class Indexer {
       identities.add(getBranchOrDefault(this.projectRoot));
       return new Set(Array.from(identities, (identity) => this.getBranchCatalogKeyFor(identity)));
     };
-    const prune = async (apply: boolean): Promise<BranchPruneResult> => {
+    const prune = async (apply: boolean, resumingPrune = false): Promise<BranchPruneResult> => {
       const liveKeys = await readLiveKeys();
       const dbPath = path.join(this.indexPath, "codebase.db");
       if (!existsSync(dbPath)) throw new Error(`No index database at ${dbPath}.`);
@@ -2136,7 +2136,9 @@ export class Indexer {
           catalogs: applied?.applied ? applied.catalogs : plan.catalogs,
           refused: plan.refused,
           removed: applied?.applied ? applied.removed : null,
-          gc: applied?.applied ? applied.gc : null,
+          // The lease clears an interrupted prune's recovery marker once this run returns,
+          // so even a refused request first finishes that prune's orphan collection.
+          gc: applied?.applied ? applied.gc : resumingPrune ? collectBranchPruneOrphans(database) : null,
           elapsedMs: Date.now() - startedAt,
         });
         // A refused explicit key means the request was wrong: apply none of it.
@@ -2163,7 +2165,7 @@ export class Indexer {
       if (recoveredOwners.some((owner) => owner.operation !== "prune")) {
         throw new Error("An interrupted index writer left recovery pending. Run `ocbi index` before pruning.");
       }
-      return prune(true);
+      return prune(true, recoveredOwners.length > 0);
     }, options.signal);
   }
 

@@ -457,6 +457,55 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock"))).toBe(false);
   });
 
+  it("finishes an interrupted prune's orphan collection before refusing a request", async () => {
+    seedStore();
+    sql("DELETE FROM branch_chunks WHERE branch = 'gone'; DELETE FROM branch_symbols WHERE branch = 'gone'; DELETE FROM branch_call_edges WHERE branch = 'gone';");
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const lockPath = path.join(indexPath, "indexing.lock");
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify({
+      pid: child.pid,
+      hostname: os.hostname(),
+      startedAt: new Date().toISOString(),
+      operation: "prune",
+      token: "33333333-3333-4333-8333-333333333333",
+    }));
+
+    const refused = await createIndexer().pruneBranchCatalogs({ keys: ["main"], apply: true });
+
+    expect(refused.applied).toBe(false);
+    expect(refused.refused).toEqual([{ key: "main", reason: "catalog of a checked-out worktree" }]);
+    expect(refused.gc).toMatchObject({ chunks: 1, symbols: 1 });
+    expect(count("SELECT COUNT(*) AS n FROM chunks WHERE chunk_id = 'c-gone-only'")).toBe(0);
+    expect(catalogRows("main")).toBe(5);
+    expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock"))).toBe(false);
+  });
+
+  it("keeps the default catalog of a subdirectory project through the CLI", async () => {
+    seedStore();
+    const subdir = path.join(repo, "sub");
+    const subIndexPath = path.join(subdir, ".opencode", "index");
+    fs.mkdirSync(subIndexPath, { recursive: true });
+    const subDbPath = path.join(subIndexPath, "codebase.db");
+    new Database(subDbPath).close();
+    const db = new DatabaseSync(subDbPath);
+    for (const branch of ["default", "gone"]) {
+      db.prepare("INSERT INTO branch_chunks (branch, chunk_id) VALUES (?, 'c')").run(branch);
+    }
+    db.close();
+    const stdout: string[] = [];
+
+    const code = await runCbiCli(["node", "cbi", "prune", "--apply", "--json", "--project", subdir], tempDir, {
+      printStdout: (text) => stdout.push(text), printStderr: () => {},
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout[0]).catalogs.map((catalog: { key: string }) => catalog.key)).toEqual(["gone"]);
+    const after = new DatabaseSync(subDbPath, { readOnly: true });
+    expect(after.prepare("SELECT branch FROM branch_chunks").all()).toEqual([{ branch: "default" }]);
+    after.close();
+  });
+
   it("keeps the default catalog a project root without its own .git indexes into", async () => {
     seedStore();
     seedCatalog("default");

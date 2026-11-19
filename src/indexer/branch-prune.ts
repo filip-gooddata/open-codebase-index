@@ -215,13 +215,17 @@ export async function applyBranchPrune(
     throw error;
   }
 
-  const gc: BranchPruneGc = {
+  return { applied: true, catalogs, removed, gc: collectBranchPruneOrphans(database) };
+}
+
+/** Collect the chunks, symbols, edges and embeddings no remaining catalog references. */
+export function collectBranchPruneOrphans(database: Database): BranchPruneGc {
+  return {
     symbols: database.gcOrphanSymbols(),
     callEdges: database.gcOrphanCallEdges(),
     chunks: database.gcOrphanChunks(),
     embeddings: database.gcOrphanEmbeddings(),
   };
-  return { applied: true, catalogs, removed, gc };
 }
 
 function plural(count: number, noun: string): string {

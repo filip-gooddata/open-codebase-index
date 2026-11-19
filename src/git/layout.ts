@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import * as path from "path";
 
-import { resolveGitDir } from "./index.js";
+import { resolveGitDir } from "./git-dir.js";
 import { resolveCommonGitDir } from "./refs.js";
 
 export interface RepositoryLayout {

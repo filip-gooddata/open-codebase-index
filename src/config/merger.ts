@@ -166,7 +166,12 @@ export function loadProjectConfigLayer(projectRoot: string, host: HostMode): Rec
  * - For additionalInclude: merge arrays (union, deduplicated)
  * - For include/exclude: project overrides global if set, otherwise load global
  */
-export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
+export interface LoadMergedConfigOptions {
+  /** Throw on an unreadable global config instead of falling back to the project config alone. */
+  strictGlobal?: boolean;
+}
+
+export function loadMergedConfig(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions = {}): unknown {
   const globalConfigPath = resolveGlobalConfigPath(host);
   const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
   let globalConfig: Record<string, unknown> | null = null;
@@ -182,7 +187,7 @@ export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
   const normalizedProjectConfig = loadProjectConfigLayer(projectRoot, host);
 
   if (globalConfigError) {
-    if (!projectConfig) {
+    if (!projectConfig || options.strictGlobal === true) {
       throw globalConfigError;
     }
     globalConfig = null;

@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import codebaseIndexPiExtension from "../src/adapters/pi/extension.js";
 import codebaseIndexOmpExtension from "../src/adapters/omp/extension.js";
 import { index_codebase } from "../src/adapters/opencode/tools.js";
-import { resolveWritableProjectConfigPath } from "../src/config/paths.js";
+import { resolveGlobalConfigPath, resolveWritableProjectConfigPath } from "../src/config/paths.js";
 import { parseConfig } from "../src/config/schema.js";
 import { executeIndexCodebase } from "../src/tools/execute-common.js";
 import { getIndexerForProject, initializeTools } from "../src/tools/operation-runtime.js";
@@ -141,6 +141,15 @@ describe("adapter indexing cancellation and progress", () => {
       const refusedFromDisk = await run(true);
       expect(refusedFromDisk).toContain("FORCE_REBUILD_DISABLED: forced rebuild refused");
       expect(refusedFromDisk).toContain(`--host ${hostMode} --project`);
+
+      fs.writeFileSync(projectConfigPath, JSON.stringify({ indexing: { watchFiles: false } }));
+      const globalConfigPath = resolveGlobalConfigPath(hostMode);
+      fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+      fs.writeFileSync(globalConfigPath, "{ not json");
+      const unreadableGlobal = await run(true).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+      expect(unreadableGlobal).toContain("Cannot confirm indexing.allowForceRebuild before a forced rebuild");
+      const afterUnreadable = await indexer.search("kept2", 1, { definitionIntent: true, metadataOnly: true });
+      expect(afterUnreadable[0]).toMatchObject({ name: "kept2" });
     } finally {
       await getIndexerForProject(root, hostMode).close();
       await indexer.close();

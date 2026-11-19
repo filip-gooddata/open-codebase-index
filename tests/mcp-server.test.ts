@@ -1495,6 +1495,27 @@ describe("MCP server tools and prompts", () => {
     expect(result.structuredContent).toBeUndefined();
   });
 
+  it.each([
+    ["claude", false],
+    ["codex", true],
+  ] as const)("should shape index_status error results for the %s host", async (host, keepsStructured) => {
+    await connectWithConfig(parseConfig({}), host);
+    for (const instance of indexerMockState.instances) {
+      instance.getStatus.mockRejectedValueOnce(new Error("status read failed"));
+    }
+
+    const result = await client.callTool({ name: "index_status", arguments: {} });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content[0].text).toContain("INTERNAL_ERROR");
+    if (keepsStructured) {
+      expect(result.structuredContent).toMatchObject({ error: { code: "INTERNAL_ERROR" } });
+    } else {
+      expect(result.structuredContent).toBeUndefined();
+    }
+  });
+
   it("should keep structured index_status content for non-claude hosts", async () => {
     await connectWithConfig(parseConfig({}), "codex");
 

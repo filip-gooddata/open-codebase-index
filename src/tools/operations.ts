@@ -102,8 +102,9 @@ export interface IndexCodebaseOptions {
   allowForceRebuildOverride?: boolean;
 }
 
+/** POSIX shell single-quoting, so the printed command names exactly this path. */
 function quoteCliArgument(value: string): string {
-  return /^[\w./:@%+=,-]+$/.test(value) ? value : JSON.stringify(value);
+  return /^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 export function formatForceRebuildRefusal(projectRoot: string, host: HostMode): string {
@@ -130,7 +131,7 @@ export function formatForceRebuildRefusal(projectRoot: string, host: HostMode): 
 function isForceRebuildAllowed(root: string, host: HostMode): boolean {
   if (!getRuntimeConfigForProject(root, host).indexing.allowForceRebuild) return false;
   try {
-    return parseConfig(loadRuntimeConfig(root, host)).indexing.allowForceRebuild;
+    return parseConfig(loadRuntimeConfig(root, host, { strictGlobal: true })).indexing.allowForceRebuild;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Cannot confirm indexing.allowForceRebuild before a forced rebuild: ${message}`, { cause: error });

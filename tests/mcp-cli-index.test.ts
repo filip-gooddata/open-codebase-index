@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handleIndexCommand, parseIndexArgs } from "../src/adapters/mcp/cli.js";
+import { formatForceRebuildRefusal } from "../src/tools/operations.js";
 
 describe("mcp cli index arg parsing", () => {
   let tempDir: string;
@@ -228,6 +229,13 @@ describe("mcp cli index command execution", () => {
 
     expect(exitCode).toBe(0);
     expect(stderr.join("\n")).toContain("Usage:");
+  });
+
+  it("prints a shell-safe recovery command for the refusing host and project", () => {
+    expect(formatForceRebuildRefusal("/srv/repo", "claude"))
+      .toContain("`ocbi index --force --allow-shared-rebuild --host claude --project /srv/repo`");
+    expect(formatForceRebuildRefusal("/srv/a $HOME `x` it's", "codex"))
+      .toContain("--host codex --project '/srv/a $HOME `x` it'\\''s'`");
   });
 
   it("parses --allow-shared-rebuild with --force", () => {

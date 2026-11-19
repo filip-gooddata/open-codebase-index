@@ -105,18 +105,13 @@ function formatMcpDiagnosticsText(diagnostics: McpDiagnosticsSnapshot): string {
   return lines.join("\n");
 }
 
-/**
- * Claude Code shows structuredContent instead of the text block when both are present, so the
- * claude host gets the status and its MCP diagnostics as text only.
- */
+/** Appends the MCP diagnostics to the status text for hosts that get index_status as text only. */
 function withTextDiagnostics(result: CallToolResult, diagnostics: McpDiagnosticsSnapshot): CallToolResult {
   const diagnosticsText = formatMcpDiagnosticsText(diagnostics);
   const content = result.content.length > 0 && result.content[0].type === "text"
     ? [{ ...result.content[0], text: `${result.content[0].text}\n\n${diagnosticsText}` }, ...result.content.slice(1)]
     : [...result.content, { type: "text" as const, text: diagnosticsText }];
-  const textOnly: CallToolResult = { ...result, content };
-  delete textOnly.structuredContent;
-  return textOnly;
+  return { ...result, content };
 }
 
 function errorDetails(
@@ -227,7 +222,28 @@ function waitForDiagnosticIo(promise: Promise<void>, stallTimeoutMs: number): Pr
   });
 }
 
+/**
+ * Claude Code shows structuredContent instead of the text block when both are present, so the
+ * claude host gets index_status, including its error results, as text only.
+ */
+function isTextOnlyStatus(runtime: McpServerRuntime, operation: string): boolean {
+  return operation === "index_status" && runtime.host === "claude";
+}
+
 export async function executeMcpOperation(
+  runtime: McpServerRuntime,
+  operation: string,
+  extra: McpOperationExtra,
+  handler: McpOperationHandler,
+): Promise<CallToolResult> {
+  const result = await runMcpOperation(runtime, operation, extra, handler);
+  if (!isTextOnlyStatus(runtime, operation) || result.structuredContent === undefined) return result;
+  const textOnly: CallToolResult = { ...result };
+  delete textOnly.structuredContent;
+  return textOnly;
+}
+
+async function runMcpOperation(
   runtime: McpServerRuntime,
   operation: string,
   extra: McpOperationExtra,
@@ -401,7 +417,7 @@ export async function executeMcpOperation(
         runtime.diagnostics.snapshot(tracked.id, stallTimeoutMs),
         operationController.signal,
       );
-      result = runtime.host === "claude" ? withTextDiagnostics(result, diagnostics) : {
+      result = isTextOnlyStatus(runtime, operation) ? withTextDiagnostics(result, diagnostics) : {
         ...result,
         structuredContent: {
           ...(result.structuredContent ?? {}),

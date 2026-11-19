@@ -122,8 +122,11 @@ jobs:
       - name: Build TypeScript
         run: npm run build:ts
 
+      # Unset GITHUB_REPOSITORY so the staged manifests keep the checked-in
+      # repository URL, as hand-built fork tarballs do; the metadata script
+      # rejects any other repository URL.
       - name: Pack and smoke-test both package identities
-        run: npm run smoke:package -- --output-dir "${RUNNER_TEMP}/validated-packages"
+        run: env -u GITHUB_REPOSITORY npm run smoke:package -- --output-dir "${RUNNER_TEMP}/validated-packages"
 
       - name: Assemble release files
         run: |

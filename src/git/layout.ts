@@ -81,7 +81,9 @@ export function isBareGitDirectory(gitDir: string): boolean {
  */
 export function resolveRepositoryLayout(checkoutRoot: string): RepositoryLayout | null {
   const resolvedGitDir = resolveGitDir(checkoutRoot);
-  if (!resolvedGitDir || !isGitDirectory(resolvedGitDir)) {
+  // A linked worktree's own git dir has HEAD but no objects/; only the common
+  // dir must be a complete git dir.
+  if (!resolvedGitDir || !existsSync(path.join(resolvedGitDir, "HEAD"))) {
     return null;
   }
 

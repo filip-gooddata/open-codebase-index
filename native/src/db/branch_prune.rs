@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 
-use super::{has_branch_call_edges, has_branch_call_edges_stale, DbResult};
+use super::{has_branch_call_edges, has_branch_call_edges_stale, DbError, DbResult};
 
 /// Rows one branch catalog holds in each per-branch membership table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -103,30 +103,35 @@ pub fn count_branch_catalog_rows(
         .collect()
 }
 
-/// Delete whole branch catalogs and their metadata keys in one transaction.
-/// Shared chunks, symbols and edges stay for the orphan GCs to judge.
+/// Delete whole branch catalogs and their metadata keys inside the caller's
+/// write transaction, so the caller can verify the catalogs are still unused
+/// before it commits. Shared chunks, symbols and edges stay for the orphan GCs.
 pub fn delete_branch_catalogs(
-    conn: &mut Connection,
+    conn: &Connection,
     branches: &[String],
     metadata_keys: &[String],
 ) -> DbResult<BranchCatalogPrune> {
-    let tx = conn.transaction()?;
-    let tables = branch_tables(&tx)?;
+    if conn.is_autocommit() {
+        return Err(DbError::TransactionState(String::from(
+            "Deleting branch catalogs requires an active write transaction",
+        )));
+    }
+    let tables = branch_tables(conn)?;
     let mut result = BranchCatalogPrune::default();
     {
-        let mut chunks = tx.prepare("DELETE FROM branch_chunks WHERE branch = ?1")?;
-        let mut symbols = tx.prepare("DELETE FROM branch_symbols WHERE branch = ?1")?;
+        let mut chunks = conn.prepare("DELETE FROM branch_chunks WHERE branch = ?1")?;
+        let mut symbols = conn.prepare("DELETE FROM branch_symbols WHERE branch = ?1")?;
         let mut edges = if tables.call_edges {
-            Some(tx.prepare("DELETE FROM branch_call_edges WHERE branch = ?1")?)
+            Some(conn.prepare("DELETE FROM branch_call_edges WHERE branch = ?1")?)
         } else {
             None
         };
         let mut stale = if tables.call_edges_stale {
-            Some(tx.prepare("DELETE FROM branch_call_edges_stale WHERE branch = ?1")?)
+            Some(conn.prepare("DELETE FROM branch_call_edges_stale WHERE branch = ?1")?)
         } else {
             None
         };
-        let mut metadata = tx.prepare("DELETE FROM metadata WHERE key = ?1")?;
+        let mut metadata = conn.prepare("DELETE FROM metadata WHERE key = ?1")?;
 
         for branch in branches {
             result.branches.push(BranchCatalogRows {
@@ -147,7 +152,6 @@ pub fn delete_branch_catalogs(
             result.metadata += metadata.execute(params![key])?;
         }
     }
-    tx.commit()?;
     Ok(result)
 }
 
@@ -185,6 +189,33 @@ mod tests {
         }
     }
 
+    fn delete_in_tx(conn: &Connection, branches: &[String], keys: &[String]) -> DbResult<BranchCatalogPrune> {
+        conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let result = delete_branch_catalogs(conn, branches, keys);
+        conn.execute_batch(if result.is_ok() { "COMMIT;" } else { "ROLLBACK;" }).unwrap();
+        result
+    }
+
+    #[test]
+    fn refuses_to_delete_outside_a_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = init_db(&dir.path().join("autocommit.db")).unwrap();
+        seed(&conn, "gone", true);
+        assert!(delete_branch_catalogs(&conn, &strings(&["gone"]), &[]).is_err());
+        assert_eq!(count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(), vec![rows("gone", 2, 1, 1, 1)]);
+    }
+
+    #[test]
+    fn rolled_back_deletes_leave_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = init_db(&dir.path().join("rollback.db")).unwrap();
+        seed(&conn, "gone", true);
+        conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        delete_branch_catalogs(&conn, &strings(&["gone"]), &[]).unwrap();
+        conn.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(), vec![rows("gone", 2, 1, 1, 1)]);
+    }
+
     fn rows(branch: &str, chunks: usize, symbols: usize, edges: usize, stale: usize) -> BranchCatalogRows {
         BranchCatalogRows {
             branch: branch.to_string(),
@@ -198,7 +229,7 @@ mod tests {
     #[test]
     fn deletes_only_named_catalogs_and_their_metadata() {
         let dir = tempfile::tempdir().unwrap();
-        let mut conn = init_db(&dir.path().join("prune.db")).unwrap();
+        let conn = init_db(&dir.path().join("prune.db")).unwrap();
         seed(&conn, "gone", true);
         seed(&conn, "kept", true);
         conn.execute(
@@ -212,8 +243,7 @@ mod tests {
             vec![rows("gone", 2, 1, 1, 1)]
         );
 
-        let pruned = delete_branch_catalogs(
-            &mut conn,
+        let pruned = delete_in_tx(&conn,
             &strings(&["gone", "missing"]),
             &strings(&["index.branchCommit.gone", "index.branchCommit.absent"]),
         )
@@ -242,7 +272,7 @@ mod tests {
     #[test]
     fn tolerates_stores_without_call_edge_overlay() {
         let dir = tempfile::tempdir().unwrap();
-        let mut conn = init_db(&dir.path().join("legacy.db")).unwrap();
+        let conn = init_db(&dir.path().join("legacy.db")).unwrap();
         seed(&conn, "gone", false);
         conn.execute_batch("DROP TABLE branch_call_edges_stale; DROP TABLE branch_call_edges;")
             .unwrap();
@@ -251,7 +281,7 @@ mod tests {
             count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(),
             vec![rows("gone", 2, 1, 0, 0)]
         );
-        let pruned = delete_branch_catalogs(&mut conn, &strings(&["gone"]), &[]).unwrap();
+        let pruned = delete_in_tx(&conn, &strings(&["gone"]), &[]).unwrap();
         assert_eq!(pruned.branches, vec![rows("gone", 2, 1, 0, 0)]);
         assert!(get_call_edge_overlay_branches(&conn).unwrap().is_empty());
     }
@@ -276,7 +306,7 @@ mod tests {
     #[test]
     fn tolerates_overlay_without_stale_table() {
         let dir = tempfile::tempdir().unwrap();
-        let mut conn = init_db(&dir.path().join("v2.db")).unwrap();
+        let conn = init_db(&dir.path().join("v2.db")).unwrap();
         seed(&conn, "gone", false);
         conn.execute(
             "INSERT INTO branch_call_edges (branch, edge_id, to_symbol_id, is_resolved) VALUES ('gone', 'e1', NULL, 0)",
@@ -285,7 +315,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("DROP TABLE branch_call_edges_stale;").unwrap();
 
-        let pruned = delete_branch_catalogs(&mut conn, &strings(&["gone"]), &[]).unwrap();
+        let pruned = delete_in_tx(&conn, &strings(&["gone"]), &[]).unwrap();
         assert_eq!(pruned.branches, vec![rows("gone", 2, 1, 1, 0)]);
     }
 }

@@ -1,4 +1,4 @@
-import { execFileSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import { DatabaseSync } from "node:sqlite";
 import * as fs from "fs";
 import * as os from "os";
@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCbiCli } from "../src/adapters/cbi.js";
 import { parseConfig } from "../src/config/schema.js";
-import { parseWorktreeCatalogIdentities } from "../src/git/worktree-catalogs.js";
+import { parseWorktreeList } from "../src/git/worktree-catalogs.js";
 import { planBranchPrune } from "../src/indexer/branch-prune.js";
 import { Indexer } from "../src/indexer/index.js";
 import { acquireIndexLock, IndexLockContentionError, releaseIndexLock } from "../src/indexer/index-lock.js";
@@ -26,26 +26,27 @@ const config = parseConfig({
   indexing: { watchFiles: false, autoGc: false },
 });
 
-describe("parseWorktreeCatalogIdentities", () => {
+describe("parseWorktreeList", () => {
   it("names branches verbatim, detached HEADs by seven-character SHA, and skips bare entries", () => {
-    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const sha1 = "0123456789abcdef0123456789abcdef01234567";
+    const sha256 = "fedcba9876543210".repeat(4);
     const output = [
       "worktree /repo.git", "bare", "",
-      "worktree /repo", `HEAD ${sha}`, "branch refs/heads/main", "",
-      "worktree /wt/feature", `HEAD ${sha}`, "branch refs/heads/feature/a/b", "locked", "",
-      "worktree /wt/detached", `HEAD ${sha}`, "detached", "prunable gitdir file points to non-existent location", "",
+      "worktree /repo", `HEAD ${sha1}`, "branch refs/heads/main", "",
+      "worktree /wt/feature", `HEAD ${sha1}`, "branch refs/heads/feature/a/b", "locked", "",
+      "worktree /wt/detached", `HEAD ${sha1}`, "detached", "prunable gitdir file points to non-existent location", "",
+      "worktree /wt/sha256", `HEAD ${sha256}`, "detached", "",
+      "worktree /wt/odd", "HEAD zz", "",
       "",
     ].join("\0");
 
-    expect(parseWorktreeCatalogIdentities(output)).toEqual([
-      { path: "/repo", identity: "main", detached: false },
-      { path: "/wt/feature", identity: "feature/a/b", detached: false },
-      { path: "/wt/detached", identity: "0123456", detached: true },
+    expect(parseWorktreeList(output)).toEqual([
+      { path: "/repo", identity: "main" },
+      { path: "/wt/feature", identity: "feature/a/b" },
+      { path: "/wt/detached", identity: "0123456" },
+      { path: "/wt/sha256", identity: "fedcba9" },
+      { path: "/wt/odd", identity: null },
     ]);
-  });
-
-  it("refuses to guess a catalog for a worktree it cannot name", () => {
-    expect(() => parseWorktreeCatalogIdentities("worktree /odd\0HEAD zz\0\0")).toThrow(/Cannot name the catalog/);
   });
 });
 
@@ -261,10 +262,11 @@ describe("Indexer.pruneBranchCatalogs", () => {
         liveKeys: new Set(),
         keys: ["gone", "pr/42"],
         candidateKeyFilter: (key) => key === "pr/42",
-        namespacedSidecars: false,
       });
       expect(plan.refused).toEqual([{ key: "gone", reason: "catalog of another project in this global index" }]);
-      expect(plan.catalogs.map((catalog) => ({ key: catalog.key, sidecars: catalog.sidecars }))).toEqual([{ key: "pr/42", sidecars: [] }]);
+      // Prepared global catalogs namespace their sidecars too; unsuffixed shared files never match.
+      expect(plan.catalogs.map((catalog) => catalog.key)).toEqual(["pr/42"]);
+      expect(plan.catalogs[0].sidecars).toHaveLength(3);
     } finally {
       database.close();
     }
@@ -340,6 +342,100 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(fs.existsSync(path.join(indexPath, "indexing.lock"))).toBe(false);
   });
 
+  function deleteSpyAddingWorktree(branch: string): void {
+    git(repo, ["branch", branch]);
+    const original = Database.prototype.deleteBranchCatalogs;
+    let added = false;
+    vi.spyOn(Database.prototype, "deleteBranchCatalogs").mockImplementation(function (this: Database, ...args) {
+      const pruned = original.apply(this, args);
+      if (!added) {
+        added = true;
+        git(repo, ["worktree", "add", path.join(tempDir, `wt-${branch}`), branch]);
+      }
+      return pruned;
+    });
+  }
+
+  it("rolls back and keeps a catalog checked out after the deletes, before the commit", async () => {
+    seedStore();
+    deleteSpyAddingWorktree("gone");
+
+    const result = await createIndexer().pruneBranchCatalogs({ apply: true });
+
+    expect(result.applied).toBe(true);
+    expect(result.refused).toEqual([{ key: "gone", reason: "checked out while pruning" }]);
+    expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["pr/42"]);
+    expect(catalogRows("gone")).toBe(5);
+    expect(sidecarCount("gone")).toBe(3);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key = 'index.branchCommit.${hashContent("gone").slice(0, 24)}'`)).toBe(1);
+    expect(catalogRows("pr/42")).toBe(0);
+  });
+
+  it("applies none of an explicit request when one key is checked out before the commit", async () => {
+    seedStore();
+    deleteSpyAddingWorktree("gone");
+
+    const result = await createIndexer().pruneBranchCatalogs({ keys: ["gone", "pr/42"], apply: true });
+
+    expect(result.applied).toBe(false);
+    expect(result.refused).toEqual([{ key: "gone", reason: "checked out while pruning" }]);
+    expect(result.removed).toBeNull();
+    expect(catalogRows("gone")).toBe(5);
+    expect(catalogRows("pr/42")).toBe(5);
+    expect(sidecarCount("pr/42")).toBe(3);
+  });
+
+  it("leaves the catalog for a retry when the run stops after removing sidecars", async () => {
+    seedStore();
+    const commit = vi.spyOn(Database.prototype, "commitWriteTransaction").mockImplementationOnce(() => {
+      throw new Error("interrupted");
+    });
+
+    await expect(createIndexer().pruneBranchCatalogs({ keys: ["gone"], apply: true })).rejects.toThrow("interrupted");
+    expect(catalogRows("gone")).toBe(5);
+    expect(sidecarCount("gone")).toBe(0);
+    commit.mockRestore();
+
+    const retry = await createIndexer().pruneBranchCatalogs({ apply: true });
+    expect(retry.catalogs.map((catalog) => catalog.key)).toEqual(["gone", "pr/42"]);
+    expect(catalogRows("gone")).toBe(0);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key = 'index.branchCommit.${hashContent("gone").slice(0, 24)}'`)).toBe(0);
+  });
+
+  it("reads worktrees of the project's repository even when GIT_DIR names another", async () => {
+    seedStore();
+    const other = path.join(tempDir, "other");
+    fs.mkdirSync(other);
+    git(other, ["init", "-b", "main"]);
+    const previous = process.env.GIT_DIR;
+    process.env.GIT_DIR = path.join(other, ".git");
+    try {
+      const result = await createIndexer().pruneBranchCatalogs();
+      expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["gone", "pr/42"]);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previous;
+    }
+  });
+
+  it("refuses to apply while an interrupted writer's recovery is pending, and keeps its marker", async () => {
+    seedStore();
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const lockPath = path.join(indexPath, "indexing.lock");
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify({
+      pid: child.pid,
+      hostname: os.hostname(),
+      startedAt: new Date().toISOString(),
+      operation: "index",
+      token: "11111111-1111-4111-8111-111111111111",
+    }));
+
+    await expect(createIndexer().pruneBranchCatalogs({ apply: true })).rejects.toThrow(/recovery pending/);
+    expect(catalogRows("gone")).toBe(5);
+    expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock.recovery."))).toBe(true);
+  });
+
   it("runs through the cbi prune command with host-aware paths", async () => {
     seedStore();
     const stdout: string[] = [];
@@ -378,5 +474,44 @@ describe("cbi prune arguments", () => {
     const code = await runCbiCli(["node", "cbi", "status", "--apply"], "/", { printStdout: () => {}, printStderr: (text) => stderr.push(text) });
     expect(code).toBe(1);
     expect(stderr[0]).toBe("Unknown option: --apply");
+  });
+});
+
+describe("Indexer.pruneBranchCatalogs in a SHA-256 repository", () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  it("keeps the catalog a detached SHA-256 worktree indexes into", async () => {
+    tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "branch-prune-sha256-")));
+    const repo = path.join(tempDir, "repo");
+    fs.mkdirSync(repo);
+    git(repo, ["init", "--object-format=sha256", "-b", "main"]);
+    git(repo, ["config", "user.email", "test@example.com"]);
+    git(repo, ["config", "user.name", "Test User"]);
+    fs.writeFileSync(path.join(repo, "a.ts"), "export const a = 1;\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-m", "init"]);
+    git(repo, ["worktree", "add", "--detach", path.join(tempDir, "wt-detached"), "HEAD"]);
+    const shortSha = git(repo, ["rev-parse", "HEAD"]).slice(0, 7);
+    const indexPath = path.join(repo, ".opencode", "index");
+    fs.mkdirSync(indexPath, { recursive: true });
+    const dbPath = path.join(indexPath, "codebase.db");
+    new Database(dbPath).close();
+    const db = new DatabaseSync(dbPath);
+    for (const branch of ["main", "default", shortSha, "gone"]) {
+      db.prepare("INSERT INTO branch_chunks (branch, chunk_id) VALUES (?, 'c')").run(branch);
+    }
+    db.close();
+
+    const indexer = new Indexer(repo, config, "opencode");
+    try {
+      const result = await indexer.pruneBranchCatalogs();
+      expect(result.catalogs.map((catalog) => catalog.key)).toEqual(["gone"]);
+    } finally {
+      await indexer.close();
+    }
   });
 });

@@ -2096,17 +2096,17 @@ export class Indexer {
   }
 
   /**
-   * Remove branch catalogs no checked-out worktree uses. The live set is read
-   * from Git inside the index lock, so a catalog checked out meanwhile stays.
+   * Remove branch catalogs no checked-out worktree uses. Apply holds the index
+   * lock and commits only after a fresh worktree read still finds them unused.
    */
   async pruneBranchCatalogs(
     options: { keys?: readonly string[]; apply?: boolean; signal?: AbortSignal } = {},
   ): Promise<BranchPruneResult> {
     const startedAt = Date.now();
-    const readLiveKeys = async (): Promise<Set<string>> => {
-      const worktrees = await listWorktreeCatalogIdentities(this.projectRoot, { signal: options.signal });
+    const readLiveKeys = async (): Promise<ReadonlySet<string>> => {
+      const identities = await listWorktreeCatalogIdentities(this.projectRoot, { signal: options.signal });
       throwIfOperationAborted(options.signal);
-      return new Set(worktrees.map(({ identity }) => this.getBranchCatalogKeyFor(identity)));
+      return new Set(Array.from(identities, (identity) => this.getBranchCatalogKeyFor(identity)));
     };
     const prune = async (apply: boolean): Promise<BranchPruneResult> => {
       const liveKeys = await readLiveKeys();
@@ -2123,31 +2123,42 @@ export class Indexer {
           candidateKeyFilter: this.config.scope === "global"
             ? (key) => key.startsWith(projectKeyPrefix)
             : () => true,
-          namespacedSidecars: this.config.scope === "project",
         });
-        // A refused explicit key means the request was wrong: apply none of it.
-        const applying = apply && plan.refused.length === 0;
-        // Git does not take the index lock to add a worktree; re-read just before deleting.
-        if (applying) plan = withoutLiveCatalogs(plan, await readLiveKeys());
-        const applied = applying ? applyBranchPrune(database, plan) : null;
-        return {
-          applied: applying,
+        const result = (applied: Awaited<ReturnType<typeof applyBranchPrune>> | null): BranchPruneResult => ({
+          applied: applied?.applied === true,
           indexPath: this.indexPath,
           catalogCount: plan.catalogCount,
           liveCatalogCount: plan.liveCatalogCount,
-          catalogs: applied?.catalogs ?? plan.catalogs,
+          catalogs: applied?.applied ? applied.catalogs : plan.catalogs,
           refused: plan.refused,
-          removed: applied?.removed ?? null,
-          gc: applied?.gc ?? null,
+          removed: applied?.applied ? applied.removed : null,
+          gc: applied?.applied ? applied.gc : null,
           elapsedMs: Date.now() - startedAt,
-        };
+        });
+        // A refused explicit key means the request was wrong: apply none of it.
+        if (!apply || plan.refused.length > 0) return result(null);
+
+        // Git takes no index lock to check out a worktree, so the deletes commit
+        // only if a fresh read after them still finds every catalog unused.
+        for (let attempt = 1; ; attempt += 1) {
+          const applied = await applyBranchPrune(database, plan, readLiveKeys);
+          if (applied.applied) return result(applied);
+          plan = withoutLiveCatalogs(plan, applied.liveKeys);
+          if (options.keys) return result(null);
+          if (attempt === 3) throw new Error("Worktrees kept changing while pruning; nothing was removed. Retry.");
+        }
       } finally {
         database.close();
       }
     };
 
     if (!options.apply) return prune(false);
-    return this.withIndexMutationLease("prune", () => prune(true), options.signal);
+    return this.withIndexMutationLease("prune", async (recoveredOwners) => {
+      if (recoveredOwners.length > 0) {
+        throw new Error("An interrupted index writer left recovery pending. Run `ocbi index` before pruning.");
+      }
+      return prune(true);
+    }, options.signal);
   }
 
   private chunkMetadataFromData(chunk: ChunkData): ChunkMetadata {

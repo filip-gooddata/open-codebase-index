@@ -73,8 +73,6 @@ export interface BranchPrunePlanInput {
   keys?: readonly string[];
   /** Global scope shares a store across projects: only this project's keys are candidates. */
   candidateKeyFilter: (key: string) => boolean;
-  /** Project scope namespaces sidecars per catalog; global scope does not. */
-  namespacedSidecars: boolean;
 }
 
 export interface BranchPrunePlan {
@@ -126,7 +124,8 @@ export function planBranchPrune(input: BranchPrunePlanInput): BranchPrunePlan {
   targets.sort();
 
   const rows = input.database.countBranchCatalogRows(targets);
-  const entries = input.namespacedSidecars ? readdirSync(input.indexPath) : [];
+  // Unsuffixed sidecars belong to the default or shared catalog and never match a namespace.
+  const entries = readdirSync(input.indexPath);
   const catalogs = rows.map(({ branch, ...counts }) => ({
     key: branch,
     rows: counts,
@@ -154,39 +153,67 @@ export function withoutLiveCatalogs(plan: BranchPrunePlan, liveKeys: ReadonlySet
   };
 }
 
-/** Remove the planned catalogs, then collect what no remaining catalog references. */
-export function applyBranchPrune(
+export type BranchPruneApplyOutcome =
+  | { applied: true; catalogs: BranchPruneCatalog[]; removed: BranchPruneTotals; gc: BranchPruneGc }
+  | { applied: false; liveKeys: ReadonlySet<string> };
+
+function unlinkExisting(filePath: string): boolean {
+  try {
+    unlinkSync(filePath);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * Delete the planned catalogs in one write transaction and commit only if
+ * readLiveKeys, read after the deletes, still shows none of them checked out.
+ * Sidecars go before the commit, so an interrupted run leaves the catalog's
+ * rows for a retry to find. Orphans are collected after the commit.
+ */
+export async function applyBranchPrune(
   database: Database,
   plan: BranchPrunePlan,
-): { catalogs: BranchPruneCatalog[]; removed: BranchPruneTotals; gc: BranchPruneGc } {
-  const pruned = database.deleteBranchCatalogs(plan.catalogs.map((catalog) => catalog.key), plan.metadataKeys);
+  readLiveKeys: () => Promise<ReadonlySet<string>>,
+): Promise<BranchPruneApplyOutcome> {
+  let catalogs: BranchPruneCatalog[];
   const removed: BranchPruneTotals = {
     branchChunks: 0,
     branchSymbols: 0,
     branchCallEdges: 0,
     branchCallEdgesStale: 0,
-    metadata: pruned.metadata,
+    metadata: 0,
     sidecars: 0,
   };
-  const catalogs = plan.catalogs.map((catalog, index) => {
-    const { branchChunks, branchSymbols, branchCallEdges, branchCallEdgesStale } = pruned.branches[index];
-    const counts = { branchChunks, branchSymbols, branchCallEdges, branchCallEdgesStale };
-    removed.branchChunks += counts.branchChunks;
-    removed.branchSymbols += counts.branchSymbols;
-    removed.branchCallEdges += counts.branchCallEdges;
-    removed.branchCallEdgesStale += counts.branchCallEdgesStale;
-    const sidecars = catalog.sidecars.filter((sidecar) => {
-      try {
-        unlinkSync(sidecar);
-        return true;
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw error;
-      }
+  database.beginWriteTransaction();
+  let open = true;
+  try {
+    const pruned = database.deleteBranchCatalogs(plan.catalogs.map((catalog) => catalog.key), plan.metadataKeys);
+    const liveKeys = await readLiveKeys();
+    if (plan.catalogs.some((catalog) => liveKeys.has(catalog.key))) {
+      open = false;
+      database.rollbackWriteTransaction();
+      return { applied: false, liveKeys };
+    }
+    removed.metadata = pruned.metadata;
+    catalogs = plan.catalogs.map((catalog, index) => {
+      const { branchChunks, branchSymbols, branchCallEdges, branchCallEdgesStale } = pruned.branches[index];
+      removed.branchChunks += branchChunks;
+      removed.branchSymbols += branchSymbols;
+      removed.branchCallEdges += branchCallEdges;
+      removed.branchCallEdgesStale += branchCallEdgesStale;
+      const sidecars = catalog.sidecars.filter(unlinkExisting);
+      removed.sidecars += sidecars.length;
+      return { key: catalog.key, rows: { branchChunks, branchSymbols, branchCallEdges, branchCallEdgesStale }, sidecars };
     });
-    removed.sidecars += sidecars.length;
-    return { key: catalog.key, rows: counts, sidecars };
-  });
+    open = false;
+    database.commitWriteTransaction();
+  } catch (error: unknown) {
+    if (open) database.rollbackWriteTransaction();
+    throw error;
+  }
 
   const gc: BranchPruneGc = {
     symbols: database.gcOrphanSymbols(),
@@ -194,7 +221,7 @@ export function applyBranchPrune(
     chunks: database.gcOrphanChunks(),
     embeddings: database.gcOrphanEmbeddings(),
   };
-  return { catalogs, removed, gc };
+  return { applied: true, catalogs, removed, gc };
 }
 
 function plural(count: number, noun: string): string {

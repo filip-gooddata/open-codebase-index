@@ -603,7 +603,7 @@ impl Database {
         branches: Vec<String>,
         metadata_keys: Vec<String>,
     ) -> Result<BranchCatalogPrune> {
-        self.with_conn_mut(|conn| {
+        self.with_conn(|conn| {
             let pruned = db::delete_branch_catalogs(conn, &branches, &metadata_keys)
                 .map_err(|e| Error::from_reason(e.to_string()))?;
             Ok(BranchCatalogPrune {

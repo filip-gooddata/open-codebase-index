@@ -1,0 +1,19 @@
+docs/installation.md
+  s_727f299a903a48::t_1254995917b442 224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "68059fbefe92d7d534c90b25fae2893fc99c2f1c",
+  "prompts": {},
+  "sessions": {
+    "s_727f299a903a48": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43c4b516-2201-4d06-800c-3400387af795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

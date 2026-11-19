@@ -2106,6 +2106,10 @@ export class Indexer {
     const readLiveKeys = async (): Promise<ReadonlySet<string>> => {
       const identities = await listWorktreeCatalogIdentities(this.projectRoot, { signal: options.signal });
       throwIfOperationAborted(options.signal);
+      // A project root without its own .git (a subdirectory, a non-Git tree) indexes into
+      // "default", which no worktree listing names; keep it and this checkout's own catalog.
+      identities.add("default");
+      identities.add(getBranchOrDefault(this.projectRoot));
       return new Set(Array.from(identities, (identity) => this.getBranchCatalogKeyFor(identity)));
     };
     const prune = async (apply: boolean): Promise<BranchPruneResult> => {
@@ -2154,7 +2158,9 @@ export class Indexer {
 
     if (!options.apply) return prune(false);
     return this.withIndexMutationLease("prune", async (recoveredOwners) => {
-      if (recoveredOwners.length > 0) {
+      // An interrupted prune is resumable: its deletes committed or rolled back, and this
+      // run's orphan collection finishes them. Any other writer's recovery comes first.
+      if (recoveredOwners.some((owner) => owner.operation !== "prune")) {
         throw new Error("An interrupted index writer left recovery pending. Run `ocbi index` before pruning.");
       }
       return prune(true);

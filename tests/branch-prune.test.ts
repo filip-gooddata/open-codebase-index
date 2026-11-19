@@ -436,6 +436,40 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock.recovery."))).toBe(true);
   });
 
+  it("resumes after a prune that died between its commit and the orphan collection", async () => {
+    seedStore();
+    sql("DELETE FROM branch_chunks WHERE branch = 'gone'; DELETE FROM branch_symbols WHERE branch = 'gone'; DELETE FROM branch_call_edges WHERE branch = 'gone';");
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const lockPath = path.join(indexPath, "indexing.lock");
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify({
+      pid: child.pid,
+      hostname: os.hostname(),
+      startedAt: new Date().toISOString(),
+      operation: "prune",
+      token: "22222222-2222-4222-8222-222222222222",
+    }));
+
+    const result = await createIndexer().pruneBranchCatalogs({ apply: true });
+
+    expect(result.applied).toBe(true);
+    expect(count("SELECT COUNT(*) AS n FROM chunks WHERE chunk_id = 'c-gone-only'")).toBe(0);
+    expect(fs.readdirSync(indexPath).some((name) => name.startsWith("indexing.lock"))).toBe(false);
+  });
+
+  it("keeps the default catalog a project root without its own .git indexes into", async () => {
+    seedStore();
+    seedCatalog("default");
+
+    const fromRoot = await createIndexer().pruneBranchCatalogs();
+    expect(fromRoot.catalogs.map((catalog) => catalog.key)).toEqual(["gone", "pr/42"]);
+
+    const refused = await createIndexer().pruneBranchCatalogs({ keys: ["default"], apply: true });
+    expect(refused.applied).toBe(false);
+    expect(refused.refused).toEqual([{ key: "default", reason: "catalog of a checked-out worktree" }]);
+    expect(catalogRows("default")).toBe(5);
+  });
+
   it("runs through the cbi prune command with host-aware paths", async () => {
     seedStore();
     const stdout: string[] = [];

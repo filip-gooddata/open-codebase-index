@@ -68,19 +68,21 @@ An explicit `--config` file replaces the settings layers, as before. The store a
 
 ### Errors and changes
 
-- A repository config that is not valid JSON, or whose fields have the wrong type (for example a non-string `storage.indexPath` or `checkouts.primary.path`, or a non-boolean role flag), is a config error naming the file. The checkout does not fall back to a local store. Unknown keys are ignored.
+- A repository config that is not valid JSON, or whose fields have the wrong type (for example a non-string `storage.indexPath` or `checkouts.primary.path`, or a non-boolean role flag), is a config error naming the file. So is a file that exists but cannot be read (a permission error, a directory, or a symbolic link whose target is missing). The checkout does not fall back to a local store. Unknown keys are ignored.
+- A secondary checkout never deletes shared store files. It refuses `index_codebase` with `force=true` and clears, and when the shared keyword index or database is unreadable or corrupted it reports an error naming the primary checkout (or asking for `checkouts.primary.path`) instead of resetting the store. Rebuild from the primary.
+- The evaluation CLI follows the same routing: without `--config` it uses the merged settings; an explicit `--config` replaces all settings. Project-scope `--reindex` is refused in every checkout of a repository with a repository config, before any file is written or deleted, because it would clear the shared store.
 - Each process resolves its store and role once. Editing the file does not move a running server to another store; `index_status` reports that the repository config changed since start until the server restarts.
 
 ### Status
 
-`index_status` and `ocbi status` end with the route:
+`index_status` (in every host, including Pi and omp) and `ocbi status` end with the route:
 
 ```text
 Store: /data/example-index (repository config <common dir>/codebase-index/config.json)
 Checkout role: secondary - linked worktree; the main worktree <main worktree path> is primary
 ```
 
-The source is `repository config <path>` (from `storage.indexPath`), `repository default store` (`<common dir>/codebase-index/index`) or `host default` (no repository config). Warnings follow on `Warning:` lines.
+The source is `repository config <path>` (from `storage.indexPath`), `repository default store` (`<common dir>/codebase-index/index`) or `host default` (no repository config). When the effective scope is `global`, the line reads `Store: <path> (global scope)` with no checkout role. Pi and omp print no route block for a checkout without a repository config. Warnings follow on `Warning:` lines.
 
 ### Sharing a store with older servers
 

@@ -150,6 +150,21 @@ describe("adapter indexing cancellation and progress", () => {
       expect(unreadableGlobal).toContain("Cannot confirm indexing.allowForceRebuild before a forced rebuild");
       const afterUnreadable = await indexer.search("kept2", 1, { definitionIntent: true, metadataOnly: true });
       expect(afterUnreadable[0]).toMatchObject({ name: "kept2" });
+
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
+        fs.writeFileSync(globalConfigPath, JSON.stringify({ indexing: { allowForceRebuild: false } }));
+        const globalConfigDir = path.dirname(globalConfigPath);
+        fs.chmodSync(globalConfigDir, 0o000);
+        try {
+          const inaccessibleGlobal = await run(true)
+            .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+          expect(inaccessibleGlobal).toContain("Cannot inspect config file");
+        } finally {
+          fs.chmodSync(globalConfigDir, 0o755);
+        }
+        const afterInaccessible = await indexer.search("kept2", 1, { definitionIntent: true, metadataOnly: true });
+        expect(afterInaccessible[0]).toMatchObject({ name: "kept2" });
+      }
     } finally {
       await getIndexerForProject(root, hostMode).close();
       await indexer.close();

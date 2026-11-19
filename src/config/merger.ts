@@ -1,7 +1,12 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import * as path from "path";
 
-import { resolveGlobalConfigPath, resolveProjectConfigPath } from "./paths.js";
+import {
+  getGlobalConfigPath,
+  getProjectConfigCandidatePaths,
+  resolveGlobalConfigPath,
+  resolveProjectConfigPath,
+} from "./paths.js";
 import type { HostMode } from "./host.js";
 import { resolveInheritedKnowledgeBaseEntries } from "./rebase.js";
 
@@ -112,6 +117,28 @@ function validateConfigLayerShape(rawConfig: unknown, filePath: string): Record<
   return rawConfig;
 }
 
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Path resolution treats any existsSync failure as absence. Strict loads walk the same candidates
+ * in order and stop at the first one that exists, throwing when one cannot be inspected.
+ */
+function assertConfigCandidatesInspectable(candidates: string[]): void {
+  for (const candidate of candidates) {
+    try {
+      statSync(candidate);
+      return;
+    } catch (error: unknown) {
+      if (isMissingPathError(error)) continue;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Cannot inspect config file ${candidate}: ${message}`, { cause: error });
+    }
+  }
+}
+
 function loadJsonFile(filePath: string): unknown {
   if (!existsSync(filePath)) {
     return null;
@@ -167,8 +194,11 @@ export function loadProjectConfigLayer(projectRoot: string, host: HostMode): Rec
  * - For include/exclude: project overrides global if set, otherwise load global
  */
 export interface LoadMergedConfigOptions {
-  /** Throw on an unreadable global config instead of falling back to the project config alone. */
-  strictGlobal?: boolean;
+  /**
+   * Throw on an unreadable global config instead of falling back to the project config alone, and
+   * on any config candidate that cannot be inspected instead of treating it as absent.
+   */
+  strict?: boolean;
 }
 
 export function loadMergedConfig(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions = {}): unknown {
@@ -176,6 +206,13 @@ export function loadMergedConfig(projectRoot: string, host: HostMode, options: L
   const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
   let globalConfig: Record<string, unknown> | null = null;
   let globalConfigError: Error | null = null;
+
+  if (options.strict === true) {
+    assertConfigCandidatesInspectable(host === "opencode"
+      ? [getGlobalConfigPath(host)]
+      : [getGlobalConfigPath(host), getGlobalConfigPath("opencode")]);
+    assertConfigCandidatesInspectable(getProjectConfigCandidatePaths(projectRoot, host));
+  }
 
   try {
     globalConfig = loadJsonFile(globalConfigPath) as Record<string, unknown> | null;
@@ -187,7 +224,7 @@ export function loadMergedConfig(projectRoot: string, host: HostMode, options: L
   const normalizedProjectConfig = loadProjectConfigLayer(projectRoot, host);
 
   if (globalConfigError) {
-    if (!projectConfig || options.strictGlobal === true) {
+    if (!projectConfig || options.strict === true) {
       throw globalConfigError;
     }
     globalConfig = null;

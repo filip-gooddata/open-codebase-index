@@ -102,24 +102,15 @@ export interface IndexCodebaseOptions {
   allowForceRebuildOverride?: boolean;
 }
 
-/** POSIX shell single-quoting, so the printed command names exactly this path. */
-function quoteCliArgument(value: string): string {
-  return /^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 export function formatForceRebuildRefusal(projectRoot: string, host: HostMode): string {
-  const command = [
-    "ocbi index --force",
-    FORCE_REBUILD_OVERRIDE_FLAG,
-    `--host ${host}`,
-    `--project ${quoteCliArgument(projectRoot)}`,
-  ].join(" ");
+  const command = `ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG} --host ${host} --project <project root>`;
   return [
     `${FORCE_REBUILD_DISABLED_CODE}: forced rebuild refused because indexing.allowForceRebuild is false for this project.`,
     "A forced rebuild clears every branch catalog in the index and re-embeds the whole codebase.",
     "Run index_codebase without force for a normal incremental refresh.",
-    `If a full rebuild is really needed, ask the user to run \`${command}\` in a terminal`
-      + " (add the same --config if this server was started with one).",
+    `If a full rebuild is really needed, ask the user to run \`${command}\` in a terminal,`
+      + " quoting the project root for their shell (add the same --config if this server was started with one).",
+    `Project root: ${projectRoot}`,
   ].join("\n");
 }
 
@@ -131,7 +122,7 @@ export function formatForceRebuildRefusal(projectRoot: string, host: HostMode): 
 function isForceRebuildAllowed(root: string, host: HostMode): boolean {
   if (!getRuntimeConfigForProject(root, host).indexing.allowForceRebuild) return false;
   try {
-    return parseConfig(loadRuntimeConfig(root, host, { strictGlobal: true })).indexing.allowForceRebuild;
+    return parseConfig(loadRuntimeConfig(root, host, { strict: true })).indexing.allowForceRebuild;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Cannot confirm indexing.allowForceRebuild before a forced rebuild: ${message}`, { cause: error });

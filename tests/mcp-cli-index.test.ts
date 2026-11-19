@@ -231,11 +231,13 @@ describe("mcp cli index command execution", () => {
     expect(stderr.join("\n")).toContain("Usage:");
   });
 
-  it("prints a shell-safe recovery command for the refusing host and project", () => {
-    expect(formatForceRebuildRefusal("/srv/repo", "claude"))
-      .toContain("`ocbi index --force --allow-shared-rebuild --host claude --project /srv/repo`");
-    expect(formatForceRebuildRefusal("/srv/a $HOME `x` it's", "codex"))
-      .toContain("--host codex --project '/srv/a $HOME `x` it'\\''s'`");
+  it("names the refusing host and the literal project root without shell-specific quoting", () => {
+    const posix = formatForceRebuildRefusal("/srv/a $HOME `x` it's", "claude");
+    expect(posix).toContain("`ocbi index --force --allow-shared-rebuild --host claude --project <project root>`");
+    expect(posix.split("\n").at(-1)).toBe("Project root: /srv/a $HOME `x` it's");
+    const windows = formatForceRebuildRefusal("C:\\Work Space\\repo", "codex");
+    expect(windows).toContain("--host codex --project <project root>");
+    expect(windows.split("\n").at(-1)).toBe("Project root: C:\\Work Space\\repo");
   });
 
   it("parses --allow-shared-rebuild with --force", () => {

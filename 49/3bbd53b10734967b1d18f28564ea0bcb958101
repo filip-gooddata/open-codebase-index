@@ -1,0 +1,105 @@
+README.md
+  s_bd362efb6487a9::t_4b610f8d65da81 301
+contrib/local-wrapper/README.md
+  s_596fe5d234a158::t_0d9ab1259e4c4f 1-79
+contrib/local-wrapper/claude-plugin/.agents/plugins/marketplace.json
+  s_bd362efb6487a9::t_0c5be6f2f70242 1-12
+contrib/local-wrapper/claude-plugin/.claude-plugin/marketplace.json
+  s_bd362efb6487a9::t_8a67e6e9aea72d 1-13
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/.claude-plugin/plugin.json
+  s_bd362efb6487a9::t_d50d66841852b0 1-14
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/.codex-plugin/plugin.json
+  s_bd362efb6487a9::t_d2382a0ba26226 1-25
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/index.md
+  s_bd362efb6487a9::t_0875367ce15030 1-27
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/status.md
+  s_bd362efb6487a9::t_f30d9bded3d7f1 1-19
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/hooks/hooks.json
+  s_bd362efb6487a9::t_f0bd415fa3e426 1-37
+contrib/local-wrapper/hook/ocbi-post-checkout.sh
+  s_bd362efb6487a9::t_76fbae73c00351 1-59
+contrib/local-wrapper/install.sh
+  s_0c38e0c1509213::t_3d33bad02c5243 1-251
+contrib/local-wrapper/launcher/codebase-index.example.json
+  s_bd362efb6487a9::t_a732ea262e119c 1-21
+contrib/local-wrapper/launcher/mcp-force-guard.mjs
+  s_0955bbd683c4bd::t_4181622dce5845 1-48
+contrib/local-wrapper/launcher/ocbi-mcp.sh
+  s_bd362efb6487a9::t_4e1403d42b2a98 1-562
+contrib/local-wrapper/launcher/profiles.conf.example
+  s_bd362efb6487a9::t_407aa064426d10 1-12
+contrib/local-wrapper/launcher/projects.conf.example
+  s_bd362efb6487a9::t_598f7841858f68 1-12
+contrib/local-wrapper/notify/notifier/build.sh
+  s_bd362efb6487a9::t_d772c6de7a9c2e 1-42
+contrib/local-wrapper/notify/notifier/main.swift
+  s_bd362efb6487a9::t_dc3f6752a756f4 1-90
+contrib/local-wrapper/notify/ocbi-notify.sh
+  s_5ee72a4d1addc9::t_9d1b120893a307 1-23
+contrib/local-wrapper/rebuild/ocbi-rebuild
+  s_0c38e0c1509213::t_a721c72038005f 1-21
+contrib/local-wrapper/rebuild/ocbi-rebuild.sh
+  s_18918ce10789f7::t_178e1c7a9fa88f 1-155
+contrib/local-wrapper/rebuild/rebuild.plist.template
+  s_18918ce10789f7::t_fab9d5e1f210e9 1-24
+contrib/local-wrapper/test/run-tests.sh
+  s_0c38e0c1509213::t_7b61e05a55f893 1-344
+docs/local-wrapper.md
+  s_0c38e0c1509213::t_7e318e08258754 1-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "493bbd53b10734967b1d18f28564ea0bcb958101",
+  "prompts": {},
+  "sessions": {
+    "s_0955bbd683c4bd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f41e-e388-7932-a5ba-498f4989826e",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_0c38e0c1509213": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f435-dc8f-7702-93a4-4cfe1dc74f0a",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_18918ce10789f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08502177-6408-42fa-ab6d-fa10c965f9e5",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_596fe5d234a158": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b5c132df-fe53-43e0-806b-c3d21d91641c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_5ee72a4d1addc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f41f-2639-7b42-9bc7-a8ed08b676c4",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_bd362efb6487a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a80945e2-76af-44b1-880e-f2cce5721021",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

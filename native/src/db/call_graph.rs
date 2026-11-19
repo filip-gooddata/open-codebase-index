@@ -657,34 +657,40 @@ pub(crate) fn copy_branch_call_edge_targets(
 }
 
 fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>) -> DbResult<usize> {
+    // A literal `branch = ?` keeps the branch-leading key usable; an
+    // `(? IS NULL OR branch = ?)` filter makes SQLite read every overlay row.
+    let branch_filter = if branch.is_some() { "branch = ?1 AND" } else { "" };
+    let params = rusqlite::params_from_iter(branch);
     let count = conn.execute(
-        r#"
-        DELETE FROM branch_call_edges
-        WHERE (?1 IS NULL OR branch = ?1)
-          AND NOT EXISTS (
-            SELECT 1
-            FROM call_edges ce
-            INNER JOIN branch_symbols bs
-                ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges.branch
-            WHERE ce.id = branch_call_edges.edge_id
-          )
-        "#,
-        params![branch],
-    )?;
-    if has_branch_call_edges_stale(conn)? {
-        conn.execute(
+        &format!(
             r#"
-            DELETE FROM branch_call_edges_stale
-            WHERE (?1 IS NULL OR branch = ?1)
-              AND NOT EXISTS (
+            DELETE FROM branch_call_edges
+            WHERE {branch_filter} NOT EXISTS (
                 SELECT 1
                 FROM call_edges ce
                 INNER JOIN branch_symbols bs
-                    ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges_stale.branch
-                WHERE ce.id = branch_call_edges_stale.edge_id
-              )
-            "#,
-            params![branch],
+                    ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges.branch
+                WHERE ce.id = branch_call_edges.edge_id
+            )
+            "#
+        ),
+        params.clone(),
+    )?;
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute(
+            &format!(
+                r#"
+                DELETE FROM branch_call_edges_stale
+                WHERE {branch_filter} NOT EXISTS (
+                    SELECT 1
+                    FROM call_edges ce
+                    INNER JOIN branch_symbols bs
+                        ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges_stale.branch
+                    WHERE ce.id = branch_call_edges_stale.edge_id
+                )
+                "#
+            ),
+            params,
         )?;
     }
     Ok(count)

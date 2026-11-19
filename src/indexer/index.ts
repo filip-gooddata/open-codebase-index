@@ -2069,7 +2069,8 @@ export class Indexer {
   /**
    * Makes a branch's stored membership equal `target` by deleting and adding
    * only the rows that differ. Rewriting every row of a large branch costs far
-   * more in deletes and commit I/O than a one-file refresh changes.
+   * more in deletes and commit I/O than a one-file refresh changes. Removing
+   * symbols this way also drops the branch's call-edge targets for them.
    */
   private applyBranchMembershipDelta(
     stored: readonly string[],
@@ -2107,7 +2108,6 @@ export class Indexer {
       (removed) => database.deleteBranchSymbolsForBranch(branchCatalogKey, removed),
       (added) => database.addSymbolsToBranchBatch(branchCatalogKey, added),
     );
-    database.gcUnreachableBranchCallEdges(branchCatalogKey);
 
     const currentChunkIdSet = new Set(currentChunkIds);
     const removedChunkCandidates = previousChunkIds.filter((chunkId) => !currentChunkIdSet.has(chunkId));

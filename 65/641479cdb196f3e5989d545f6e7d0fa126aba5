@@ -1,0 +1,21 @@
+src/indexer/index.ts
+  s_5d7b2b1ea73db5::t_9aa1cc9f042805 49,2147-2152,2154-2155,2163-2189
+tests/branch-prune.test.ts
+  s_5d7b2b1ea73db5::t_782079e02e8347 235-282
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "65641479cdb196f3e5989d545f6e7d0fa126aba5",
+  "prompts": {},
+  "sessions": {
+    "s_5d7b2b1ea73db5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51571f8d-b526-4eb9-a9f7-e00e38de8201",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

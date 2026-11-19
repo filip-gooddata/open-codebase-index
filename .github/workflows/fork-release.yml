@@ -110,7 +110,7 @@ jobs:
           merge-multiple: true
 
       - name: Check tag matches package version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: |
           version="$(node -p 'require("./package.json").version')"
           if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
@@ -154,7 +154,7 @@ jobs:
           ls -la "${out}"
 
       - name: Require release notes on tag pushes
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: test -s "${RUNNER_TEMP}/release/RELEASE_NOTES.md"
 
       - name: Upload release files
@@ -229,6 +229,10 @@ jobs:
           set -euo pipefail
           mv release/RELEASE_NOTES.md notes.md
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            if [ "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" != false ]; then
+              echo "::error::Release ${GITHUB_REF_NAME} exists as a draft, likely from an interrupted run; delete it by hand and rerun"
+              exit 1
+            fi
             echo "Release ${GITHUB_REF_NAME} already exists; comparing its assets with this build"
             mkdir published
             gh release download "${GITHUB_REF_NAME}" --dir published
@@ -236,7 +240,7 @@ jobs:
               echo "::error::Existing release assets differ from this build's file set; fix the release by hand"
               exit 1
             fi
-            (cd published && sha256sum -c ../release/SHA256SUMS) || {
+            (cmp published/SHA256SUMS release/SHA256SUMS && cd published && sha256sum -c ../release/SHA256SUMS) || {
               echo "::error::Existing release assets differ from this build's bytes; fix the release by hand"
               exit 1
             }
@@ -245,5 +249,8 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" release/* \
               --verify-tag --title "${GITHUB_REF_NAME}" --notes-file notes.md
           fi
-          gh release view "${GITHUB_REF_NAME}" --json url,isDraft,assets \
-            --jq '.url, "draft=\(.isDraft)", (.assets[] | "\(.name) \(.size)")'
+          gh release view "${GITHUB_REF_NAME}" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'
+          if [ "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" != false ]; then
+            echo "::error::Release ${GITHUB_REF_NAME} is still a draft"
+            exit 1
+          fi

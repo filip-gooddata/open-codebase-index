@@ -269,6 +269,18 @@ mkdir -p "$T/lnk" && ln -s "$W" "$T/lnk/wt" && ln -s "$W" "$T/lnk/demo"
 expect_eq "guarded --cbi refuses a relative --project that resolves to another checkout" 3 "$?"
 out="$(cd "$T/lnk/wt" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --force --project . 2>/dev/null)"
 expect_match "guarded --cbi accepts --project . and passes the physical root" "^CBI index --force --host claude --project $W cwd=" "$out"
+# A symlink inside the argument followed by "..": the CLI resolves the ".." first (path.resolve),
+# so the guard must too.
+ln -s "$T/lnk" "$W/redirect"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project ../demo/redirect/.. >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses ../demo/redirect/.. (the CLI resolves it to the other checkout)" 3 "$?"
+out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project redirect/.. 2>/dev/null)"
+expect_eq "guarded --cbi accepts redirect/.. (the CLI resolves it to this checkout)" "CBI index --host claude --project $W cwd=$W" "$out"
+rm -f "$W/redirect"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses --project without a value" 3 "$?"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --host >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses --host without a value" 3 "$?"
 (cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi workspace status >/dev/null 2>&1)
 expect_eq "guarded --cbi runs only index" 3 "$?"
 out="$(cd "$W" && bash "$L" --cbi workspace status --json 2>/dev/null)"

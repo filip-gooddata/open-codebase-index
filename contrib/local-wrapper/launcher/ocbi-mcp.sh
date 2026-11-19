@@ -537,11 +537,14 @@ if [ "${1:-}" = "--cbi" ]; then
   fi
   # A guarded run only indexes, and indexes exactly what was checked: this root, the claude host
   # paths and the linked config. Any --host must be claude and any --project must resolve, as the
-  # kernel and the CLI resolve it, to this root; both are then replaced by the launcher's own
+  # CLI resolves it, to this root; both are then replaced by the launcher's own
   # --host claude --project <absolute root>. Every other subcommand and --config are refused.
   if [ -n "$want" ]; then
     [ "${1:-}" = index ] || { log "refusing to run the CLI: only \`index\` runs with OCBI_REQUIRE_PROJECT, not \`${1:-}\`"; exit 3; }
-    real_root="$(cd -P "$root" 2>/dev/null && pwd -P)"
+    # Paths are compared as the CLI sees them: path.resolve from this working directory (which the
+    # CLI inherits), then realpath. The shell's cd, logical or -P, resolves ".." differently.
+    node_real() { "$node_bin" -e 'try { process.stdout.write(require("fs").realpathSync(require("path").resolve(process.argv[1]))); } catch { process.exit(1); }' "$1"; }
+    real_root="$(node_real "$root")" || { log "refusing to run the CLI: cannot resolve $root"; exit 3; }
     n=$#
     pending=""
     while [ "$n" -gt 0 ]; do
@@ -550,7 +553,7 @@ if [ "${1:-}" = "--cbi" ]; then
       n=$((n - 1))
       case "$pending" in
         --project)
-          [ "$(cd -P "$arg" 2>/dev/null && pwd -P)" = "$real_root" ] || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; }
+          [ "$(node_real "$arg")" = "$real_root" ] || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; }
           pending=""
           continue
           ;;

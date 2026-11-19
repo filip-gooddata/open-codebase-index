@@ -4,11 +4,12 @@ import type { CodebaseIndexExtensionAPI } from "../src/adapters/shared/extension
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import codebaseIndexPiExtension from "../src/adapters/pi/extension.js";
 import codebaseIndexOmpExtension from "../src/adapters/omp/extension.js";
 import { index_codebase } from "../src/adapters/opencode/tools.js";
+import { resolveWritableProjectConfigPath } from "../src/config/paths.js";
 import { parseConfig } from "../src/config/schema.js";
 import { executeIndexCodebase } from "../src/tools/execute-common.js";
 import { getIndexerForProject, initializeTools } from "../src/tools/operation-runtime.js";
@@ -84,6 +85,9 @@ describe("adapter indexing cancellation and progress", () => {
 
   it.each(["Pi", "omp", "OpenCode"] as const)("%s refuses force when indexing.allowForceRebuild is false", async (host) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "adapter-force-refusal-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "adapter-force-refusal-home-"));
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
     const hostMode: HostMode = host === "OpenCode" ? "opencode" : "pi";
     for (let i = 0; i < 3; i++) {
       fs.writeFileSync(path.join(root, `kept-${i}.ts`), `export function kept${i}() { return ${i}; }\n`);
@@ -130,10 +134,19 @@ describe("adapter indexing cancellation and progress", () => {
       initializeTools(root, configFor(true), hostMode);
       const allowed = await run(true);
       expect(allowed).not.toContain("FORCE_REBUILD_DISABLED");
+
+      const projectConfigPath = resolveWritableProjectConfigPath(root, hostMode);
+      fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+      fs.writeFileSync(projectConfigPath, JSON.stringify({ indexing: { allowForceRebuild: false } }));
+      const refusedFromDisk = await run(true);
+      expect(refusedFromDisk).toContain("FORCE_REBUILD_DISABLED: forced rebuild refused");
+      expect(refusedFromDisk).toContain(`--host ${hostMode} --project`);
     } finally {
       await getIndexerForProject(root, hostMode).close();
       await indexer.close();
+      vi.unstubAllEnvs();
       fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

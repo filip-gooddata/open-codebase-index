@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`indexing.allowForceRebuild`**: When `false`, forced rebuilds are refused before any lock is taken, for MCP `index_codebase` with `force: true`, the OpenCode, Pi and omp `index_codebase` tools, the `/reindex` command and `ocbi index --force`. Tools return `FORCE_REBUILD_DISABLED` with the CLI command to use instead; MCP reports it as an error result with that code. `ocbi index --force --allow-shared-rebuild` is the explicit operator override; there is no override from tools. Defaults to `true`, which keeps current behaviour.
+- **`indexing.allowForceRebuild`**: When `false`, forced rebuilds are refused before any lock is taken, for MCP `index_codebase` with `force: true`, the OpenCode, Pi and omp `index_codebase` tools, the `/reindex` command and `ocbi index --force`. The setting is re-read from config on disk for each forced request, and a global `false` survives a project `indexing` section that omits the key. Tools return `FORCE_REBUILD_DISABLED` with the CLI command for the same host and project; MCP reports it as an error result with that code. `ocbi index --force --allow-shared-rebuild` is the explicit operator override; there is no override from tools. Defaults to `true`, which keeps current behaviour.
 
 ### Changed
 
-- **`index_status` for Claude Code**: With `--host claude`, `index_status` returns only its text content. Claude Code shows `structuredContent` instead of the text when both are present, which hid the formatted status. Other hosts still receive the structured status with `mcpDiagnostics`.
+- **`index_status` for Claude Code**: With `--host claude`, `index_status` returns only text content, with the MCP diagnostics (active and latest interrupted operations) appended as text. Claude Code shows `structuredContent` instead of the text when both are present, which hid the formatted status. The switch keys on `--host claude`, so another client started with that host gets the same text-only result. Other hosts still receive the structured status with `mcpDiagnostics`.
 
 ### Documentation
 

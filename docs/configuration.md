@@ -291,7 +291,7 @@ Ollama server is stopped. The standard suite uses deterministic HTTP replicas wi
 | `autoIndexMaxRetries` | `5` | Transient lock retries |
 | `autoIndexRetryDelayMs` | `100` | Initial retry delay |
 | `watchFiles` | `true` | Watch files and branches for incremental updates |
-| `allowForceRebuild` | `true` | Allow forced rebuilds (`index_codebase` with `force: true`, `/reindex`, `ocbi index --force`). When `false`, every host refuses them with `FORCE_REBUILD_DISABLED`; incremental indexing is unaffected. The CLI override is `ocbi index --force --allow-shared-rebuild` |
+| `allowForceRebuild` | `true` | Allow forced rebuilds (`index_codebase` with `force: true`, `/reindex`, `ocbi index --force`). When `false`, every host refuses them with `FORCE_REBUILD_DISABLED`; incremental indexing is unaffected. The setting is re-read from the project and global config for each forced request, and the stricter value wins over a config passed with `--config`. A global `false` stays in force when a project `indexing` section omits the key. The CLI override is `ocbi index --force --allow-shared-rebuild` |
 | `pauseBackgroundIndexingOnBattery` | `false` | On macOS, defer automatic background indexing on battery |
 | `maxFileSize` | `1048576` | Maximum file size in bytes |
 | `maxChunksPerFile` | `100` | Maximum semantic chunks per file |

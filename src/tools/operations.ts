@@ -102,12 +102,40 @@ export interface IndexCodebaseOptions {
   allowForceRebuildOverride?: boolean;
 }
 
-export const FORCE_REBUILD_REFUSED_TEXT = [
-  `${FORCE_REBUILD_DISABLED_CODE}: forced rebuild refused because indexing.allowForceRebuild is false for this project.`,
-  "A forced rebuild clears every branch catalog in the index and re-embeds the whole codebase.",
-  "Run index_codebase without force for a normal incremental refresh.",
-  `If a full rebuild is really needed, ask the user to run \`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG}\` in a terminal.`,
-].join("\n");
+function quoteCliArgument(value: string): string {
+  return /^[\w./:@%+=,-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+export function formatForceRebuildRefusal(projectRoot: string, host: HostMode): string {
+  const command = [
+    "ocbi index --force",
+    FORCE_REBUILD_OVERRIDE_FLAG,
+    `--host ${host}`,
+    `--project ${quoteCliArgument(projectRoot)}`,
+  ].join(" ");
+  return [
+    `${FORCE_REBUILD_DISABLED_CODE}: forced rebuild refused because indexing.allowForceRebuild is false for this project.`,
+    "A forced rebuild clears every branch catalog in the index and re-embeds the whole codebase.",
+    "Run index_codebase without force for a normal incremental refresh.",
+    `If a full rebuild is really needed, ask the user to run \`${command}\` in a terminal`
+      + " (add the same --config if this server was started with one).",
+  ].join("\n");
+}
+
+/**
+ * Re-reads the project and global config for each forced request, so a policy written after this
+ * process loaded its config still applies. The stricter of the loaded and on-disk values wins, which
+ * keeps an explicitly supplied config from loosening the on-disk policy.
+ */
+function isForceRebuildAllowed(root: string, host: HostMode): boolean {
+  if (!getRuntimeConfigForProject(root, host).indexing.allowForceRebuild) return false;
+  try {
+    return parseConfig(loadRuntimeConfig(root, host)).indexing.allowForceRebuild;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot confirm indexing.allowForceRebuild before a forced rebuild: ${message}`, { cause: error });
+  }
+}
 
 type ProgressCb = (title: string, metadata: Record<string, unknown>) => void | Promise<void>;
 const MAX_CALL_GRAPH_CANDIDATES = 5;
@@ -692,9 +720,9 @@ export async function runIndexCodebase(
     && args.estimateOnly !== true
     && args.dryRun !== true
     && options.allowForceRebuildOverride !== true
-    && !getRuntimeConfigForProject(root, host).indexing.allowForceRebuild
+    && !isForceRebuildAllowed(root, host)
   ) {
-    return { kind: "refused", code: FORCE_REBUILD_DISABLED_CODE, text: FORCE_REBUILD_REFUSED_TEXT };
+    return { kind: "refused", code: FORCE_REBUILD_DISABLED_CODE, text: formatForceRebuildRefusal(root, host) };
   }
   const indexer = getIndexerForProject(root, host);
   await runOperationPhase(control, "preparing_index");

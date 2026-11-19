@@ -49,6 +49,18 @@ function applyProjectOverride(
   }
 }
 
+/** A project indexing section that omits allowForceRebuild must not re-enable a global refusal. */
+function preserveGlobalForceRebuildRefusal(
+  merged: Record<string, unknown>,
+  globalConfig: Record<string, unknown>,
+): void {
+  const globalIndexing = globalConfig.indexing;
+  const mergedIndexing = merged.indexing;
+  if (!isRecord(globalIndexing) || globalIndexing.allowForceRebuild !== false) return;
+  if (!isRecord(mergedIndexing) || "allowForceRebuild" in mergedIndexing) return;
+  merged.indexing = { ...mergedIndexing, allowForceRebuild: false };
+}
+
 function mergeUniqueStringArray(values: unknown[]): string[] {
   return [...new Set(values.map((value) => String(value).trim()))];
 }
@@ -198,6 +210,7 @@ export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
   for (const key of PROJECT_OVERRIDE_KEYS) {
     applyProjectOverride(merged, normalizedProjectConfig, globalConfig, key);
   }
+  preserveGlobalForceRebuildRefusal(merged, globalConfig);
 
   // For other config sections: project overrides if set, otherwise use global
   if (projectConfig) {

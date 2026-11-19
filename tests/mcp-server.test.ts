@@ -1461,7 +1461,7 @@ describe("MCP server tools and prompts", () => {
       expect(result.isError).toBe(true);
       const content = result.content as Array<{ type: string; text?: string }>;
       expect(content[0].text).toContain("FORCE_REBUILD_DISABLED: forced rebuild refused");
-      expect(content[0].text).toContain("ocbi index --force --allow-shared-rebuild");
+      expect(content[0].text).toContain(`ocbi index --force --allow-shared-rebuild --host ${host} --project /tmp/test-project`);
       expect(result.structuredContent).toMatchObject({ error: { code: "FORCE_REBUILD_DISABLED", retryable: false } });
       for (const instance of indexerMockState.instances) {
         expect(instance.forceIndex).not.toHaveBeenCalled();
@@ -1491,6 +1491,7 @@ describe("MCP server tools and prompts", () => {
     expect(content[0].type).toBe("text");
     expect(content[0].text).toContain("Indexed chunks");
     expect(content[0].text).toContain("Compatibility: Index is compatible");
+    expect(content[0].text).toContain("MCP operations: none active");
     expect(result.structuredContent).toBeUndefined();
   });
 

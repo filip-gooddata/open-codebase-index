@@ -9,6 +9,7 @@ import type {
 import { isIndexLockContentionError } from "../../indexer/index-lock.js";
 import { UnsupportedIndexOperationError } from "../../indexer/errors.js";
 import { FORCE_REBUILD_DISABLED_CODE, FORCE_REBUILD_OVERRIDE_FLAG } from "../../tools/operations.js";
+import type { McpDiagnosticsSnapshot } from "./runtime-diagnostics.js";
 import {
   AutoIndexRetrievalUnavailableError,
   getRuntimeConfigForProject,
@@ -88,6 +89,36 @@ function getText(result: CallToolResult): string {
     .join("\n");
 }
 
+function formatMcpDiagnosticsText(diagnostics: McpDiagnosticsSnapshot): string {
+  const lines = diagnostics.activeOperations.length === 0
+    ? ["MCP operations: none active"]
+    : diagnostics.activeOperations.map((active) => (
+      `MCP operation ${active.status}: ${active.operation} (phase ${active.phase}, started ${active.startedAt}, last activity ${active.lastActivityAt})`
+    ));
+  const interrupted = diagnostics.latestInterruptedOperation;
+  if (interrupted) {
+    lines.push(
+      `Latest interrupted MCP operation: ${interrupted.operation} (phase ${interrupted.phase}, cause ${interrupted.cause}, `
+        + `last activity ${interrupted.lastActivityAt}). ${interrupted.nextAction}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Claude Code shows structuredContent instead of the text block when both are present, so the
+ * claude host gets the status and its MCP diagnostics as text only.
+ */
+function withTextDiagnostics(result: CallToolResult, diagnostics: McpDiagnosticsSnapshot): CallToolResult {
+  const diagnosticsText = formatMcpDiagnosticsText(diagnostics);
+  const content = result.content.length > 0 && result.content[0].type === "text"
+    ? [{ ...result.content[0], text: `${result.content[0].text}\n\n${diagnosticsText}` }, ...result.content.slice(1)]
+    : [...result.content, { type: "text" as const, text: diagnosticsText }];
+  const textOnly: CallToolResult = { ...result, content };
+  delete textOnly.structuredContent;
+  return textOnly;
+}
+
 function errorDetails(
   error: unknown,
   operation: string,
@@ -128,7 +159,9 @@ function errorDetails(
   } else if (error instanceof ReportedToolError && error.kind === "refused") {
     code = "FORCE_REBUILD_DISABLED";
     retryable = false;
-    nextAction = `Run index_codebase without force for a normal refresh. A full rebuild needs the user to run \`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG}\` in a terminal.`;
+    nextAction = "Run index_codebase without force for a normal refresh. For a full rebuild, the user runs "
+      + `\`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG}\` in a terminal with this server's --host and --project; `
+      + "the text result names the exact command.";
   } else if (error instanceof AutoIndexRetrievalUnavailableError
     || (error instanceof ReportedToolError && error.kind === "unavailable")) {
     code = "INDEX_UNAVAILABLE";
@@ -363,16 +396,12 @@ export async function executeMcpOperation(
       );
       if (executionFailure) throw executionFailure;
     }
-    if (operation === "index_status" && runtime.host === "claude") {
-      // Claude Code shows structuredContent instead of the text block when both are present.
-      result = { ...result };
-      delete result.structuredContent;
-    } else if (operation === "index_status") {
+    if (operation === "index_status") {
       const diagnostics = await raceWithOperationSignal(
         runtime.diagnostics.snapshot(tracked.id, stallTimeoutMs),
         operationController.signal,
       );
-      result = {
+      result = runtime.host === "claude" ? withTextDiagnostics(result, diagnostics) : {
         ...result,
         structuredContent: {
           ...(result.structuredContent ?? {}),

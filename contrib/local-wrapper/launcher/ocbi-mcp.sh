@@ -52,7 +52,10 @@
 #                    OCBI_REQUIRE_PROJECT=<name> it runs only when this checkout is linked to
 #                    the shared store of <name> (any listed project for "*") and exits 3
 #                    otherwise, so a forced or background index never lands on a local or
-#                    global index. The hook and the rebuild set it.
+#                    global index. A guarded run also refuses --config and any --host or
+#                    --project other than claude and this root, adds both when missing, and
+#                    checks that the linked config is project-scoped. The hook and the rebuild
+#                    set it.
 #   --stale-check    for the listed project of the current directory, count branch catalogs
 #                    whose branch or worktree is gone and, once they reach OCBI_STALE_THRESHOLD
 #                    (15), notify through $OCBI_HOME/ocbi-notify.sh when it is installed. The
@@ -546,6 +549,19 @@ if [ "${1:-}" = "--cbi" ]; then
       esac
       prev="$arg"
     done
+    # The CLI defaults to another host's paths and to the working directory, so name both.
+    has_host=0 has_project=0
+    for arg in "$@"; do
+      case "$arg" in --host) has_host=1 ;; --project) has_project=1 ;; esac
+    done
+    [ "$has_host" = 1 ] || set -- "$@" --host claude
+    [ "$has_project" = 1 ] || set -- "$@" --project "$root"
+    # The config the CLI reads is the one linked into this checkout; it must stay project-scoped.
+    if ! "$node_bin" -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit(c && c.scope === "project" ? 0 : 1)' \
+      "$root/.claude/codebase-index.json" 2>/dev/null; then
+      log "refusing to run the CLI: $root/.claude/codebase-index.json does not set \"scope\": \"project\""
+      exit 3
+    fi
   fi
   exec "$node_bin" "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js" "$@"
 fi

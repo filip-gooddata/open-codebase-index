@@ -248,7 +248,7 @@ printf 'demo|%s\nbare|%s\n' "$R/.git" "$B" >"$H/projects.conf"
 out="$(cd "$W" && bash "$L" --cbi status --host claude 2>/dev/null)"
 expect_eq "--cbi runs the CLI in the checkout" "CBI status --host claude cwd=$W" "$out"
 out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index 2>/dev/null)"
-expect_eq "--cbi runs when linked to the required project" "CBI index cwd=$W" "$out"
+expect_eq "guarded --cbi names --host claude and the root" "CBI index --host claude --project $W cwd=$W" "$out"
 (cd "$W" && OCBI_REQUIRE_PROJECT=bare bash "$L" --cbi index >/dev/null 2>&1)
 expect_eq "--cbi refuses another project's checkout" 3 "$?"
 out="$(cd "$T" && OCBI_REQUIRE_PROJECT='*' bash "$L" --cbi index 2>&1)"
@@ -327,7 +327,16 @@ expect_eq "hook skips file checkouts" 1 "$(grep -c '^STUB' "$log")"
 sleep 0.3
 expect_eq "hook honours OCBI_PREWARM=0 and skips rebases" 1 "$(grep -c '^STUB' "$log")"
 # Real checkouts through git run the hook, registered either way install.sh prints.
-wait_unlocked() { local i=0; while [ -d "$S/logs/prewarm/$key.lock" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; }
+# wait_unlocked [STATE_HOME]: until the prewarm lock of this worktree under STATE_HOME (default
+# $S) is released; fails after 30 s.
+wait_unlocked() {
+  local lock="${1:-$S}/logs/prewarm/$key.lock" i=0
+  while [ -d "$lock" ]; do
+    [ "$i" -lt 300 ] || { not_ok "prewarm lock $lock released within 30 s"; return 1; }
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
 wait_unlocked
 git init -q "$T/probe"
 git -C "$T/probe" config hook.probe.event post-checkout
@@ -364,7 +373,7 @@ if [ -e "$T/probe-ran" ]; then
 $(cat "$splog" 2>/dev/null)"; fi
   git -C "$W" config --local --unset hook.ocbi-prewarm.event
   git -C "$W" config --local --unset hook.ocbi-prewarm.command
-  wait_unlocked
+  wait_unlocked "$SP"
 else
   skip "the printed config registration runs the hook from a spaced home" "no config-based hooks"
 fi
@@ -374,7 +383,7 @@ if wait_for "$splog" " feature5 "; then ok "the printed symlink registration run
   not_ok "the printed symlink registration runs the hook from a spaced home" "$reg
 $(cat "$splog" 2>/dev/null)"; fi
 rm -f "$R/.git/hooks/post-checkout"
-wait_unlocked
+wait_unlocked "$SP"
 
 # --- rebuild -------------------------------------------------------------------------------------
 bash "$HOME/.local/bin/ocbi-rebuild" nosuch >/dev/null 2>&1

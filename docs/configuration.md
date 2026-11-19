@@ -20,6 +20,72 @@ Because inheriting worktrees operate on the same project index, clearing or forc
 
 Git project indexes store file-change and retry state in `file-hashes.<branch-hash>.json` and `failed-batches.<branch-hash>.json`. Non-Git project indexes and global indexes keep the unnamespaced `file-hashes.json` and `failed-batches.json` filenames.
 
+## Repository config and shared store
+
+A repository can carry its own host-neutral config at `<git common dir>/codebase-index/config.json`. The Git common directory is the `.git` directory of a normal clone, or the bare repository (or separate Git directory) that linked worktrees point at; `git rev-parse --git-common-dir` prints it. When this file exists, every checkout of the repository (the main worktree and every linked worktree, bare-base layouts included) uses one shared store and the file's settings, in every host mode. Without the file nothing changes.
+
+For a normal clone at `~/src/example`, the file is `~/src/example/.git/codebase-index/config.json`:
+
+```json
+{
+  "storage": { "indexPath": "/data/example-index" },
+  "checkouts": {
+    "primary": { "path": "~/src/example", "watchFiles": true, "autoIndexOnStartup": true },
+    "secondary": { "watchFiles": false, "autoIndexOnStartup": false }
+  },
+  "indexing": { "autoIndex": true, "autoIndexWaitMs": 60000 },
+  "search": { "maxResults": 30 }
+}
+```
+
+An empty object (`{}`) is enough to turn on the shared store and roles with the defaults.
+
+| Field | Purpose |
+|---|---|
+| `storage.indexPath` | Shared store. Absolute, `~/...`, or relative to the common directory. It may sit behind a symlink; locks and leases use the real path, so servers that reach the same store through another spelling coordinate with each other. Default: `<common dir>/codebase-index/index` |
+| `checkouts.primary.path` | The primary checkout. Absolute, `~/...`, or relative to the common directory. Without it, the main worktree of a normal clone is primary; a bare-base layout (a bare repository, or a Git directory not named `.git`) has no primary until this is set |
+| `checkouts.primary` / `checkouts.secondary` | Role overrides: `watchFiles` and `autoIndexOnStartup` are applied to `indexing` for checkouts in that role |
+| any ordinary section | `indexing`, `search`, `include`, `exclude`, `knowledgeBases`, `additionalInclude`, `debug`, `mcp`, embedding settings and so on, applied to every checkout of the repository. Relative `knowledgeBases` resolve against the checkout root |
+
+Roles: the primary checkout owns the store. Only the primary can clear it with `index_codebase` and `force: true`; secondary checkouts index, search, and recover an interrupted run in the shared store but cannot force-clear it. A configured primary that does not exist or belongs to another repository makes every checkout secondary, and status says why.
+
+Without the file, stores stay at `<checkout>/<host dir>/index` with the worktree inheritance described above. The repository config is opt-in because the shared default store is a different directory, and switching to it silently would start an empty index.
+
+### Merge order with a repository config
+
+From lowest to highest precedence:
+
+1. global config
+2. the repository config (without `storage` and `checkouts`)
+3. the role override from `checkouts.primary` or `checkouts.secondary`
+4. the checkout's own project config (its host config, else for non-OpenCode hosts its own `.opencode/codebase-index.json`)
+
+`indexing`, `search`, `debug`, `mcp` and `effectivenessMetrics` merge key by key across these layers, so a worktree's own `indexing` section keeps the repository config's other `indexing` keys while an explicit project value wins. `customProvider`, `reranker` and `embeddingFallback` are replaced whole by a higher layer, so a project-chosen endpoint never inherits a lower layer's API key. Arrays such as `include` and `exclude`, and scalars, are replaced; `knowledgeBases` and `additionalInclude` are unions.
+
+With a repository config, a linked worktree no longer inherits the main checkout's project config; the repository config takes that role. Local `.claude/index`, `.codebase-index/index` and `.opencode/index` directories are not read; status warns when the checkout has its own host index directory.
+
+An explicit `--config` file replaces the settings layers, as before. The store and roles still come from the repository config.
+
+### Errors and changes
+
+- A repository config that is not valid JSON, or whose fields have the wrong type (for example a non-string `storage.indexPath` or `checkouts.primary.path`, or a non-boolean role flag), is a config error naming the file. The checkout does not fall back to a local store. Unknown keys are ignored.
+- Each process resolves its store and role once. Editing the file does not move a running server to another store; `index_status` reports that the repository config changed since start until the server restarts.
+
+### Status
+
+`index_status` and `ocbi status` end with the route:
+
+```text
+Store: /data/example-index (repository config <common dir>/codebase-index/config.json)
+Checkout role: secondary - linked worktree; the main worktree <main worktree path> is primary
+```
+
+The source is `repository config <path>` (from `storage.indexPath`), `repository default store` (`<common dir>/codebase-index/index`) or `host default` (no repository config). Warnings follow on `Warning:` lines.
+
+### Sharing a store with older servers
+
+The store format and metadata are unchanged. Older servers do not read the repository config. While an older server and a newer one share a store (for example through a symlinked host index directory), keep settings that change index content (`embeddingProvider`, `embeddingModel`, `customProvider`, `include`, `exclude`, `additionalInclude`) in the global config so both read the same values. Older servers do not know about roles and can still force-clear the store.
+
 ## Minimal example
 
 ```json
@@ -287,6 +353,7 @@ Ollama server is stopped. The standard suite uses deterministic HTTP replicas wi
 | Option | Default | Purpose |
 |---|---:|---|
 | `autoIndex` | `false` | Run first-use automatic indexing for retrieval tools |
+| `autoIndexOnStartup` | `true` | Run the automatic index when a server starts. `false` skips only that run; retrieval-triggered refresh and watchers still run. Usually set per role in a [repository config](#repository-config-and-shared-store) |
 | `autoIndexWaitMs` | `10000` | Maximum time a retrieval call waits for automatic indexing or for another session's index refresh, in ms. Values are clamped to 0-600000. MCP calls report progress while they wait |
 | `autoIndexMaxRetries` | `5` | Transient lock retries |
 | `autoIndexRetryDelayMs` | `100` | Initial retry delay |

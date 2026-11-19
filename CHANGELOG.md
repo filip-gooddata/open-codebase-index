@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Repository config and shared store**: A repository can carry a host-neutral config at `<git common dir>/codebase-index/config.json`. When it exists, every checkout of the repository (main worktree, linked worktrees, bare-base layouts) uses one store in every host mode, `storage.indexPath` or by default `<common dir>/codebase-index/index`, and the file's settings merge between the global config and the checkout's own project config. Checkouts get a primary or secondary role (`checkouts.primary.path`, else the main worktree of a normal clone) with per-role `watchFiles` and `autoIndexOnStartup`; only the primary can force-clear the store. An invalid file is a config error. `index_status` and `ocbi status` show the store, its source, the role and its reason, and routing warnings. Without the file, store paths and config inheritance are unchanged.
+- **`indexing.autoIndexOnStartup`** (default `true`): Set to `false` to skip the automatic index run when a server starts; retrieval-triggered refresh and watchers still run.
+
 ## [0.38.2-gd.4] - 2026-11-19
 
 Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.3. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.

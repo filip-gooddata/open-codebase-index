@@ -3,7 +3,8 @@
 # repository, either in the local git config, on a git with config-based hooks
 # (hook.<name>.event; git 2.43 lacks them):
 #   git -C <repo> config --local hook.ocbi-prewarm.event post-checkout
-#   git -C <repo> config --local hook.ocbi-prewarm.command <OCBI_HOME>/ocbi-post-checkout.sh
+#   git -C <repo> config --local hook.ocbi-prewarm.command "'<OCBI_HOME>/ocbi-post-checkout.sh'"
+# (git runs the value through the shell, hence the inner quotes)
 # or, on any git and when the repository has no post-checkout hook yet, as a symlink:
 #   ln -s <OCBI_HOME>/ocbi-post-checkout.sh <git common dir>/hooks/post-checkout
 # After a branch checkout, including `git worktree add`, it refreshes the shared OCBI index for

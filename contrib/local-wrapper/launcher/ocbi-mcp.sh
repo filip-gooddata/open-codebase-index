@@ -173,7 +173,8 @@ node_bin=""
 # Catalogs are keyed by branch name, or by the 7-character SHA of a detached HEAD.
 if [ "${1:-}" = "--stale-check" ]; then
   [ -n "$project" ] && [ -d "$SHARED_DIR" ] && [ ! -L "$SHARED_DIR" ] || exit 0
-  [ -d "$OCBI_HOME/rebuild.lock" ] && exit 0
+  # A rebuild holds a flock on rebuild.flock for as long as it runs; skip while it does.
+  [ -f "$OCBI_HOME/rebuild.flock" ] && ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$OCBI_HOME/rebuild.flock" && exit 0
   stamp="$SHARED_DIR/stale-check.stamp"
   [ -n "$(find "$stamp" -mmin -1440 2>/dev/null)" ] && exit 0
   touch "$stamp"
@@ -429,6 +430,14 @@ link_shared_index() {
     why="$SHARED_DIR/codebase-index.json is missing or not a plain file"
     return 1
   fi
+  # Without an explicit project scope the package may take "global" from the global config and
+  # use the global index, which a linked checkout must never reach.
+  node_bin="$(pick_node)" || { why="no Node.js >= 22 to read $SHARED_DIR/codebase-index.json"; return 1; }
+  if ! "$node_bin" -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit(c && c.scope === "project" ? 0 : 1)' \
+    "$SHARED_DIR/codebase-index.json" 2>/dev/null; then
+    why="$SHARED_DIR/codebase-index.json must set \"scope\": \"project\""
+    return 1
+  fi
   if [ -L "$SHARED_DIR/claude-index" ] || { [ -e "$SHARED_DIR/claude-index" ] && [ ! -d "$SHARED_DIR/claude-index" ]; }; then
     why="$SHARED_DIR/claude-index is not a plain directory"
     return 1
@@ -523,6 +532,21 @@ if [ "${1:-}" = "--cbi" ]; then
     log "refusing to run the CLI: $root is not linked to the shared store of $(if [ "$want" = "*" ]; then echo "a listed project"; else echo "$want"; fi) (route ${route:-none}${project:+, project $project})"
     exit 3
   fi
+  # A guarded run must index exactly what was checked: this root, the claude host paths and the
+  # linked config. Arguments that could point it elsewhere are refused.
+  if [ -n "$want" ]; then
+    prev=""
+    for arg in "$@"; do
+      case "$prev" in
+        --project) [ "$(phys_dir "$arg")" = "$(phys_dir "$root")" ] || { log "refusing to run the CLI: --project $arg is not $root"; exit 3; } ;;
+        --host) [ "$arg" = claude ] || { log "refusing to run the CLI: --host $arg is not claude"; exit 3; } ;;
+      esac
+      case "$arg" in
+        --config | --config=* | --project=* | --host=*) log "refusing to run the CLI: $arg is not allowed with OCBI_REQUIRE_PROJECT"; exit 3 ;;
+      esac
+      prev="$arg"
+    done
+  fi
   exec "$node_bin" "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js" "$@"
 fi
 
@@ -572,4 +596,6 @@ fi
 
 # --host claude in Codex too: the host only picks storage paths, and --host codex would add an
 # idle supervisor that stops the file watcher after 15 idle minutes.
-exec "$node_bin" "$OCBI_HOME/mcp-force-guard.mjs" "$node_bin" "$SERVER_JS" --host claude --project "$root" "$@"
+# The package takes the last --host and --project, so the launcher's own come last: the server always
+# runs on the checkout this script linked.
+exec "$node_bin" "$OCBI_HOME/mcp-force-guard.mjs" "$node_bin" "$SERVER_JS" "$@" --host claude --project "$root"

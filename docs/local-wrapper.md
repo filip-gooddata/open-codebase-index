@@ -30,10 +30,11 @@ The launcher's header comment documents every rule; the summary:
 
 - A project is listed in `projects.conf` as `name|git common dir`. A worktree belongs to it when
   `git rev-parse --git-common-dir` resolves to that directory.
-- Linking needs a plain store directory with its `codebase-index.json`, and both `.claude` paths
-  ignored through `info/exclude` and untracked. When a precondition fails, nothing is linked,
-  links the launcher made earlier are removed, and the reason is logged and shown by
-  `index_status`.
+- Linking needs a plain store directory with its `codebase-index.json`, which must set
+  `"scope": "project"` (without it the package can inherit `global` from the global config and
+  use the global index), and both `.claude` paths ignored through `info/exclude` and untracked.
+  When a precondition fails, nothing is linked, links the launcher made earlier are removed, and
+  the reason is logged and shown by `index_status`.
 - Anything else in the way of a link is moved to `$OCBI_HOME/<project>/parked/<stamp>/`, never
   deleted.
 - With a `profiles.conf` line, the primary checkout gets `profiles/main.json` (background indexing
@@ -76,7 +77,7 @@ config-based hooks:
 
 ```bash
 git -C <repo> config --local hook.ocbi-prewarm.event post-checkout
-git -C <repo> config --local hook.ocbi-prewarm.command <OCBI_HOME>/ocbi-post-checkout.sh
+git -C <repo> config --local hook.ocbi-prewarm.command "'<OCBI_HOME>/ocbi-post-checkout.sh'"
 ```
 
 or, on any git version, by linking it as the repository's `post-checkout` hook in
@@ -101,9 +102,10 @@ or, on any git version, by linking it as the repository's `post-checkout` hook i
 
 ## Pitfalls
 
-- The launcher resolves the project from its working directory and ignores `--project`. Hosts
-  start MCP servers in the session's directory, which is what you want; when you run it by hand,
-  run it from inside the checkout.
+- The launcher resolves the project from its working directory. In server mode it passes its own
+  `--host claude --project <root>` after any arguments it was given, so the server always runs on
+  the checkout it linked. Hosts start MCP servers in the session's directory, which is what you
+  want; when you run it by hand, run it from inside the checkout.
 - Never run `index_codebase` with `force=true` on a shared store: it drops every worktree's
   catalog, and re-embedding a large repository can take hours. The guard and the hook block it.
   For a full rebuild use `ocbi-rebuild <project>` (macOS today; Linux support is planned). It

@@ -77,7 +77,7 @@ if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package S
 
 is_macos=0
 [ "$(uname -s)" = Darwin ] && is_macos=1
-version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo_root/package.json" | head -n 1)"
+version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo_root/package.json" 2>/dev/null | head -n 1)"
 version="${version:-0.0.0}-local"
 changes=0
 
@@ -118,7 +118,8 @@ place() {
     rm -f "$tmp"
     die "cannot read $src"
   }
-  if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$tmp" "$dest"; then
+  if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$tmp" "$dest" &&
+    { { [ "$mode" = 755 ] && [ -x "$dest" ]; } || { [ "$mode" != 755 ] && [ ! -x "$dest" ]; }; }; then
     rm -f "$tmp"
     say "  unchanged  $dest"
     return 0
@@ -150,24 +151,17 @@ install_hook() {
 }
 
 install_plugin() {
-  local m="$marketplace_dir" p="$here/claude-plugin" f name
+  local m="$marketplace_dir" p="$here/claude-plugin" name
   say "plugin -> $m"
   place 644 "$p/.claude-plugin/marketplace.json" "$m/.claude-plugin/marketplace.json" render
   place 644 "$p/.agents/plugins/marketplace.json" "$m/.agents/plugins/marketplace.json"
   place 644 "$p/plugins/codebase-index/.claude-plugin/plugin.json" "$m/plugins/codebase-index/.claude-plugin/plugin.json" render
   place 644 "$p/plugins/codebase-index/.codex-plugin/plugin.json" "$m/plugins/codebase-index/.codex-plugin/plugin.json" render
   place 644 "$p/plugins/codebase-index/hooks/hooks.json" "$m/plugins/codebase-index/hooks/hooks.json" render
-  # Commands and the skill come from the repository; index.md and status.md are overridden
-  # because a forced index is blocked on a shared store.
-  for f in "$repo_root"/commands/*.md; do
-    name="${f##*/}"
-    case "$name" in reindex.md | visualize.md) continue ;; esac
-    if [ -f "$p/plugins/codebase-index/commands/$name" ]; then
-      f="$p/plugins/codebase-index/commands/$name"
-    fi
-    place 644 "$f" "$m/plugins/codebase-index/commands/$name"
+  for name in call-graph definition find index peek pr-impact search status; do
+    place 644 "$p/plugins/codebase-index/commands/$name.md" "$m/plugins/codebase-index/commands/$name.md"
   done
-  place 644 "$repo_root/skills/codebase-search/SKILL.md" "$m/plugins/codebase-index/skills/codebase-search/SKILL.md"
+  place 644 "$p/plugins/codebase-index/skills/codebase-search/SKILL.md" "$m/plugins/codebase-index/skills/codebase-search/SKILL.md"
 }
 
 install_rebuild() {
@@ -256,7 +250,7 @@ if has_piece hook; then
 
 * Git post-checkout prewarm, per repository. With config-based hooks (git 2.43 lacks them):
     git -C <repo> config --local hook.ocbi-prewarm.event post-checkout
-    git -C <repo> config --local hook.ocbi-prewarm.command "$home/ocbi-post-checkout.sh"
+    git -C <repo> config --local hook.ocbi-prewarm.command "'$home/ocbi-post-checkout.sh'"
   On any git, when the repository has no post-checkout hook yet:
     ln -s "$home/ocbi-post-checkout.sh" "\$(git -C <repo> rev-parse --path-format=absolute --git-common-dir)/hooks/post-checkout"
 EOF

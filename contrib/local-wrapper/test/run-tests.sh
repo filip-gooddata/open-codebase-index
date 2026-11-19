@@ -47,15 +47,14 @@ node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 
 [ "$node_major" -ge 22 ] || { echo "Bail out! node >= 22 is required (found ${node_major})"; exit 1; }
 
 # --- static checks -------------------------------------------------------------------------------
-scripts="$here/install.sh $here/launcher/ocbi-mcp.sh $here/hook/ocbi-post-checkout.sh
-$here/rebuild/ocbi-rebuild.sh $here/rebuild/ocbi-rebuild $here/notify/ocbi-notify.sh
-$here/notify/notifier/build.sh $here/test/run-tests.sh"
-for s in $scripts; do
+scripts=("$here/install.sh" "$here/launcher/ocbi-mcp.sh" "$here/hook/ocbi-post-checkout.sh"
+  "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/notify/ocbi-notify.sh"
+  "$here/notify/notifier/build.sh" "$here/test/run-tests.sh")
+for s in "${scripts[@]}"; do
   check "bash -n ${s#"$here"/}" bash -n "$s"
 done
 if command -v shellcheck >/dev/null 2>&1; then
-  # shellcheck disable=SC2086 # word splitting of the list is intended
-  if out="$(shellcheck -x -S warning $scripts 2>&1)"; then ok "shellcheck"; else not_ok "shellcheck" "$out"; fi
+  if out="$(shellcheck -x -S warning "${scripts[@]}" 2>&1)"; then ok "shellcheck"; else not_ok "shellcheck" "$out"; fi
 elif [ "${OCBI_WRAPPER_REQUIRE_SHELLCHECK:-0}" = 1 ]; then
   not_ok "shellcheck" "shellcheck is not on PATH"
 else
@@ -107,9 +106,17 @@ else
   check "no launchd plist off macOS" test ! -e "$HOME/Library/LaunchAgents"
 fi
 expect_match "install prints the Codex snippet" "args = \\[\"$H/ocbi-mcp.sh\"\\]" "$out"
-expect_match "install prints the git hook registration" "hook.ocbi-prewarm.command \"$H/ocbi-post-checkout.sh\"" "$out"
+expect_match "install prints the git hook registration" "hook.ocbi-prewarm.command \"'$H/ocbi-post-checkout.sh'\"" "$out"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
 expect_match "second install changes nothing" "^0 change\\(s\\)\\." "$out"
+chmod -x "$H/ocbi-mcp.sh"
+bash "$here/install.sh" "${install_args[@]}" >/dev/null 2>&1
+check "reinstall restores the launcher's executable bit" test -x "$H/ocbi-mcp.sh"
+BO="$T/bundle-only"
+mkdir -p "$BO" && cp -R "$here" "$BO/local-wrapper"
+bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --marketplace-dir "$BO/mp" --launch-agents-dir "$BO/la" >/dev/null 2>&1
+expect_eq "install works from the bundle alone" 0 "$?"
+check "bundle-only install has the plugin commands and skill" test -f "$BO/mp/plugins/codebase-index/commands/search.md" -a -f "$BO/mp/plugins/codebase-index/skills/codebase-search/SKILL.md"
 bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
 expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"
 P2="$T/preflight"
@@ -247,6 +254,28 @@ expect_eq "--cbi refuses another project's checkout" 3 "$?"
 out="$(cd "$T" && OCBI_REQUIRE_PROJECT='*' bash "$L" --cbi index 2>&1)"
 expect_eq "--cbi refuses an unlisted directory" "3" "$(cd "$T" && OCBI_REQUIRE_PROJECT='*' bash "$L" --cbi index >/dev/null 2>&1; echo $?)"
 expect_match "--cbi says why it refuses" "refusing to run the CLI" "$out"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --project "$R" >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses another --project" 3 "$?"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --config /tmp/x.json >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses --config" 3 "$?"
+(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --host codex >/dev/null 2>&1)
+expect_eq "guarded --cbi refuses another --host" 3 "$?"
+out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --host claude --project "$W/" 2>/dev/null)"
+expect_eq "guarded --cbi accepts its own --host and --project" "CBI index --host claude --project $W/ cwd=$W" "$out"
+# A store config without an explicit project scope is never linked, so guarded runs refuse.
+cp "$H/demo/codebase-index.json" "$T/demo-config.json"
+for scope in none global; do
+  node -e 'const f=process.argv[1],c=JSON.parse(require("fs").readFileSync(f,"utf8"));if(process.argv[2]==="none")delete c.scope;else c.scope=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(c))' "$H/demo/codebase-index.json" "$scope"
+  out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index 2>&1)"
+  expect_eq "scope $scope: guarded --cbi refuses before the CLI starts" "3 no-cli" "$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
+  expect_match "scope $scope: the reason names the scope" 'must set "scope": "project"' "$out"
+  check "scope $scope: the launcher removed its links" test ! -L "$W/.claude/index"
+done
+cp "$T/demo-config.json" "$H/demo/codebase-index.json"
+(cd "$W" && bash "$L" --link-only >/dev/null 2>&1)
+check "scope project: linked again" test -L "$W/.claude/index"
+out="$(cd "$W" && echo '{"jsonrpc":"2.0","id":5,"method":"ping"}' | bash "$L" --project /elsewhere --host codex 2>/dev/null)"
+expect_match "server mode: the launcher's --host and --project come last" "\"argv\":\\[\"--project\",\"/elsewhere\",\"--host\",\"codex\",\"--host\",\"claude\",\"--project\",\"$W\"\\]" "$out"
 out="$(cd "$R" && echo '{}' | bash "$L" --status-output 2>/dev/null)"
 got="$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s).hookSpecificOutput;process.stdout.write(o.hookEventName+"\n"+o.updatedToolOutput)})')"
 expect_match "--status-output names the routing" "^PostToolUse
@@ -322,6 +351,30 @@ if wait_for "$log" " feature3 "; then ok "git runs the hook linked into the comm
   not_ok "git runs the hook linked into the common hooks dir" "$(cat "$log")"; fi
 rm -f "$R/.git/hooks/post-checkout"
 wait_unlocked
+# The registration commands install.sh prints work as printed, also from a home with a space.
+SP="$T/sp ace/ocbi"
+reg="$(bash "$here/install.sh" --pieces hook --home "$SP" 2>&1 | grep -E 'hook\.ocbi-prewarm\.|ln -s ')"
+cp "$S/ocbi-mcp.sh" "$SP/ocbi-mcp.sh"
+splog="$SP/logs/prewarm/$key.log"
+if [ -e "$T/probe-ran" ]; then
+  while IFS= read -r cmd; do eval "${cmd//<repo>/\"\$W\"}"; done < <(printf '%s\n' "$reg" | grep 'git -C <repo> config')
+  git -C "$W" checkout -q -b feature4
+  if wait_for "$splog" " feature4 "; then ok "the printed config registration runs the hook from a spaced home"; else
+    not_ok "the printed config registration runs the hook from a spaced home" "$reg
+$(cat "$splog" 2>/dev/null)"; fi
+  git -C "$W" config --local --unset hook.ocbi-prewarm.event
+  git -C "$W" config --local --unset hook.ocbi-prewarm.command
+  wait_unlocked
+else
+  skip "the printed config registration runs the hook from a spaced home" "no config-based hooks"
+fi
+eval "$(printf '%s\n' "$reg" | grep 'ln -s ' | sed 's/<repo>/"$W"/g')"
+git -C "$W" checkout -q -b feature5
+if wait_for "$splog" " feature5 "; then ok "the printed symlink registration runs the hook from a spaced home"; else
+  not_ok "the printed symlink registration runs the hook from a spaced home" "$reg
+$(cat "$splog" 2>/dev/null)"; fi
+rm -f "$R/.git/hooks/post-checkout"
+wait_unlocked
 
 # --- rebuild -------------------------------------------------------------------------------------
 bash "$HOME/.local/bin/ocbi-rebuild" nosuch >/dev/null 2>&1
@@ -341,15 +394,29 @@ expect_eq "rebuild exits 0" 0 "$?"
 expect_eq "rebuild forces the primary, then indexes each other worktree" \
   "STUB --cbi index --force --host claude --project $R cwd=$R req=demo
 STUB --cbi index --host claude --project $W cwd=$W req=demo" "$(cat "$RB/calls" 2>/dev/null)"
-check "rebuild released its lock" test ! -e "$RB/rebuild.lock"
-mkdir "$RB/rebuild.lock" && echo $$ >"$RB/rebuild.lock/pid" && : >"$RB/calls"
+# Another process holding the flock keeps a rebuild out; once it is gone the lock is free.
+: >"$RB/calls"
+perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; open(my $m, ">", $ARGV[1]); print $m "held\n"; close $m; sleep 3' \
+  "$RB/rebuild.flock" "$T/held" &
+holder=$!
+wait_for "$T/held" held
 OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo
-expect_eq "rebuild leaves a live holder's lock alone" "0 $$" "$? $(cat "$RB/rebuild.lock/pid")"
+expect_eq "rebuild exits 0 while another run holds the lock" 0 "$?"
 check "rebuild did nothing while another one runs" test ! -s "$RB/calls"
-bash -c 'exit 0' & dead=$!; wait "$dead"
-echo "$dead" >"$RB/rebuild.lock/pid"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo
-check "rebuild reclaims a dead holder's lock" test -s "$RB/calls" -a ! -e "$RB/rebuild.lock"
+check "rebuild runs once the holder is gone" test -s "$RB/calls"
+# Two rebuilds started together: exactly one runs.
+cat >"$RB/ocbi-mcp.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "STUB $* cwd=$PWD req=$OCBI_REQUIRE_PROJECT" >>"$OCBI_HOME/calls"
+sleep 1
+EOF
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo & first=$!
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo & second=$!
+wait "$first"; wait "$second"
+expect_eq "concurrent rebuilds: one runs, one exits" 2 "$(grep -c '^STUB' "$RB/calls")"
 # With the real launcher, a primary that is not linked to the store is never force-indexed.
 mkdir -p "$T/src/loose" && git -C "$T/src/loose" init -q -b main && git -C "$T/src/loose" commit -q --allow-empty -m init
 printf 'loose|%s\n' "$T/src/loose/.git" >>"$H/projects.conf"

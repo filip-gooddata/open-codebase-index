@@ -22,7 +22,7 @@ fi
 LAUNCHER="$OCBI_HOME/ocbi-mcp.sh"
 LOG_DIR="$OCBI_HOME/logs"
 LOG="$LOG_DIR/rebuild-$(date +%Y%m%d-%H%M%S).log"
-RUN_LOCK="$OCBI_HOME/rebuild.lock"
+RUN_LOCK="$OCBI_HOME/rebuild.flock"
 BUSY_WAIT_SECONDS="${OCBI_REBUILD_BUSY_WAIT:-1800}"
 BUSY_POLL_SECONDS="${OCBI_REBUILD_BUSY_POLL:-30}"
 RETRY_SECONDS="${OCBI_REBUILD_RETRY:-120}"
@@ -101,20 +101,27 @@ index_worktree() {
   done
 }
 
-# One rebuild at a time. A full rebuild can run for days, so the lock is reclaimed only when the
-# process that holds it is gone, never by age.
-mkdir "$RUN_LOCK" 2>/dev/null || {
-  holder="$(cat "$RUN_LOCK/pid" 2>/dev/null)"
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-    { rm -rf "$RUN_LOCK" && mkdir "$RUN_LOCK"; } || exit 1
-  else
-    log "another rebuild is running${holder:+ (pid $holder)}; exiting"
-    rm -f "$CBI_OUT"
+# One rebuild at a time. The run happens in a copy of this script started by perl while it holds
+# an exclusive flock on $RUN_LOCK; the descriptor stays open across exec in that copy and in
+# everything it starts. The kernel drops the lock when the last of those processes exits, so a
+# killed rebuild never blocks the next one, and no contender removes another run's lock.
+if [ -z "${OCBI_REBUILD_LOCKED:-}" ]; then
+  rm -f "$CBI_OUT"
+  # shellcheck disable=SC2016 # a single-quoted Perl program
+  OCBI_HOME="$OCBI_HOME" OCBI_REBUILD_LOCKED=1 "$(command -v perl || echo /usr/bin/perl)" -MFcntl=:flock -e '
+    my ($lock, @cmd) = @ARGV;
+    $^F = 255;
+    open(my $fh, ">>", $lock) or die "cannot open $lock: $!\n";
+    flock($fh, LOCK_EX | LOCK_NB) or exit 75;
+    exec("bash", @cmd) or die "cannot run bash: $!\n";' "$RUN_LOCK" "$0" "$PROJECT"
+  rc=$?
+  if [ "$rc" = 75 ]; then
+    log "another rebuild is running; exiting"
     exit 0
   fi
-}
-echo $$ >"$RUN_LOCK/pid"
-trap 'rm -rf "$RUN_LOCK" "$CBI_OUT"' EXIT
+  exit "$rc"
+fi
+trap 'rm -f "$CBI_OUT"' EXIT
 
 # Keep the machine awake while this runs (macOS). A closed lid still suspends the run.
 command -v caffeinate >/dev/null 2>&1 && caffeinate -i -w $$ &

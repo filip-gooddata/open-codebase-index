@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.5] - 2026-11-19
+
+Fork release on top of 0.38.2-gd.4. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.
+
+### Added
+
+- **Local launcher wrapper (`contrib/local-wrapper/`)**: An optional, self-contained bundle for running one shared index per project across many worktrees and hosts: an MCP launcher (`ocbi-mcp.sh`) that resolves the project store and profile, a guard that blocks forced `index_codebase` calls, a post-checkout prewarm hook, a local Claude plugin, a rebuild job and a notifier. `install.sh` installs pieces one at a time (`--pieces`, `--dry-run`, path overrides) and only prints host and hook registration. The launcher, guard, hook and installer run on macOS and Linux; the rebuild job (launchd) and the notifier (Swift) are macOS-only for now, with Linux support planned. See `docs/local-wrapper.md`.
+- **Fork release workflow (`fork-release.yml`)**: On a `v*-gd.*` tag push, builds the native module for linux-x64-gnu and darwin-arm64, packs the tarball with both binaries, installs it and indexes a small fixture on Ubuntu 22.04 and macOS, then creates the GitHub release with the tarball, the `.node` files and `SHA256SUMS`. It never publishes to npm and never modifies an existing release. Manual dispatch is a dry run that uploads a workflow artifact.
+- **Linux CI (`fork-ci.yml`)**: Runs build, typecheck, lint, the Vitest suite and `cargo test --release` on ubuntu-latest, plus the wrapper's own test runner.
+
+### Changed
+
+- **`build.yml` publish job skips on forks**, so a release created on a fork cannot attempt an npm publish.
+
 ## [0.38.2-gd.4] - 2026-11-19
 
 Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.3. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.

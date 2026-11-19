@@ -26,6 +26,8 @@ import {
   runIndexHealthCheck,
 } from "./operations.js";
 import { formatCostEstimate, formatDryRunEstimate } from "../utils/cost.js";
+import { formatRepositoryRouteStatus } from "../config/repository-route.js";
+import { getProjectRoot } from "./operation-runtime.js";
 import { resolveCodebaseEditContext } from "./edit-context.js";
 import { resolveCodebaseContext } from "./context.js";
 import {
@@ -94,7 +96,8 @@ export async function executeIndexStatus(
   control?: OperationControl,
 ): Promise<ExecutionResult> {
   const status = await getIndexStatus(projectRoot, host, args, control);
-  return { text: formatStatus(status), details: { ...status } };
+  const routeText = formatRepositoryRouteStatus(getProjectRoot(projectRoot, host), host, status.indexPath);
+  return { text: `${formatStatus(status)}\n\n${routeText}`, details: { ...status } };
 }
 
 export async function executeIndexHealthCheck(

@@ -5,6 +5,7 @@ import * as path from "path";
 import type { HostMode } from "./host.js";
 import { resolveWorktreeMainRepoRoot } from "../git/index.js";
 import { canonicalizePathForComparison } from "../utils/canonical-path.js";
+import { resolveMatchedRepositoryRoute } from "./repository-route.js";
 
 const OPENCODE_PROJECT_CONFIG_RELATIVE_PATH = path.join(".opencode", "codebase-index.json");
 const OPENCODE_PROJECT_INDEX_RELATIVE_PATH = path.join(".opencode", "index");
@@ -66,6 +67,11 @@ export function getProjectConfigCandidatePaths(
     candidates.push(path.join(projectRoot, OPENCODE_PROJECT_CONFIG_RELATIVE_PATH));
   }
 
+  // A repositories entry replaces config inheritance between checkouts.
+  if (resolveMatchedRepositoryRoute(projectRoot, host)) {
+    return candidates;
+  }
+
   const mainRepoRoot = resolveWorktreeMainRepoRoot(projectRoot);
   if (mainRepoRoot) {
     candidates.push(path.join(mainRepoRoot, getProjectConfigRelativePath(host)));
@@ -82,6 +88,13 @@ export function isProjectIndexPathOwnedByProject(
   indexPath: string,
   host: HostMode,
 ): boolean {
+  // With a repositories entry only the primary checkout owns the shared store,
+  // decided before any path comparison.
+  const route = resolveMatchedRepositoryRoute(projectRoot, host);
+  if (route) {
+    return route.role === "primary";
+  }
+
   const projectRoots = [projectRoot];
   const mainRepoRoot = resolveWorktreeMainRepoRoot(projectRoot);
   if (mainRepoRoot) {
@@ -187,6 +200,11 @@ export function resolveProjectIndexPath(
 ): string {
   if (scope === "global") {
     return resolveGlobalIndexPath(host);
+  }
+
+  const route = resolveMatchedRepositoryRoute(projectRoot, host);
+  if (route?.indexPath) {
+    return route.indexPath;
   }
 
   const localIndexPath = path.join(projectRoot, getProjectIndexRelativePath(host));

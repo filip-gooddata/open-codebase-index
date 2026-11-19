@@ -40,6 +40,7 @@ import { isFullGitCommit, resolveLocalGitCommit, withMaterializedBranch } from "
 import { runGit } from "../git/branch-resolution.js";
 import type { HostMode } from "../config/host.js";
 import { isProjectIndexPathOwnedByProject, resolveProjectIndexPath } from "../config/paths.js";
+import { resolveMatchedRepositoryRoute } from "../config/repository-route.js";
 import { getChangedFiles, getWorkingTreeChanges } from "../tools/changed-files.js";
 import type { SharedPrImpactArgs } from "../tools/contracts.js";
 import type { PrImpactResult } from "./pr-impact-types.js";
@@ -1626,6 +1627,13 @@ export class Indexer {
 
   private getProjectIdentityHash(projectRoot: string): string {
     return hashContent(this.getCanonicalPath(projectRoot)).slice(0, 16);
+  }
+
+  private canRecoverInterruptedProjectIndex(): boolean {
+    // Every checkout of a repositories entry shares one store, and recovery
+    // runs under the store's writer lease, so a secondary may recover it.
+    return resolveMatchedRepositoryRoute(this.projectRoot, this.host) !== null
+      || this.isProjectOwnedIndexPath();
   }
 
   private isProjectOwnedIndexPath(): boolean {
@@ -4394,7 +4402,7 @@ export class Indexer {
       await fsPromises.mkdir(this.indexPath, { recursive: true });
 
       // Interrupted recovery remains entirely under the writer lease.
-      if (recoveredOwners.length > 0 && this.config.scope === "project" && !this.isProjectOwnedIndexPath()) {
+      if (recoveredOwners.length > 0 && this.config.scope === "project" && !this.canRecoverInterruptedProjectIndex()) {
         throw new Error(
           "Interrupted indexing recovery is unsafe while using an inherited worktree index. " +
           "Run index_codebase with force=true to create a local project index boundary."
@@ -8108,6 +8116,13 @@ export class Indexer {
       return;
     }
 
+    const repositoryRoute = resolveMatchedRepositoryRoute(this.projectRoot, this.host);
+    if (repositoryRoute && repositoryRoute.role !== "primary") {
+      throw new Error(
+        "Project-scoped force rebuild is limited to the primary checkout of a shared repository store. " +
+        `This checkout is secondary (${repositoryRoute.roleReason ?? "no primary"}).`
+      );
+    }
     if (!this.isProjectOwnedIndexPath()) {
       throw new Error(
         "Project-scoped force rebuild is unsafe while using an inherited worktree index. " +

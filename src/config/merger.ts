@@ -4,6 +4,7 @@ import * as path from "path";
 import { resolveGlobalConfigPath, resolveProjectConfigPath } from "./paths.js";
 import type { HostMode } from "./host.js";
 import { resolveInheritedKnowledgeBaseEntries } from "./rebase.js";
+import { resolveMatchedRepositoryRoute, type RepositoryRoute } from "./repository-route.js";
 
 const PROJECT_OVERRIDE_KEYS = [
   "embeddingProvider",
@@ -22,6 +23,10 @@ const PROJECT_OVERRIDE_KEYS = [
 ] as const;
 
 const MERGE_ARRAY_KEYS = ["knowledgeBases", "additionalInclude"] as const;
+
+// Sections merged key by key across repository layers. Other sections,
+// including customProvider, reranker and embeddingFallback, are atomic.
+const REPOSITORY_RECURSIVE_KEYS = ["indexing", "search", "debug", "mcp", "effectivenessMetrics"] as const;
 
 type ProjectOverrideKey = (typeof PROJECT_OVERRIDE_KEYS)[number];
 
@@ -155,6 +160,11 @@ export function loadProjectConfigLayer(projectRoot: string, host: HostMode): Rec
  * - For include/exclude: project overrides global if set, otherwise load global
  */
 export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
+  const route = resolveMatchedRepositoryRoute(projectRoot, host);
+  if (route) {
+    return loadRepositoryMergedConfig(projectRoot, host, route);
+  }
+
   const globalConfigPath = resolveGlobalConfigPath(host);
   const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
   let globalConfig: Record<string, unknown> | null = null;
@@ -226,5 +236,85 @@ export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
   const allAdditional = [...globalAdditional, ...projectAdditional];
   merged.additionalInclude = mergeUniqueStringArray(allAdditional);
 
+  return merged;
+}
+
+function mergeRecords(base: Record<string, unknown>, layer: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(layer)) {
+    const current = merged[key];
+    merged[key] = isRecord(current) && isRecord(value) ? mergeRecords(current, value) : value;
+  }
+  return merged;
+}
+
+function applyRepositoryLayer(merged: Record<string, unknown>, layer: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(layer)) {
+    if (MERGE_ARRAY_KEYS.includes(key as (typeof MERGE_ARRAY_KEYS)[number])) {
+      continue;
+    }
+    const current = merged[key];
+    merged[key] = REPOSITORY_RECURSIVE_KEYS.includes(key as (typeof REPOSITORY_RECURSIVE_KEYS)[number])
+      && isRecord(current) && isRecord(value)
+      ? mergeRecords(current, value)
+      : value;
+  }
+}
+
+function getRoleOverrideLayer(route: RepositoryRoute): Record<string, unknown> {
+  const checkouts = route.entry && isRecord(route.entry.checkouts) ? route.entry.checkouts : {};
+  const roleConfig = route.role ? checkouts[route.role] : undefined;
+  if (!isRecord(roleConfig)) {
+    return {};
+  }
+
+  const indexing: Record<string, unknown> = {};
+  for (const flag of ["watchFiles", "autoIndexOnStartup"] as const) {
+    if (typeof roleConfig[flag] === "boolean") {
+      indexing[flag] = roleConfig[flag];
+    }
+  }
+  return Object.keys(indexing).length > 0 ? { indexing } : {};
+}
+
+/**
+ * Merge for a checkout matched by a repositories entry:
+ * global (minus repositories) < entry (minus storage/checkouts) < role
+ * overrides < the checkout's own project config. Recursive sections merge key
+ * by key; knowledgeBases and additionalInclude are unions.
+ */
+function loadRepositoryMergedConfig(projectRoot: string, host: HostMode, route: RepositoryRoute): Record<string, unknown> {
+  const globalConfig = loadJsonFile(route.globalConfigPath) as Record<string, unknown> | null;
+  const globalLayer: Record<string, unknown> = { ...(globalConfig ?? {}) };
+  delete globalLayer.repositories;
+
+  const entryLayer: Record<string, unknown> = {
+    ...validateConfigLayerShape(
+      route.entry ?? {},
+      `${route.globalConfigPath} repositories entry '${route.entryKey ?? ""}'`,
+    ),
+  };
+  delete entryLayer.storage;
+  delete entryLayer.checkouts;
+  if (Array.isArray(entryLayer.knowledgeBases)) {
+    entryLayer.knowledgeBases = (entryLayer.knowledgeBases as string[]).map((entry) =>
+      path.isAbsolute(entry) || entry.startsWith("~") ? entry : path.resolve(projectRoot, entry),
+    );
+  }
+
+  const projectLayer = loadProjectConfigLayer(projectRoot, host);
+  const layers = [globalLayer, entryLayer, getRoleOverrideLayer(route), projectLayer];
+
+  const merged: Record<string, unknown> = {};
+  for (const layer of layers) {
+    applyRepositoryLayer(merged, layer);
+  }
+
+  merged.knowledgeBases = mergeKnowledgeBasePaths(
+    layers.flatMap((layer) => (Array.isArray(layer.knowledgeBases) ? layer.knowledgeBases : [])),
+  );
+  merged.additionalInclude = mergeUniqueStringArray(
+    layers.flatMap((layer) => (Array.isArray(layer.additionalInclude) ? layer.additionalInclude : [])),
+  );
   return merged;
 }

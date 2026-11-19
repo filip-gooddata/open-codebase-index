@@ -1,0 +1,256 @@
+name: Fork Release
+
+# Builds native binaries for the fork's supported platforms, packs one
+# tarball, proves it installs and loads on each platform, and on a v*-gd.* tag
+# push creates the GitHub release with the tarball, every .node file, and
+# SHA256SUMS. Nothing here publishes to npm. A manual run is a dry run: it
+# uploads the same files as a workflow artifact and creates no release.
+
+on:
+  push:
+    tags:
+      - 'v*-gd.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NATIVE_PLATFORMS: linux-x64-gnu,darwin-arm64
+
+jobs:
+  build-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Linux binary builds on 22.04 so it loads on glibc 2.35 and newer.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            platform: linux-x64-gnu
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            platform: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: native -> target
+          key: ${{ matrix.target }}
+
+      # usearch's SIMD kernels use AVX-512 FP16 intrinsics that 22.04's
+      # default GCC 11 lacks.
+      - name: Use GCC 12 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-12 g++-12
+          echo "CC=gcc-12" >> "${GITHUB_ENV}"
+          echo "CXX=g++-12" >> "${GITHUB_ENV}"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native module
+        working-directory: native
+        run: npx napi build --release --platform --target ${{ matrix.target }}
+
+      - name: Verify built binary
+        run: |
+          file="native/codebase-index-native.${{ matrix.platform }}.node"
+          test -f "${file}" || { echo "::error::Missing ${file}"; ls -la native; exit 1; }
+          ls -la native/*.node
+
+      - name: Upload binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binding-${{ matrix.platform }}
+          path: native/codebase-index-native.${{ matrix.platform }}.node
+          if-no-files-found: error
+
+  package:
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binding-*
+          path: native
+          merge-multiple: true
+
+      - name: Check tag matches package version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${version}"
+            exit 1
+          fi
+
+      - name: Build TypeScript
+        run: npm run build:ts
+
+      # Unset GITHUB_REPOSITORY so the staged manifests keep the checked-in
+      # repository URL, as hand-built fork tarballs do; the metadata script
+      # rejects any other repository URL.
+      - name: Pack and smoke-test both package identities
+        run: env -u GITHUB_REPOSITORY npm run smoke:package -- --output-dir "${RUNNER_TEMP}/validated-packages"
+
+      - name: Assemble release files
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          out="${RUNNER_TEMP}/release"
+          mkdir -p "${out}"
+          tarball="open-codebase-index-${version}.tgz"
+          cp "${RUNNER_TEMP}/validated-packages/stage-open-codebase-index/${tarball}" "${out}/"
+          listing="$(tar -tzf "${out}/${tarball}")"
+          IFS=',' read -r -a platforms <<< "${NATIVE_PLATFORMS}"
+          for platform in "${platforms[@]}"; do
+            file="codebase-index-native.${platform}.node"
+            grep -qx "package/native/${file}" <<< "${listing}" || { echo "::error::${tarball} lacks native/${file}"; exit 1; }
+            cp "native/${file}" "${out}/"
+          done
+          extra="$(grep -E '^package/native/.*\.node$' <<< "${listing}" | wc -l)"
+          if [ "${extra}" -ne "${#platforms[@]}" ]; then
+            echo "::error::${tarball} has ${extra} .node files, expected ${#platforms[@]}"
+            exit 1
+          fi
+          node scripts/fork-release-notes.mjs "${version}" "${NATIVE_PLATFORMS}" > "${RUNNER_TEMP}/release-notes.md" \
+            || echo "::warning::No CHANGELOG section for ${version}; a tag push would fail here"
+          (cd "${out}" && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          cp "${RUNNER_TEMP}/release-notes.md" "${out}/RELEASE_NOTES.md" 2>/dev/null || true
+          ls -la "${out}"
+
+      - name: Require release notes on tag pushes
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: test -s "${RUNNER_TEMP}/release/RELEASE_NOTES.md"
+
+      - name: Upload release files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+
+  install-check:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.04 is the oldest glibc the Linux binary targets.
+        os: [ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Download release files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-release
+          path: ${{ runner.temp }}/release
+
+      - name: Verify checksums
+        working-directory: ${{ runner.temp }}/release
+        run: shasum -a 256 -c SHA256SUMS
+
+      - name: Install tarball and load native module
+        run: node scripts/fork-install-check.mjs "${RUNNER_TEMP}"/release/open-codebase-index-*.tgz
+
+  release:
+    needs: [package, install-check]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-release
+          path: release
+
+      - name: Verify release files and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum -c SHA256SUMS)
+          tag_commit="$(gh api "repos/${GH_REPO}/commits/${GITHUB_REF_NAME}" --jq .sha)"
+          if [ "${tag_commit}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} now points at ${tag_commit}, but this run built ${GITHUB_SHA}"
+            exit 1
+          fi
+
+      # An existing release is never modified: a rerun passes only when the
+      # published assets are byte-identical to this build's.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mv release/RELEASE_NOTES.md notes.md
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            if [ "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" != false ]; then
+              echo "::error::Release ${GITHUB_REF_NAME} exists as a draft, likely from an interrupted run; delete it by hand and rerun"
+              exit 1
+            fi
+            echo "Release ${GITHUB_REF_NAME} already exists; comparing its assets with this build"
+            mkdir published
+            gh release download "${GITHUB_REF_NAME}" --dir published
+            if ! diff <(cd release && ls | sort) <(cd published && ls | sort); then
+              echo "::error::Existing release assets differ from this build's file set; fix the release by hand"
+              exit 1
+            fi
+            (cmp published/SHA256SUMS release/SHA256SUMS && cd published && sha256sum -c ../release/SHA256SUMS) || {
+              echo "::error::Existing release assets differ from this build's bytes; fix the release by hand"
+              exit 1
+            }
+            echo "::warning::Release ${GITHUB_REF_NAME} already existed with identical assets; left unchanged"
+          else
+            gh release create "${GITHUB_REF_NAME}" release/* \
+              --verify-tag --title "${GITHUB_REF_NAME}" --notes-file notes.md
+          fi
+          gh release view "${GITHUB_REF_NAME}" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'
+          if [ "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" != false ]; then
+            echo "::error::Release ${GITHUB_REF_NAME} is still a draft"
+            exit 1
+          fi

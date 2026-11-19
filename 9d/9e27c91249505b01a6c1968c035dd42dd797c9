@@ -1,0 +1,31 @@
+CHANGELOG.md
+  s_4c55006e162bd0::t_057d40e68015bf 12
+native/src/bindings/database.rs
+  s_4c55006e162bd0::t_913616c9c7af90 606
+native/src/db/branch_prune.rs
+  s_4c55006e162bd0::t_bbc1a669716917 3,106-108,110,114-119,122-123,125,130,134,192-218,232,246,275,284,309,318
+src/indexer/branch-prune.ts
+  s_4c55006e162bd0::t_59f2a56fef4840 127-128,156-176,179-181,187,190-209,211-216,224
+src/indexer/index.ts
+  s_4c55006e162bd0::t_2f8a31bed71fe2 2099-2100,2106-2107,2109,2127-2128,2132,2134-2135,2137-2149,2156-2161
+tests/branch-prune.test.ts
+  s_4c55006e162bd0::t_d447ae8ba2e2d1 1,10,29,31-32,35-39,43-48,267-269,345-438,479-517
+src/git/worktree-catalogs.ts
+  s_4c55006e162bd0::t_256b9b95d72785 1-3,5-20,22-23,26-27,36-39,68,71-77,81-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9d9e27c91249505b01a6c1968c035dd42dd797c9",
+  "prompts": {},
+  "sessions": {
+    "s_4c55006e162bd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb7729c6-370f-475d-aed4-0408b1d96620",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

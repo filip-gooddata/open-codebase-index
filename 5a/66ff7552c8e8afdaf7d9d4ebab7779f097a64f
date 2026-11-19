@@ -1,0 +1,31 @@
+contrib/local-wrapper/launcher/ocbi-mcp.sh
+  s_bd362efb6487a9::t_d690f8ca3ed815 55-58,538-541,543-561,564,567,569-570
+contrib/local-wrapper/test/run-tests.sh
+  s_7eead3760e678d::t_672b5deca4b521 264-275
+docs/local-wrapper.md
+  s_bd362efb6487a9::t_4755d1519416a5 115-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5a66ff7552c8e8afdaf7d9d4ebab7779f097a64f",
+  "prompts": {},
+  "sessions": {
+    "s_7eead3760e678d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f475-56f6-7580-a2e1-fd22e560c221",
+        "model": "gpt-6.2-sol"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_bd362efb6487a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a80945e2-76af-44b1-880e-f2cce5721021",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

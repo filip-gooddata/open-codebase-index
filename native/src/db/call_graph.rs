@@ -1,5 +1,6 @@
 use super::{
-    has_branch_call_edges, has_branch_call_edges_stale, DbResult, SQL_BIND_PARAM_BATCH_SIZE,
+    has_branch_call_edges, has_branch_call_edges_pending_gc, has_branch_call_edges_stale, DbResult,
+    SQL_BIND_PARAM_BATCH_SIZE,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use xxhash_rust::xxh3::Xxh3;
@@ -656,56 +657,122 @@ pub(crate) fn copy_branch_call_edge_targets(
     Ok(copied)
 }
 
-fn delete_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>) -> DbResult<usize> {
-    // A literal `branch = ?` keeps the branch-leading key usable; an
-    // `(? IS NULL OR branch = ?)` filter makes SQLite read every overlay row.
-    let branch_filter = if branch.is_some() { "branch = ?1 AND" } else { "" };
-    let params = rusqlite::params_from_iter(branch);
-    let count = conn.execute(
-        &format!(
-            r#"
-            DELETE FROM branch_call_edges
-            WHERE {branch_filter} NOT EXISTS (
+/// Which overlay rows an unreachable-row delete examines.
+#[derive(Clone, Copy)]
+pub(crate) enum UnreachableScope {
+    /// The rows of the branch bound to `?1`.
+    Branch,
+    /// Every row.
+    All,
+    /// The rows queued in `branch_call_edges_pending_gc`.
+    Pending,
+}
+
+/// The delete of `table` (`branch_call_edges` or `branch_call_edges_stale`)
+/// rows in `scope` whose edge is gone or whose caller left their branch.
+pub(crate) fn unreachable_branch_call_edges_sql(table: &str, scope: UnreachableScope) -> String {
+    let unreachable = |row: &str| {
+        format!(
+            "NOT EXISTS (
                 SELECT 1
                 FROM call_edges ce
                 INNER JOIN branch_symbols bs
-                    ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges.branch
-                WHERE ce.id = branch_call_edges.edge_id
+                    ON bs.symbol_id = ce.from_symbol_id AND bs.branch = {row}.branch
+                WHERE ce.id = {row}.edge_id
+            )"
+        )
+    };
+    match scope {
+        // A literal `branch = ?` keeps the branch-leading key usable; an
+        // `(? IS NULL OR branch = ?)` filter makes SQLite read every overlay row.
+        UnreachableScope::Branch => {
+            format!(
+                "DELETE FROM {table} WHERE branch = ?1 AND {}",
+                unreachable(table)
             )
-            "#
+        }
+        UnreachableScope::All => format!("DELETE FROM {table} WHERE {}", unreachable(table)),
+        // CROSS JOIN keeps the queue as the outer loop, so the delete reads
+        // only queued rows even where the planner has no table statistics.
+        UnreachableScope::Pending => format!(
+            "DELETE FROM {table} WHERE rowid IN (
+                SELECT o.rowid
+                FROM branch_call_edges_pending_gc q
+                CROSS JOIN {table} o
+                WHERE o.branch = q.branch AND o.edge_id = q.edge_id AND {}
+            )",
+            unreachable("o")
         ),
+    }
+}
+
+fn delete_unreachable_branch_call_edges(
+    conn: &Connection,
+    branch: Option<&str>,
+) -> DbResult<usize> {
+    let scope = if branch.is_some() {
+        UnreachableScope::Branch
+    } else {
+        UnreachableScope::All
+    };
+    let params = rusqlite::params_from_iter(branch);
+    let count = conn.execute(
+        &unreachable_branch_call_edges_sql("branch_call_edges", scope),
         params.clone(),
     )?;
     if has_branch_call_edges_stale(conn)? {
         conn.execute(
-            &format!(
-                r#"
-                DELETE FROM branch_call_edges_stale
-                WHERE {branch_filter} NOT EXISTS (
-                    SELECT 1
-                    FROM call_edges ce
-                    INNER JOIN branch_symbols bs
-                        ON bs.symbol_id = ce.from_symbol_id AND bs.branch = branch_call_edges_stale.branch
-                    WHERE ce.id = branch_call_edges_stale.edge_id
-                )
-                "#
-            ),
+            &unreachable_branch_call_edges_sql("branch_call_edges_stale", scope),
             params,
         )?;
+    }
+    if branch.is_none() && has_branch_call_edges_pending_gc(conn)? {
+        // No unreachable row is left for the queue to name.
+        conn.execute("DELETE FROM branch_call_edges_pending_gc", [])?;
     }
     Ok(count)
 }
 
 /// Delete edge targets and stale marks whose edge is gone or whose caller is no
 /// longer a member of their branch: in `branch` only, or in every branch for
-/// `None`. Refresh runs it for the branch whose membership it rewrote. The
-/// all-branch pass reads every overlay row, so it belongs to maintenance GC,
-/// where it repairs rows that writers without overlay cleanup (0.34.0) leave.
-pub fn gc_unreachable_branch_call_edges(conn: &Connection, branch: Option<&str>) -> DbResult<usize> {
+/// `None`. The seed fallback runs it for the branch it emptied. The all-branch
+/// pass reads every overlay row, so it belongs to maintenance GC, where it
+/// repairs rows that no queue recorded, such as rows left before the queue
+/// existed.
+pub fn gc_unreachable_branch_call_edges(
+    conn: &Connection,
+    branch: Option<&str>,
+) -> DbResult<usize> {
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }
     delete_unreachable_branch_call_edges(conn, branch)
+}
+
+/// Delete the queued edge targets and stale marks that are still unreachable,
+/// then empty the queue. The delete triggers queue the rows that writers
+/// without overlay cleanup (0.34.0) orphan; a row whose edge and caller
+/// membership were restored before this runs stays. Ordinary refresh runs it
+/// through the orphan GCs, at the cost of the queued rows only.
+pub fn gc_pending_branch_call_edges(conn: &Connection) -> DbResult<usize> {
+    if !has_branch_call_edges(conn)? || !has_branch_call_edges_pending_gc(conn)? {
+        return Ok(0);
+    }
+    let count = conn.execute(
+        &unreachable_branch_call_edges_sql("branch_call_edges", UnreachableScope::Pending),
+        [],
+    )?;
+    if has_branch_call_edges_stale(conn)? {
+        conn.execute(
+            &unreachable_branch_call_edges_sql(
+                "branch_call_edges_stale",
+                UnreachableScope::Pending,
+            ),
+            [],
+        )?;
+    }
+    conn.execute("DELETE FROM branch_call_edges_pending_gc", [])?;
+    Ok(count)
 }
 
 /// Delete edge targets and stale marks in every branch for the call edges

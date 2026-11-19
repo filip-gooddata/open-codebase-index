@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.4] - 2026-11-19
+
+Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.3. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.
+
 ### Added
 
 - **`ocbi prune`**: Removes branch catalogs that no checked-out worktree uses, without a forced rebuild. A catalog is stale when its key is neither the branch of a worktree of the project's repository nor the seven-character SHA of a detached worktree HEAD. The command is a dry run that lists each stale catalog with its per-table rows; `--apply` removes their `branch_chunks`, `branch_symbols`, `branch_call_edges` and `branch_call_edges_stale` rows, their metadata keys and their `file-hashes.*`, `file-dependencies.*` and `failed-batches.*` sidecars (with temp files an interrupted publish of them left) under the index lock, then runs the orphan collections once. Catalogs that remain only in the call-edge tables are listed too. Explicit catalog keys narrow the set; when one is the catalog of a checked-out worktree (or, in a global index, of another project) the command removes nothing and exits 1. The deletes commit only if a fresh worktree read after them still finds every catalog unused; otherwise they roll back. Worktrees are named the way the indexer names its own checkout, Git runs without inherited `GIT_DIR`-style overrides, the `default` catalog (what a project root without its own `.git` indexes into) is always kept, and apply refuses to run while another interrupted writer's recovery is pending; an interrupted prune resumes on the next apply.
+
+### Changed
+
+- **Faster branch listing**: Listing a store's branch catalogs (used by `status` and by retrieval readiness checks) walks the `branch` index of `branch_chunks` and `branch_symbols` with a recursive skip-scan instead of a `UNION` over every row. On a 350-catalog store `status` drops from minutes to a few seconds; the branch list is unchanged.
+- **Faster orphan collection**: The orphan symbol, chunk and call-edge collections use `NOT EXISTS` with explicit guards that keep the old `NOT IN` NULL behavior.
+- **Scoped branch call-edge cleanup**: Deleting a call edge or a branch's symbol queues the affected `branch_call_edges` rows in `branch_call_edges_pending_gc` through `AFTER DELETE` triggers (which also capture deletes by older writers); orphan collection drains only the queued rows instead of checking every branch twice per refresh. Health checks and auto-GC still run the all-branch sweep as a repair. The first writable open by this version installs the queue and defers a one-time all-branch sweep to the next drain.
+- **Incremental catalog replacement**: Refreshing a branch catalog applies the difference between the stored and new memberships inside the write transaction instead of clearing and re-adding the whole branch.
 
 ## [0.38.2-gd.3] - 2026-11-12
 

@@ -100,7 +100,8 @@ jobs:
   publish:
     needs: [package-metadata, build]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    # Forks have no npm trusted publisher; never attempt a publish from one.
+    if: github.event_name == 'release' && !github.event.repository.fork
     permissions:
       contents: read
       id-token: write

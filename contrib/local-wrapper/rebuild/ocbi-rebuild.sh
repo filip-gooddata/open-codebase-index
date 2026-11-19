@@ -50,8 +50,9 @@ DB="$OCBI_HOME/$PROJECT/claude-index/codebase.db"
 
 mkdir -p "$LOG_DIR"
 CBI_OUT="$(mktemp "${TMPDIR:-/tmp}/ocbi-rebuild.XXXXXX")" || exit 1
-# shellcheck disable=SC2012 # log names have no spaces; keep the 8 newest
-ls -1t "$LOG_DIR"/rebuild-*.log 2>/dev/null | tail -n +9 | xargs rm -f
+# Keep the 8 newest logs. Listed from inside the directory, the names carry no spaces.
+# shellcheck disable=SC2012
+(cd "$LOG_DIR" && ls -1t rebuild-*.log 2>/dev/null | tail -n +9 | xargs rm -f)
 
 if [ "$(uname -s)" = Darwin ]; then OPEN=open; else OPEN=xdg-open; fi
 
@@ -68,11 +69,13 @@ fail() {
 }
 
 # The progress lines repeat every second; keep only the summary lines in the log. The output of
-# the last call is also left in $CBI_OUT.
+# the last call is also left in $CBI_OUT. OCBI_REQUIRE_PROJECT makes the launcher check, in the
+# same call that indexes, that the checkout is linked to $PROJECT's shared store; otherwise it
+# exits 3 and nothing is indexed, so a forced index never reaches a local or global index.
 cbi() {
   local worktree="$1"
   shift
-  (cd "$worktree" && OCBI_HOME="$OCBI_HOME" bash "$LAUNCHER" --cbi "$@" --host claude --project "$worktree") 2>&1 |
+  (cd "$worktree" && OCBI_HOME="$OCBI_HOME" OCBI_REQUIRE_PROJECT="$PROJECT" bash "$LAUNCHER" --cbi "$@" --host claude --project "$worktree") 2>&1 |
     grep -v -E '^(Embedding|Parsing): ' | tee "$CBI_OUT" >>"$LOG"
   return "${PIPESTATUS[0]}"
 }
@@ -82,7 +85,10 @@ cbi() {
 # worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, any other failure once.
 index_worktree() {
   local worktree="$1" deadline=$(($(date +%s) + BUSY_WAIT_SECONDS)) retried=0
+  local rc
   until cbi "$worktree" index; do
+    rc=$?
+    [ "$rc" = 3 ] && return 1
     if grep -q '^INDEX_BUSY: another index operation is already in progress' "$CBI_OUT"; then
       [ "$(date +%s)" -lt "$deadline" ] || return 1
       sleep "$BUSY_POLL_SECONDS"
@@ -95,15 +101,19 @@ index_worktree() {
   done
 }
 
+# One rebuild at a time. A full rebuild can run for days, so the lock is reclaimed only when the
+# process that holds it is gone, never by age.
 mkdir "$RUN_LOCK" 2>/dev/null || {
-  if [ -n "$(find "$RUN_LOCK" -maxdepth 0 -mmin +180 2>/dev/null)" ]; then
+  holder="$(cat "$RUN_LOCK/pid" 2>/dev/null)"
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
     { rm -rf "$RUN_LOCK" && mkdir "$RUN_LOCK"; } || exit 1
   else
-    log "another rebuild is running; exiting"
+    log "another rebuild is running${holder:+ (pid $holder)}; exiting"
     rm -f "$CBI_OUT"
     exit 0
   fi
 }
+echo $$ >"$RUN_LOCK/pid"
 trap 'rm -rf "$RUN_LOCK" "$CBI_OUT"' EXIT
 
 # Keep the machine awake while this runs (macOS). A closed lid still suspends the run.
@@ -123,6 +133,9 @@ for attempt in 1 2 3; do
   if cbi "$MAIN_WORKTREE" index --force; then
     rebuilt=1
     break
+  fi
+  if grep -q "refusing to run the CLI" "$CBI_OUT"; then
+    fail "$MAIN_WORKTREE is not linked to the shared store of $PROJECT, so nothing was rebuilt. Run ocbi-mcp.sh --link-only there to see why."
   fi
   log "attempt $attempt failed; retrying in $RETRY_SECONDS s"
   sleep "$RETRY_SECONDS"

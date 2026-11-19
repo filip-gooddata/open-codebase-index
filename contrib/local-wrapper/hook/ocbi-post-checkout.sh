@@ -10,7 +10,9 @@
 # this worktree in the background, so the index is warm before agent sessions query it. File
 # checkouts ($3 = 0) and rebases are skipped. One refresh per worktree at a time; a checkout
 # during a running refresh queues exactly one more pass.
-# Logs: $OCBI_HOME/logs/prewarm/<worktree>.log. Set OCBI_PREWARM=0 to skip.
+# Runs only in checkouts linked to a shared store (OCBI_REQUIRE_PROJECT=*); elsewhere the log
+# records the refusal. Logs: $OCBI_HOME/logs/prewarm/<worktree dir>-<path checksum>.log.
+# Set OCBI_PREWARM=0 to skip.
 set -u
 [ "${3:-0}" = 1 ] || exit 0
 [ "${OCBI_PREWARM:-1}" = 0 ] && exit 0
@@ -28,14 +30,19 @@ while [ -L "$self" ]; do
   case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
 done
 home=${OCBI_HOME:-$(cd "$(dirname "$self")" && pwd)}
-name=$(basename "$root")
+# Worktrees of different repositories often share a directory name, so the key adds a checksum
+# of the full path.
+name=$(basename "$root")-$(printf '%s' "$root" | cksum | cut -d' ' -f1)
 state=$home/logs/prewarm
 mkdir -p "$state" || exit 0
 lock=$state/$name.lock
 again=$state/$name.again
 
 if ! mkdir "$lock" 2>/dev/null; then
-  if kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+  pid=$(cat "$lock/pid" 2>/dev/null)
+  # A lock without a pid is a hook that has not written it yet, unless it is a minute old.
+  if { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } ||
+    { [ -z "$pid" ] && [ -z "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
     : > "$again"
     exit 0
   fi
@@ -49,7 +56,7 @@ fi
   while :; do
     rm -f "$again"
     echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $(git rev-parse --abbrev-ref HEAD 2>/dev/null) $(git rev-parse --short HEAD 2>/dev/null)"
-    OCBI_HOME="$home" nice -n 10 "$home/ocbi-mcp.sh" --cbi index --host claude
+    OCBI_HOME="$home" OCBI_REQUIRE_PROJECT='*' nice -n 10 "$home/ocbi-mcp.sh" --cbi index --host claude
     echo "== exit $? $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ -e "$again" ] || break
   done

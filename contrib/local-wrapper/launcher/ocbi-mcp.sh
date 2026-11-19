@@ -48,7 +48,11 @@
 #   --session-hint   print the routing hint for listed projects only (SessionStart hook)
 #   --guard-force    PreToolUse hook: block index_codebase force=true, which would wipe the
 #                    shared index for every worktree; rebuild from a terminal instead
-#   --cbi ARGS...    link if listed, then run the ocbi CLI (dist/cbi.js) with ARGS
+#   --cbi ARGS...    link if listed, then run the ocbi CLI (dist/cbi.js) with ARGS. With
+#                    OCBI_REQUIRE_PROJECT=<name> it runs only when this checkout is linked to
+#                    the shared store of <name> (any listed project for "*") and exits 3
+#                    otherwise, so a forced or background index never lands on a local or
+#                    global index. The hook and the rebuild set it.
 #   --stale-check    for the listed project of the current directory, count branch catalogs
 #                    whose branch or worktree is gone and, once they reach OCBI_STALE_THRESHOLD
 #                    (15), notify through $OCBI_HOME/ocbi-notify.sh when it is installed. The
@@ -509,8 +513,16 @@ fi
 
 [ -n "$node_bin" ] || node_bin="$(pick_node)" || { log "no Node.js >= 22 found"; exit 1; }
 
+need_js() { [ -f "$1" ] || { log "$1 is missing; install the package into $OCBI_HOME/pkg"; exit 1; }; }
+
 if [ "${1:-}" = "--cbi" ]; then
   shift
+  need_js "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js"
+  want="${OCBI_REQUIRE_PROJECT:-}"
+  if [ -n "$want" ] && { [ "$route" != linked ] || { [ "$want" != "*" ] && [ "$project" != "$want" ]; }; }; then
+    log "refusing to run the CLI: $root is not linked to the shared store of $(if [ "$want" = "*" ]; then echo "a listed project"; else echo "$want"; fi) (route ${route:-none}${project:+, project $project})"
+    exit 3
+  fi
   exec "$node_bin" "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js" "$@"
 fi
 
@@ -553,6 +565,7 @@ $status
   STATUS="$status" "$node_bin" -e 'process.stdout.write(JSON.stringify({hookSpecificOutput: {hookEventName: "PostToolUse", updatedToolOutput: process.env.STATUS}}))'
   exit 0
 fi
+need_js "$SERVER_JS"
 if [ "$route" = linked ] && [ "${OCBI_STALE_CHECK:-1}" != 0 ]; then
   /bin/bash "$0" --stale-check </dev/null >/dev/null 2>&1 &
 fi

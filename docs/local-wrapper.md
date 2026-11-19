@@ -38,7 +38,7 @@ The launcher's header comment documents every rule; the summary:
   deleted.
 - With a `profiles.conf` line, the primary checkout gets `profiles/main.json` (background indexing
   as in the base config) and every other worktree `profiles/worktree.json` (`watchFiles` and
-  `autoIndexOnStartup` off, so it indexes on demand). Both are generated from the base config
+  `autoIndexOnStartup` off). Both are generated from the base config
   whenever it changes. A bare clone must pin its primary's git dir, because git cannot confirm a
   primary checkout there.
 
@@ -87,8 +87,12 @@ or, on any git version, by linking it as the repository's `post-checkout` hook i
 - `indexing.autoIndexWaitMs: 360000` in the example base config. Retrieval waits this long for a
   refresh that another session is running instead of failing at once. The package caps it at
   600000. Keep each host's tool timeout above it.
-- The primary checkout keeps `watchFiles` and `autoIndexOnStartup`; every other worktree indexes
-  on demand. Hundreds of watchers on one store cost more than they save.
+- The primary checkout keeps `watchFiles`; every other worktree gets `watchFiles: false`, because
+  hundreds of watchers on one store cost more than they save. The profiles also set
+  `autoIndexOnStartup` (true for the primary, false elsewhere) for a package that reads it. The
+  current package ignores that key, so with `autoIndex: true` every worktree still indexes when
+  its server starts; `index_status` says so in its routing line. Set `autoIndex: false` in the
+  base config if only on-demand indexing is wanted, on the primary too.
 - Tune `exclude` for your repository. Generated code, build output and vendored dependencies cost
   embedding time and push real code out of results.
 - `knowledgeBases` entries are absolute paths. Point them at your own clones, or leave them out.
@@ -102,7 +106,11 @@ or, on any git version, by linking it as the repository's `post-checkout` hook i
   run it from inside the checkout.
 - Never run `index_codebase` with `force=true` on a shared store: it drops every worktree's
   catalog, and re-embedding a large repository can take hours. The guard and the hook block it.
-  For a full rebuild use `ocbi-rebuild <project>` (macOS today; Linux support is planned).
+  For a full rebuild use `ocbi-rebuild <project>` (macOS today; Linux support is planned). It
+  runs the forced index through the launcher with `OCBI_REQUIRE_PROJECT=<project>`, so the
+  launcher refuses it (exit 3) unless that checkout is linked to the project's store at that
+  moment. The post-checkout hook does the same with `OCBI_REQUIRE_PROJECT='*'`, so it never
+  indexes a local or global index.
 - One process indexes a store at a time (`indexing.lock`). The CLI returns `INDEX_BUSY`; MCP
   retrieval waits up to `autoIndexWaitMs`.
 - The guard does not restart a server that dies. After a server is killed, reconnect the MCP

@@ -56,10 +56,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$home" in /*) ;; *) die "--home must be an absolute path" ;; esac
-case "$home$bin_dir$marketplace_dir$agents_dir" in
-  *\"* | *\\* | *@*) die "paths must not contain \", \\ or @" ;;
-esac
+# The paths end up in JSON, XML, shell and launchd files, and bash 5.2 expands & in ${x//p/r}
+# replacements, so they must be absolute and free of characters any of those would interpret.
+nl='
+'
+for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir"; do
+  case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
+  case "$path" in
+    *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
+  esac
+done
 [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid --label $label"
 [ -n "$package" ] && pieces="$pieces,pkg"
 
@@ -75,7 +81,8 @@ version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo_root/package.json" | 
 version="${version:-0.0.0}-local"
 changes=0
 
-say() { printf '%s\n' "$*"; }
+preflight=0
+say() { [ "$preflight" = 1 ] || printf '%s\n' "$*"; }
 run() {
   if [ "$dry_run" = 1 ]; then
     say "  would run: $*"
@@ -101,8 +108,16 @@ render() {
 # DEST already has that content. Never follows a symlink at DEST.
 place() {
   local mode="$1" src="$2" dest="$3" tmp
+  if [ "$preflight" = 1 ]; then
+    [ -f "$src" ] && [ -r "$src" ] || die "cannot read $src; nothing was installed"
+    [ ! -d "$dest" ] || [ -L "$dest" ] || die "$dest is a directory; nothing was installed"
+    return 0
+  fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/ocbi-install.XXXXXX")" || die "mktemp failed"
-  if [ "${4:-}" = render ]; then render "$src" >"$tmp"; else cat "$src" >"$tmp"; fi
+  if [ "${4:-}" = render ]; then render "$src" >"$tmp"; else cat "$src" >"$tmp"; fi || {
+    rm -f "$tmp"
+    die "cannot read $src"
+  }
   if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"
     say "  unchanged  $dest"
@@ -170,6 +185,10 @@ install_notify() {
 }
 
 install_pkg() {
+  if [ "$preflight" = 1 ]; then
+    [ "$dry_run" = 1 ] || command -v npm >/dev/null 2>&1 || die "npm is not on PATH; nothing was installed"
+    return 0
+  fi
   say "pkg -> $home/pkg ($package)"
   if [ "$dry_run" = 0 ]; then
     mkdir -p "$home/pkg" || die "cannot create $home/pkg"
@@ -177,15 +196,30 @@ install_pkg() {
   fi
   changes=$((changes + 1))
   run npm install --prefix "$home/pkg" --no-audit --no-fund "$package" || die "npm install failed"
+  [ "$dry_run" = 1 ] && return 0
+  local js
+  for js in cli.js cbi.js; do
+    [ -f "$home/pkg/node_modules/open-codebase-index/dist/$js" ] ||
+      die "$package did not install open-codebase-index with dist/$js; the launcher needs both cli.js and cbi.js"
+  done
 }
 
+install_selected() {
+  has_piece launcher && install_launcher
+  has_piece hook && install_hook
+  has_piece plugin && install_plugin
+  has_piece rebuild && install_rebuild
+  has_piece notify && install_notify
+  has_piece pkg && install_pkg
+  return 0
+}
+
+# Check every source and destination of the selected pieces before writing anything.
+preflight=1
+install_selected
+preflight=0
 [ "$dry_run" = 1 ] && say "Dry run: nothing is written."
-has_piece launcher && install_launcher
-has_piece hook && install_hook
-has_piece plugin && install_plugin
-has_piece rebuild && install_rebuild
-has_piece notify && install_notify
-has_piece pkg && install_pkg
+install_selected
 
 say ""
 say "$changes change(s)$([ "$dry_run" = 1 ] && printf ' planned')."

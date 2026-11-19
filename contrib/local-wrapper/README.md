@@ -75,5 +75,7 @@ makes its absence a failure.
 Delete the installed files listed in the table, then the piece's directory here, its
 `install_<piece>` function and `--pieces` entry in `install.sh`, and its section in
 `test/run-tests.sh`. The launcher is the only piece others call: `hook` and `rebuild` run
-`ocbi-mcp.sh --cbi`, and the plugin starts `ocbi-mcp.sh`. Point them at the package's `cbi` and
-MCP binaries before removing it.
+`ocbi-mcp.sh --cbi` with `OCBI_REQUIRE_PROJECT` set, which makes the launcher refuse (exit 3)
+unless the checkout is linked to that project's shared store, and the plugin starts
+`ocbi-mcp.sh`. Point them at the package's `cbi` and MCP binaries, with an equivalent check,
+before removing it.

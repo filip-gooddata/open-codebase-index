@@ -1,7 +1,7 @@
 # name|primary checkout|its absolute git dir. Read by ocbi-mcp.sh for projects already in
 # projects.conf: the primary checkout links $OCBI_HOME/<name>/profiles/main.json (background
-# indexing as in the base config), every other worktree profiles/worktree.json (on demand,
-# watchFiles and autoIndexOnStartup false). A normal clone's primary is the checkout git itself
+# indexing as in the base config), every other worktree profiles/worktree.json (watchFiles and
+# autoIndexOnStartup false; the current package ignores autoIndexOnStartup). A normal clone's primary is the checkout git itself
 # confirms, so its git dir field may be left out. A bare clone has no such checkout, so its line
 # pins the primary's git dir (<bare clone>/worktrees/<id>); the checkout's path, common dir and
 # git dir must all match the pin, or every worktree gets profiles/worktree.json. Changing the pin

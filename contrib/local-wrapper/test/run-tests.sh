@@ -110,6 +110,12 @@ expect_match "install prints the Codex snippet" "args = \\[\"$H/ocbi-mcp.sh\"\\]
 expect_match "install prints the git hook registration" "hook.ocbi-prewarm.command \"$H/ocbi-post-checkout.sh\"" "$out"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
 expect_match "second install changes nothing" "^0 change\\(s\\)\\." "$out"
+bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
+expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"
+P2="$T/preflight"
+mkdir -p "$P2/ocbi-mcp.sh"
+bash "$here/install.sh" --pieces launcher,hook --home "$P2" >/dev/null 2>&1
+expect_eq "install refuses a directory at a destination and writes nothing" "2 absent" "$? $([ -e "$P2/mcp-force-guard.mjs" ] || [ -e "$P2/ocbi-post-checkout.sh" ] && echo present || echo absent)"
 printf '# mine\n' >"$H/projects.conf"
 bash "$here/install.sh" "${install_args[@]}" >/dev/null 2>&1
 expect_eq "install keeps an existing projects.conf" "# mine" "$(cat "$H/projects.conf")"
@@ -234,6 +240,13 @@ printf 'demo|%s\nbare|%s\n' "$R/.git" "$B" >"$H/projects.conf"
 # --- --cbi, --status-output, server --------------------------------------------------------------
 out="$(cd "$W" && bash "$L" --cbi status --host claude 2>/dev/null)"
 expect_eq "--cbi runs the CLI in the checkout" "CBI status --host claude cwd=$W" "$out"
+out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index 2>/dev/null)"
+expect_eq "--cbi runs when linked to the required project" "CBI index cwd=$W" "$out"
+(cd "$W" && OCBI_REQUIRE_PROJECT=bare bash "$L" --cbi index >/dev/null 2>&1)
+expect_eq "--cbi refuses another project's checkout" 3 "$?"
+out="$(cd "$T" && OCBI_REQUIRE_PROJECT='*' bash "$L" --cbi index 2>&1)"
+expect_eq "--cbi refuses an unlisted directory" "3" "$(cd "$T" && OCBI_REQUIRE_PROJECT='*' bash "$L" --cbi index >/dev/null 2>&1; echo $?)"
+expect_match "--cbi says why it refuses" "refusing to run the CLI" "$out"
 out="$(cd "$R" && echo '{}' | bash "$L" --status-output 2>/dev/null)"
 got="$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s).hookSpecificOutput;process.stdout.write(o.hookEventName+"\n"+o.updatedToolOutput)})')"
 expect_match "--status-output names the routing" "^PostToolUse
@@ -249,12 +262,16 @@ expect_match "server mode: the guard answers a forced index" '"id":1,"result":\{
 expect_match "server mode: other calls reach the server" '"id":2,"result":\{"echo":"tools/list"' "$out"
 expect_match "server mode: the server gets --host claude --project <root>" "\"argv\":\\[\"--host\",\"claude\",\"--project\",\"$W\"\\]" "$out"
 
+start=$SECONDS
+node "$H/mcp-force-guard.mjs" node -e 'process.exit(7)' < <(sleep 8)
+expect_eq "the guard exits with its server while stdin stays open" "7 fast" "$? $([ $((SECONDS - start)) -lt 5 ] && echo fast || echo slow)"
+
 # --- post-checkout hook --------------------------------------------------------------------------
 S="$T/stubhome"
 mkdir -p "$S"
 cat >"$S/ocbi-mcp.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "STUB $* cwd=$PWD git_dir=${GIT_DIR:-unset} home=$OCBI_HOME"
+echo "STUB $* cwd=$PWD git_dir=${GIT_DIR:-unset} home=$OCBI_HOME req=${OCBI_REQUIRE_PROJECT:-unset}"
 EOF
 chmod +x "$S/ocbi-mcp.sh"
 cp "$H/ocbi-post-checkout.sh" "$S/ocbi-post-checkout.sh"
@@ -269,9 +286,10 @@ wait_for() {
   return 1
 }
 (cd "$W" && GIT_DIR="$R/.git/worktrees/demo-feature" bash "$S/ocbi-post-checkout.sh" old new 1)
-log="$S/logs/prewarm/demo-feature.log"
+key="demo-feature-$(printf '%s' "$W" | cksum | cut -d' ' -f1)"
+log="$S/logs/prewarm/$key.log"
 if wait_for "$log" '^== exit'; then ok "hook runs a refresh in the background"; else not_ok "hook runs a refresh in the background" "$(cat "$log" 2>/dev/null)"; fi
-expect_match "hook calls the launcher's CLI mode from the root without git env" "STUB --cbi index --host claude cwd=$W git_dir=unset home=$S" "$(cat "$log" 2>/dev/null)"
+expect_match "hook calls the launcher's CLI mode from the root without git env" "STUB --cbi index --host claude cwd=$W git_dir=unset home=$S req=\\*" "$(cat "$log" 2>/dev/null)"
 (cd "$W" && bash "$S/ocbi-post-checkout.sh" old new 0)
 sleep 0.3
 expect_eq "hook skips file checkouts" 1 "$(grep -c '^STUB' "$log")"
@@ -280,7 +298,7 @@ expect_eq "hook skips file checkouts" 1 "$(grep -c '^STUB' "$log")"
 sleep 0.3
 expect_eq "hook honours OCBI_PREWARM=0 and skips rebases" 1 "$(grep -c '^STUB' "$log")"
 # Real checkouts through git run the hook, registered either way install.sh prints.
-wait_unlocked() { local i=0; while [ -d "$S/logs/prewarm/demo-feature.lock" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; }
+wait_unlocked() { local i=0; while [ -d "$S/logs/prewarm/$key.lock" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; }
 wait_unlocked
 git init -q "$T/probe"
 git -C "$T/probe" config hook.probe.event post-checkout
@@ -316,14 +334,33 @@ cp "$H/ocbi-rebuild.sh" "$RB/"
 printf 'demo|%s\n' "$R/.git" >"$RB/projects.conf"
 cat >"$RB/ocbi-mcp.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "STUB $* cwd=$PWD" >>"$OCBI_HOME/calls"
+echo "STUB $* cwd=$PWD req=$OCBI_REQUIRE_PROJECT" >>"$OCBI_HOME/calls"
 EOF
 OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo
 expect_eq "rebuild exits 0" 0 "$?"
 expect_eq "rebuild forces the primary, then indexes each other worktree" \
-  "STUB --cbi index --force --host claude --project $R cwd=$R
-STUB --cbi index --host claude --project $W cwd=$W" "$(cat "$RB/calls" 2>/dev/null)"
+  "STUB --cbi index --force --host claude --project $R cwd=$R req=demo
+STUB --cbi index --host claude --project $W cwd=$W req=demo" "$(cat "$RB/calls" 2>/dev/null)"
 check "rebuild released its lock" test ! -e "$RB/rebuild.lock"
+mkdir "$RB/rebuild.lock" && echo $$ >"$RB/rebuild.lock/pid" && : >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo
+expect_eq "rebuild leaves a live holder's lock alone" "0 $$" "$? $(cat "$RB/rebuild.lock/pid")"
+check "rebuild did nothing while another one runs" test ! -s "$RB/calls"
+bash -c 'exit 0' & dead=$!; wait "$dead"
+echo "$dead" >"$RB/rebuild.lock/pid"
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo
+check "rebuild reclaims a dead holder's lock" test -s "$RB/calls" -a ! -e "$RB/rebuild.lock"
+# With the real launcher, a primary that is not linked to the store is never force-indexed.
+mkdir -p "$T/src/loose" && git -C "$T/src/loose" init -q -b main && git -C "$T/src/loose" commit -q --allow-empty -m init
+printf 'loose|%s\n' "$T/src/loose/.git" >>"$H/projects.conf"
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$H/ocbi-rebuild.sh" loose
+expect_eq "rebuild of an unlinked primary fails" 1 "$?"
+# shellcheck disable=SC2012 # names are rebuild-<timestamp>.log
+log_file="$(ls -1t "$H"/logs/rebuild-*.log | head -n 1)"
+if grep -q 'CBI index --force' "$log_file"; then not_ok "rebuild of an unlinked primary runs no forced index" "$(cat "$log_file")"; else
+  ok "rebuild of an unlinked primary runs no forced index"; fi
+expect_match "rebuild names the reason" "is not linked to the shared store of loose" "$(cat "$log_file")"
+printf 'demo|%s\nbare|%s\n' "$R/.git" "$B" >"$H/projects.conf"
 
 # --- stale check ---------------------------------------------------------------------------------
 if command -v sqlite3 >/dev/null 2>&1; then

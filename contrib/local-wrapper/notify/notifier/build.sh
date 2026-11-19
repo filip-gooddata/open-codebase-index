@@ -8,11 +8,14 @@ here="$(cd "$(dirname "$0")" && pwd)"
 app="${OCBI_NOTIFIER_APP:-$HOME/Applications/Codebase Index.app}"
 OCBI_NOTIFIER_BUNDLE_ID="${OCBI_NOTIFIER_BUNDLE_ID:-io.github.open-codebase-index.notifier}"
 
-rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
-swiftc -O -o "$app/Contents/MacOS/CodebaseIndexNotifier" "$here/main.swift" \
+# Build into a staging bundle next to the app and replace the app only once it is built and signed.
+stage="$app.building"
+rm -rf "$stage"
+trap 'rm -rf "$stage"' EXIT
+mkdir -p "$stage/Contents/MacOS"
+swiftc -O -o "$stage/Contents/MacOS/CodebaseIndexNotifier" "$here/main.swift" \
   -framework AppKit -framework UserNotifications
-cat >"$app/Contents/Info.plist" <<EOF
+cat >"$stage/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -38,5 +41,8 @@ cat >"$app/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-codesign --force --sign - "$app"
+codesign --force --sign - "$stage"
+codesign --verify "$stage"
+rm -rf "$app"
+mv "$stage" "$app"
 echo "built $app"

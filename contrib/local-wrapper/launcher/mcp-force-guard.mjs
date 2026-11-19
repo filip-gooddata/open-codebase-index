@@ -42,7 +42,9 @@ child.stdin.on("error", () => {});
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => child.kill(signal));
 }
-child.on("exit", (code, signal) => {
-  process.exitCode = signal ? 1 : (code ?? 0);
-  process.stdout.end();
+// "close" fires after the child's stdout is drained. Exit then, even while the client keeps
+// stdin open: a guard without a server would otherwise linger and ignore signals.
+child.on("close", (code, signal) => {
+  const status = signal ? 1 : (code ?? 0);
+  process.stdout.end(() => process.exit(status));
 });

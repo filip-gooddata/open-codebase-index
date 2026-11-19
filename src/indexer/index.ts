@@ -2066,6 +2066,25 @@ export class Indexer {
     }
   }
 
+  /**
+   * Makes a branch's stored membership equal `target` by deleting and adding
+   * only the rows that differ. Rewriting every row of a large branch costs far
+   * more in deletes and commit I/O than a one-file refresh changes.
+   */
+  private applyBranchMembershipDelta(
+    stored: readonly string[],
+    target: readonly string[],
+    remove: (ids: string[]) => unknown,
+    add: (ids: string[]) => unknown,
+  ): void {
+    const targetSet = new Set(target);
+    const storedSet = new Set(stored);
+    const removed = [...storedSet].filter((id) => !targetSet.has(id));
+    const added = [...targetSet].filter((id) => !storedSet.has(id));
+    if (removed.length > 0) remove(removed);
+    if (added.length > 0) add(added);
+  }
+
   private replaceBranchCatalog(
     store: VectorStore | null,
     invertedIndex: InvertedIndex,
@@ -2076,10 +2095,18 @@ export class Indexer {
     previousSymbolIds: readonly string[],
     currentSymbolIds: readonly string[],
   ): boolean {
-    database.clearBranch(branchCatalogKey);
-    database.addChunksToBranchBatch(branchCatalogKey, [...currentChunkIds]);
-    database.clearBranchSymbols(branchCatalogKey);
-    database.addSymbolsToBranchBatch(branchCatalogKey, [...currentSymbolIds]);
+    this.applyBranchMembershipDelta(
+      database.getBranchChunkIds(branchCatalogKey),
+      currentChunkIds,
+      (removed) => database.deleteBranchChunksForBranch(branchCatalogKey, removed),
+      (added) => database.addChunksToBranchBatch(branchCatalogKey, added),
+    );
+    this.applyBranchMembershipDelta(
+      database.getBranchSymbolIds(branchCatalogKey),
+      currentSymbolIds,
+      (removed) => database.deleteBranchSymbolsForBranch(branchCatalogKey, removed),
+      (added) => database.addSymbolsToBranchBatch(branchCatalogKey, added),
+    );
     database.gcUnreachableBranchCallEdges(branchCatalogKey);
 
     const currentChunkIdSet = new Set(currentChunkIds);

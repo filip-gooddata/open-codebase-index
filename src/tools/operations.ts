@@ -35,6 +35,7 @@ import {
 import type { SharedArchitectureContextArgs, SharedCodeCommunitiesArgs, SharedIndexStatusArgs, SharedPrImpactArgs } from "./contracts.js";
 import { calculatePercentage, formatProgressTitle, formatStatus } from "./utils.js";
 import type { LogLevel } from "../config/schema.js";
+import type { BranchPruneResult } from "../indexer/branch-prune.js";
 import type { LogEntry } from "../utils/logger.js";
 import type { CostEstimate, DryRunEstimate } from "../utils/cost.js";
 import type { AutoIndexStatusSnapshot } from "../utils/auto-index.js";
@@ -787,6 +788,16 @@ export async function getIndexStatus(
     freshness,
     autoIndex: getAutoIndexStatus(root, host),
   };
+}
+
+export async function pruneBranchCatalogs(
+  projectRoot: string | undefined,
+  host: HostMode,
+  args: { keys?: readonly string[]; apply?: boolean } = {},
+  control?: OperationControl,
+): Promise<BranchPruneResult> {
+  const root = getProjectRoot(projectRoot, host);
+  return getIndexerForProject(root, host).pruneBranchCatalogs({ ...args, signal: control?.signal });
 }
 
 export async function getIndexHealthCheck(

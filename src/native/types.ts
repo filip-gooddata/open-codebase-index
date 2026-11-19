@@ -289,6 +289,19 @@ export interface ChunkData {
   blameSummary?: string;
 }
 
+export interface BranchCatalogRows {
+  branch: string;
+  branchChunks: number;
+  branchSymbols: number;
+  branchCallEdges: number;
+  branchCallEdgesStale: number;
+}
+
+export interface BranchCatalogPrune {
+  branches: BranchCatalogRows[];
+  metadata: number;
+}
+
 export interface BranchDelta {
   added: string[];
   removed: string[];

@@ -46,6 +46,8 @@ import type { PrImpactResult } from "./pr-impact-types.js";
 import { UnsupportedIndexOperationError } from "./errors.js";
 export { UnsupportedIndexOperationError } from "./errors.js";
 import { getChunkGitBlame, type GitBlameMetadata } from "./git-blame.js";
+import { applyBranchPrune, BRANCH_SEED_METADATA_PREFIXES, planBranchPrune, type BranchPruneResult } from "./branch-prune.js";
+import { listWorktreeCatalogIdentities } from "../git/worktree-catalogs.js";
 import { analyzeQueryIntent, extractFilePathHint, isExplicitIdentifierLookup, stripFilePathHint } from "./intent-aware-ranking.js";
 import {
   applyCommunityBoost,
@@ -246,18 +248,6 @@ function parseEdgeFingerprints(value: unknown): Map<string, string> | null {
   return fingerprints;
 }
 const SEED_SYMBOL_NAMESPACE_SAMPLE = 64;
-const BRANCH_SEED_METADATA_PREFIXES = [
-  "index.callGraphResolutionVersion",
-  "index.localModuleResolutionConfigHash",
-  "index.scipTypeScriptState",
-  "index.parser.javascriptVersion",
-  "index.parser.swiftVersion",
-  "index.parser.metalVersion",
-  "index.parser.markupVersion",
-  "index.parser.kotlinVersion",
-  "index.parser.rubyVersion",
-  "index.symbolExtractorVersion",
-] as const;
 const PHP_FUNCTION_SYMBOL_CHUNK_TYPES = new Set([
   "function_declaration",
   "function",
@@ -2103,6 +2093,54 @@ export class Indexer {
     database.gcOrphanEmbeddings();
 
     return removableChunkIds.length > 0;
+  }
+
+  /**
+   * Remove branch catalogs no checked-out worktree uses. The live set is read
+   * from Git inside the index lock, so a catalog checked out meanwhile stays.
+   */
+  async pruneBranchCatalogs(
+    options: { keys?: readonly string[]; apply?: boolean; signal?: AbortSignal } = {},
+  ): Promise<BranchPruneResult> {
+    const startedAt = Date.now();
+    const prune = async (apply: boolean): Promise<BranchPruneResult> => {
+      const worktrees = await listWorktreeCatalogIdentities(this.projectRoot, { signal: options.signal });
+      throwIfOperationAborted(options.signal);
+      const liveKeys = new Set(worktrees.map(({ identity }) => this.getBranchCatalogKeyFor(identity)));
+      const dbPath = path.join(this.indexPath, "codebase.db");
+      if (!existsSync(dbPath)) throw new Error(`No index database at ${dbPath}.`);
+      const database = apply ? new Database(dbPath) : Database.openReadOnly(dbPath);
+      try {
+        const projectKeyPrefix = `${this.projectIdentityHash}:`;
+        const plan = planBranchPrune({
+          database,
+          indexPath: this.indexPath,
+          liveKeys,
+          keys: options.keys,
+          candidateKeyFilter: this.config.scope === "global"
+            ? (key) => key.startsWith(projectKeyPrefix)
+            : () => true,
+          namespacedSidecars: this.config.scope === "project",
+        });
+        const applied = apply ? applyBranchPrune(database, plan) : null;
+        return {
+          applied: apply,
+          indexPath: this.indexPath,
+          catalogCount: plan.catalogCount,
+          liveCatalogCount: plan.liveCatalogCount,
+          catalogs: applied?.catalogs ?? plan.catalogs,
+          refused: plan.refused,
+          removed: applied?.removed ?? null,
+          gc: applied?.gc ?? null,
+          elapsedMs: Date.now() - startedAt,
+        };
+      } finally {
+        database.close();
+      }
+    };
+
+    if (!options.apply) return prune(false);
+    return this.withIndexMutationLease("prune", () => prune(true), options.signal);
   }
 
   private chunkMetadataFromData(chunk: ChunkData): ChunkMetadata {

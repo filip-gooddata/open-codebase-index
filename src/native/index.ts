@@ -1,4 +1,6 @@
 export type {
+  BranchCatalogPrune,
+  BranchCatalogRows,
   BranchDelta,
   ApiFetchUsageData,
   ApiRouteUsageData,

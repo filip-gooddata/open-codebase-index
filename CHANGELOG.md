@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ocbi prune`**: Removes branch catalogs that no checked-out worktree uses, without a forced rebuild. A catalog is stale when its key is neither the branch of a worktree of the project's repository nor the seven-character SHA of a detached worktree HEAD. The command is a dry run that lists each stale catalog with its per-table rows; `--apply` removes their `branch_chunks`, `branch_symbols`, `branch_call_edges` and `branch_call_edges_stale` rows, their metadata keys and their `file-hashes.*`, `file-dependencies.*` and `failed-batches.*` sidecars under the index lock, then runs the orphan collections once. Explicit catalog keys narrow the set; a key of a checked-out worktree is refused and the command exits 1.
+
 ## [0.38.2-gd.3] - 2026-11-12
 
 Fork release of filip-gooddata/open-codebase-index on top of 0.38.2-gd.2. Not published to npm; the GitHub release ships a darwin-arm64 native binary only.

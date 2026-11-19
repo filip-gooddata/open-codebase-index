@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use thiserror::Error;
 
+mod branch_prune;
 mod call_graph;
+pub use branch_prune::*;
 pub use call_graph::*;
 
 #[derive(Error, Debug)]

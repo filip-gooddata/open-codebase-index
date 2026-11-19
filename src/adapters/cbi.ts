@@ -10,6 +10,7 @@ import { loadConfigFile } from "../config/merger.js";
 import { parseConfig } from "../config/schema.js";
 import { resolveDefaultProjectRoot } from "../git/index.js";
 import type { WorkspaceStatusResult } from "../tools/workspace-status.js";
+import type { BranchPruneResult } from "../indexer/branch-prune.js";
 import type { handleIndexCommand } from "./mcp/cli.js";
 import { redactSensitiveText } from "../utils/redact.js";
 import { runHistoryCli } from "./history-cli.js";
@@ -30,6 +31,11 @@ export interface CbiDeps {
     direction: GraphDirection,
     filePath?: string,
   ) => Promise<Result>;
+  runPrune?: (
+    projectRoot: string,
+    host: HostMode,
+    options: { keys?: readonly string[]; apply: boolean },
+  ) => Promise<BranchPruneResult>;
   runWorkspaceStatus?: (repoSpecs: string[], cwd: string, host: HostMode) => Promise<WorkspaceStatusResult>;
   initializeRuntimeForConfig?: (projectRoot: string, config: ReturnType<typeof parseConfig>, host: HostMode) => void;
   readConfigFile?: (filePath: string) => unknown;
@@ -47,6 +53,7 @@ export interface CbiCommandArgs {
   checkFreshness: boolean;
   workingTree: boolean;
   json: boolean;
+  apply: boolean;
 }
 
 function printUsage(output: TextSink): void {
@@ -55,6 +62,8 @@ function printUsage(output: TextSink): void {
 Commands:
   status [--check-freshness] [--json] Show stored status; optionally check source freshness
   impact --working-tree [--json]  Inspect current indexed working-tree file impact
+  prune [<catalog-key>...] [--apply] [--json]
+                                  Remove branch catalogs no checked-out worktree uses (dry run unless --apply)
   index [options]                 Create or refresh the index
   search <query> [--limit <n>]    Full-content semantic search
   definition <symbol>             Find authoritative definitions
@@ -75,6 +84,7 @@ function printCommandUsage(output: TextSink, command: string): void {
   const usage: Record<string, string> = {
     status: "Usage: ocbi status [--check-freshness] [--json] [--project <path>] [--host <mode>] [--config <path>]",
     impact: "Usage: ocbi impact --working-tree [--json] [--project <path>] [--host <mode>] [--config <path>]",
+    prune: "Usage: ocbi prune [<catalog-key>...] [--apply] [--json] [--project <path>] [--host <mode>] [--config <path>]",
     index: "Usage: ocbi index [--project <path>] [--host <mode>] [--config <path>] [--force] [--estimate-only] [--dry-run] [--verbose]",
     search: "Usage: ocbi search <query> [--limit <n>] [--project <path>] [--host <mode>] [--config <path>]",
     definition: "Usage: ocbi definition <symbol> [--project <path>] [--host <mode>] [--config <path>]",
@@ -102,6 +112,7 @@ export function parseCbiCommandArgs(command: string, args: string[], cwd: string
   let checkFreshness = false;
   let workingTree = false;
   let json = false;
+  let apply = false;
   const positionals: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -111,7 +122,11 @@ export function parseCbiCommandArgs(command: string, args: string[], cwd: string
       checkFreshness = true;
       continue;
     }
-    if ((command === "status" || command === "impact") && arg === "--json") {
+    if (command === "prune" && arg === "--apply") {
+      apply = true;
+      continue;
+    }
+    if ((command === "status" || command === "impact" || command === "prune") && arg === "--json") {
       json = true;
       continue;
     }
@@ -155,7 +170,7 @@ export function parseCbiCommandArgs(command: string, args: string[], cwd: string
     positionals.push(arg);
   }
 
-  return { project: project ?? resolveDefaultProjectRoot(cwd), host, config, limit, filePath, positionals, checkFreshness, workingTree, json };
+  return { project: project ?? resolveDefaultProjectRoot(cwd), host, config, limit, filePath, positionals, checkFreshness, workingTree, json, apply };
 }
 
 async function initializeFromConfig(args: CbiCommandArgs, deps: CbiDeps): Promise<void> {
@@ -198,7 +213,7 @@ export async function runCbiCli(argv: string[], cwd: string, deps: CbiDeps = {})
     return 0;
   }
 
-  if (!["status", "impact", "index", "search", "definition", "graph", "workspace"].includes(command)) {
+  if (!["status", "impact", "prune", "index", "search", "definition", "graph", "workspace"].includes(command)) {
     stderr(`Unknown command: ${command}`);
     printUsage(stderr);
     return 1;
@@ -267,6 +282,20 @@ export async function runCbiCli(argv: string[], cwd: string, deps: CbiDeps = {})
       if (args.json && result.details === undefined) throw new Error("Status did not return structured details.");
       stdout(args.json ? JSON.stringify(result.details, null, 2) : result.text);
       return 0;
+    }
+    if (command === "prune") {
+      const run = deps.runPrune ?? (async (root, hostMode, options) => {
+        // Static imports would load the native code runtime for help/history-only CLI use.
+        const { pruneBranchCatalogs } = await import("../tools/operations.js");
+        return pruneBranchCatalogs(root, hostMode, options);
+      });
+      const result = await run(args.project, args.host, {
+        keys: args.positionals.length > 0 ? args.positionals : undefined,
+        apply: args.apply,
+      });
+      const { formatBranchPruneResult } = await import("../indexer/branch-prune.js");
+      stdout(args.json ? JSON.stringify(result, null, 2) : formatBranchPruneResult(result));
+      return result.refused.length > 0 ? 1 : 0;
     }
     if (command === "impact") {
       // Static imports would load the native code runtime for help/history-only CLI use.

@@ -433,6 +433,39 @@ describe("Indexer.pruneBranchCatalogs", () => {
     expect(sidecarCount("pr/42")).toBe(3);
   });
 
+  it("keeps an older store's overlay-only catalog when a late checkout refuses the request", async () => {
+    seedOverlayOnlyCatalogInMarker3Store("edges-only");
+    deleteSpyAddingWorktree("gone");
+
+    const result = await createIndexer().pruneBranchCatalogs({ keys: ["edges-only", "gone"], apply: true });
+
+    expect(result.applied).toBe(false);
+    expect(result.refused).toEqual([{ key: "gone", reason: "checked out while pruning" }]);
+    expect(catalogRows("edges-only")).toBe(1);
+    vi.restoreAllMocks();
+    const retry = await createIndexer().pruneBranchCatalogs({ apply: true });
+    expect(retry.catalogs.map((catalog) => catalog.key)).toEqual(["edges-only", "pr/42"]);
+    expect(catalogRows("edges-only")).toBe(0);
+    expect(count(`SELECT COUNT(*) AS n FROM metadata WHERE key LIKE '%.${hashContent("edges-only").slice(0, 24)}'`)).toBe(0);
+  });
+
+  it("keeps an older store's overlay-only catalog for a retry when the run stops before its commit", async () => {
+    seedOverlayOnlyCatalogInMarker3Store("edges-only");
+    const commit = vi.spyOn(Database.prototype, "commitWriteTransaction").mockImplementationOnce(() => {
+      throw new Error("interrupted");
+    });
+
+    await expect(createIndexer().pruneBranchCatalogs({ keys: ["edges-only"], apply: true })).rejects.toThrow("interrupted");
+    expect(catalogRows("edges-only")).toBe(1);
+    commit.mockRestore();
+
+    const retry = await createIndexer().pruneBranchCatalogs({ apply: true });
+    expect(retry.catalogs.map((catalog) => catalog.key)).toEqual(["edges-only", "gone", "pr/42"]);
+    expect(catalogRows("edges-only")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM branch_call_edges_pending_gc")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM metadata WHERE key = 'branch_call_edges_sweep_pending'")).toBe(0);
+  });
+
   it("leaves the catalog for a retry when the run stops after removing sidecars", async () => {
     seedStore();
     const commit = vi.spyOn(Database.prototype, "commitWriteTransaction").mockImplementationOnce(() => {

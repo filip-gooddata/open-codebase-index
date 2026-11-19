@@ -40,6 +40,9 @@ const SQL_BIND_PARAM_BATCH_SIZE: usize = 900;
 /// queue the overlay rows a `call_edges` or `branch_symbols` delete may orphan.
 const BRANCH_CALL_EDGES_MARKER_KEY: &str = "branch_call_edges_version";
 const BRANCH_CALL_EDGES_MARKER_VERSION: &str = "4";
+/// Metadata key set when the queue is installed: rows that earlier writers
+/// orphaned were never queued, so the next drain sweeps every branch once.
+pub(crate) const BRANCH_CALL_EDGES_SWEEP_PENDING_KEY: &str = "branch_call_edges_sweep_pending";
 
 pub(crate) fn run_batch_with_write_transaction<T, F>(
     conn: &mut Connection,
@@ -301,10 +304,23 @@ fn ensure_branch_call_edges(conn: &Connection) -> DbResult<()> {
             END;
             "#,
         )?;
-        if creates_queue {
-            // Rows that earlier writers orphaned were never queued; the one
-            // all-branch sweep at install removes them, as refresh used to.
-            gc_unreachable_branch_call_edges(conn, None)?;
+        let has_overlay_rows = || -> DbResult<bool> {
+            Ok(conn
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM branch_call_edges) OR EXISTS (SELECT 1 FROM branch_call_edges_stale)",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )?)
+        };
+        if creates_queue && has_overlay_rows()? {
+            // Rows that earlier writers orphaned were never queued. The first
+            // drain sweeps every branch once, as refresh used to, so opening
+            // the store deletes nothing: a prune plans and checks liveness
+            // before its own drain runs.
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, '1')",
+                params![BRANCH_CALL_EDGES_SWEEP_PENDING_KEY],
+            )?;
         }
         conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
@@ -4829,7 +4845,7 @@ mod tests {
     }
 
     #[test]
-    fn installing_the_queue_sweeps_rows_a_0_34_writer_orphaned_before_it() {
+    fn installing_the_queue_leaves_its_sweep_of_rows_orphaned_before_it_to_the_first_drain() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("marker3-legacy.db");
         {
@@ -4853,7 +4869,14 @@ mod tests {
                 .as_deref(),
             Some("4")
         );
+        let unswept = overlay_rows(&conn);
+        assert_eq!(
+            get_metadata(&conn, BRANCH_CALL_EDGES_SWEEP_PENDING_KEY).unwrap().as_deref(),
+            Some("1")
+        );
         refresh_main_gcs(&conn);
+        assert_eq!(get_metadata(&conn, BRANCH_CALL_EDGES_SWEEP_PENDING_KEY).unwrap(), None);
+        assert_ne!(overlay_rows(&conn), unswept);
         legacy_join(&conn, "a", "caller");
         assert_eq!(
             callee_target(&conn, "caller", "a").as_deref(),

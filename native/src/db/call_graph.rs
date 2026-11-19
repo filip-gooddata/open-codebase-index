@@ -1,6 +1,6 @@
 use super::{
     has_branch_call_edges, has_branch_call_edges_pending_gc, has_branch_call_edges_stale, DbResult,
-    SQL_BIND_PARAM_BATCH_SIZE,
+    BRANCH_CALL_EDGES_SWEEP_PENDING_KEY, SQL_BIND_PARAM_BATCH_SIZE,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use xxhash_rust::xxh3::Xxh3;
@@ -726,6 +726,12 @@ fn delete_unreachable_branch_call_edges(
             params,
         )?;
     }
+    if branch.is_none() {
+        conn.execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            params![BRANCH_CALL_EDGES_SWEEP_PENDING_KEY],
+        )?;
+    }
     if branch.is_none() && has_branch_call_edges_pending_gc(conn)? {
         // No unreachable row is left for the queue to name.
         conn.execute("DELETE FROM branch_call_edges_pending_gc", [])?;
@@ -736,9 +742,9 @@ fn delete_unreachable_branch_call_edges(
 /// Delete edge targets and stale marks whose edge is gone or whose caller is no
 /// longer a member of their branch: in `branch` only, or in every branch for
 /// `None`. The seed fallback runs it for the branch it emptied. The all-branch
-/// pass reads every overlay row, so it runs once when the queue is installed
-/// and otherwise belongs to maintenance GC, where it repairs rows that no
-/// queue recorded.
+/// pass reads every overlay row, so it runs once, at the first drain after the
+/// queue is installed, and otherwise belongs to maintenance GC, where it
+/// repairs rows that no queue recorded.
 pub fn gc_unreachable_branch_call_edges(
     conn: &Connection,
     branch: Option<&str>,
@@ -757,6 +763,18 @@ pub fn gc_unreachable_branch_call_edges(
 pub fn gc_pending_branch_call_edges(conn: &Connection) -> DbResult<usize> {
     if !has_branch_call_edges(conn)? || !has_branch_call_edges_pending_gc(conn)? {
         return Ok(0);
+    }
+    let sweep_pending = conn
+        .query_row(
+            "SELECT 1 FROM metadata WHERE key = ?1",
+            params![BRANCH_CALL_EDGES_SWEEP_PENDING_KEY],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if sweep_pending {
+        // The install's one all-branch sweep also covers every queued row.
+        return delete_unreachable_branch_call_edges(conn, None);
     }
     let count = conn.execute(
         &unreachable_branch_call_edges_sql("branch_call_edges", UnreachableScope::Pending),

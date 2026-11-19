@@ -3,8 +3,10 @@ import * as os from "os";
 import * as path from "path";
 
 import { getDefaultModelForProvider } from "../config/index.js";
+import { loadMergedConfig } from "../config/merger.js";
 import { getGlobalIndexPath, resolveProjectConfigPath, resolveProjectIndexPath } from "../config/paths.js";
 import { rebasePathEntries, resolveInheritedKnowledgeBaseEntries } from "../config/rebase.js";
+import { resolveMatchedRepositoryRoute } from "../config/repository-route.js";
 import { parseConfig, type SearchConfig as ConfigSearchConfig } from "../config/schema.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -173,9 +175,38 @@ export function ensureLocalEvalProjectConfig(projectRoot: string, configPath?: s
   return localConfigPath;
 }
 
+/**
+ * True when the repository config routes this checkout to a shared store. Such
+ * a checkout reads its settings through the repository merge and never gets a
+ * local eval config copy.
+ */
+export function isRoutedEvalCheckout(projectRoot: string): boolean {
+  return resolveMatchedRepositoryRoute(projectRoot, "opencode") !== null;
+}
+
+/**
+ * An explicit config path replaces all settings. Without one, a routed checkout
+ * uses the repository merge (global < repository config < project config).
+ */
 export function loadParsedConfig(projectRoot: string, configPath?: string): ReturnType<typeof parseConfig> {
-  const raw = loadRawConfig(projectRoot, configPath);
+  const raw = configPath === undefined && isRoutedEvalCheckout(projectRoot)
+    ? loadMergedConfig(projectRoot, "opencode")
+    : loadRawConfig(projectRoot, configPath);
   return parseConfig(raw);
+}
+
+/**
+ * Project-scope eval reindex clears the index root before indexing. A routed
+ * checkout's project index is the shared repository store, so refuse it there.
+ */
+export function assertEvalReindexAllowed(projectRoot: string, scope: "project" | "global"): void {
+  if (scope !== "project") return;
+  const route = resolveMatchedRepositoryRoute(projectRoot, "opencode");
+  if (!route) return;
+  throw new Error(
+    `Refusing evaluation --reindex: this ${route.role ?? "unassigned"} checkout uses the shared repository store at ${route.indexPath ?? "(unresolved)"} (repository config ${route.configPath ?? "(unknown)"}). ` +
+    "Reindexing would clear the store every checkout of this repository shares. Run the evaluation without --reindex, or rebuild the shared store from the primary checkout.",
+  );
 }
 
 export function resolveSearchConfig(

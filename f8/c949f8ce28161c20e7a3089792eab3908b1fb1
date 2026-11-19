@@ -1,0 +1,19 @@
+native/src/db/branch_prune.rs
+  s_5d7b2b1ea73db5::t_5372690ba38648 137-146,151-152,196-232,318-319,357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8c949f8ce28161c20e7a3089792eab3908b1fb1",
+  "prompts": {},
+  "sessions": {
+    "s_5d7b2b1ea73db5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51571f8d-b526-4eb9-a9f7-e00e38de8201",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

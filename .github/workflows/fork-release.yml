@@ -10,6 +10,7 @@ on:
   push:
     tags:
       - 'v*-gd.*'
+    branches: [subagent/gd5-linux-ci]  # TEMP dry-run trigger; reverted before review
   workflow_dispatch:
 
 permissions:

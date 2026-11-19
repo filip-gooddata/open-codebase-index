@@ -1,0 +1,29 @@
+src/adapters/shared/extension-core.ts
+  s_aea2b54f38493a::t_be482aa73a49e0 17,381-382
+src/config/layer-shape.ts
+  s_aea2b54f38493a::t_81b82aed692495 1-43
+src/config/merger.ts
+  s_aea2b54f38493a::t_a1b51dfcb78be5 6
+src/config/repository-route.ts
+  s_aea2b54f38493a::t_9adf0ccea7d02d 1,6,108-127,129-133,136-146,151,153,160,282,292-298,301,303-309,314,318-321,327,330,335-337
+src/tools/execute-common.ts
+  s_aea2b54f38493a::t_0065d29bf2751e 30-31,94-98,104,107-114
+tests/repository-route-status.test.ts
+  s_aea2b54f38493a::t_deeee1390531f1 1-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d5c501cb531098d3fa9bfcc95880b07354c37dac",
+  "prompts": {},
+  "sessions": {
+    "s_aea2b54f38493a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eea96bf5-10e4-4e23-b82c-4820105d7d7a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

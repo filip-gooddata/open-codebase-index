@@ -4,26 +4,28 @@ import * as path from "path";
 
 import type { HostMode } from "./host.js";
 import { resolveRepositoryLayout, type RepositoryLayout } from "../git/layout.js";
-import { getHostProjectIndexRelativePath, resolveGlobalConfigPath } from "./paths.js";
+import { getHostProjectIndexRelativePath } from "./paths.js";
 
 export type CheckoutRole = "primary" | "secondary";
-export type RepositoryStoreSource = "repository map" | "repository default";
+export type RepositoryStoreSource = "repository config" | "repository default store";
+
+export const REPOSITORY_CONFIG_DIRNAME = "codebase-index";
+export const REPOSITORY_CONFIG_FILENAME = "config.json";
 
 /**
- * The per-repository route of one checkout: which `repositories` entry of the
- * host global config matches it, where its store lives, and which role the
+ * The per-repository route of one checkout: whether the repository has a
+ * config file in its git common dir, where its store lives, and which role the
  * checkout plays. Resolved once per process per (checkout, host).
  */
 export interface RepositoryRoute {
   checkoutRoot: string;
   host: HostMode;
-  globalConfigPath: string;
   layout: RepositoryLayout | null;
-  /** Matching entry key as written in the global config, or null. */
-  entryKey: string | null;
-  /** Matching entry as read at resolution time, or null. */
-  entry: Record<string, unknown> | null;
-  /** Shared store path when an entry matches. */
+  /** `<common dir>/codebase-index/config.json`, or null outside a checkout. */
+  configPath: string | null;
+  /** Parsed repository config as read at resolution time, or null when absent. */
+  config: Record<string, unknown> | null;
+  /** Shared store path when the repository config exists. */
   indexPath: string | null;
   storeSource: RepositoryStoreSource | null;
   role: CheckoutRole | null;
@@ -33,7 +35,6 @@ export interface RepositoryRoute {
 }
 
 const routeCache = new Map<string, RepositoryRoute>();
-const emittedWarnings = new Set<string>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -61,24 +62,19 @@ export function resolveRepositoryEntryPath(value: string, commonDir: string): st
   return path.isAbsolute(expanded) ? path.normalize(expanded) : path.resolve(commonDir, expanded);
 }
 
-function warnOnce(message: string): void {
-  if (emittedWarnings.has(message)) return;
-  emittedWarnings.add(message);
-  console.warn(`[codebase-index] ${message}`);
+/** Path of the repository config file for a git common dir. */
+export function getRepositoryConfigPath(commonDir: string): string {
+  return path.join(commonDir, REPOSITORY_CONFIG_DIRNAME, REPOSITORY_CONFIG_FILENAME);
 }
 
-function describeEntry(globalConfigPath: string, key: string): string {
-  return `Config file ${globalConfigPath} repositories entry '${key}'`;
-}
-
-/** Returns the first shape error of an entry's routing fields, or null. */
-function getEntryShapeError(globalConfigPath: string, key: string, entry: unknown): string | null {
-  const label = describeEntry(globalConfigPath, key);
-  if (!isRecord(entry)) {
-    return `${label} must be an object.`;
+/** Returns the first shape error of the routing fields, or null. */
+function getRoutingShapeError(configPath: string, config: unknown): string | null {
+  const label = `Repository config ${configPath}`;
+  if (!isRecord(config)) {
+    return `${label} must contain a JSON object at the root.`;
   }
 
-  const storage = entry.storage;
+  const storage = config.storage;
   if (storage !== undefined) {
     if (!isRecord(storage)) return `${label} field 'storage' must be an object.`;
     if (storage.indexPath !== undefined && (typeof storage.indexPath !== "string" || storage.indexPath.trim() === "")) {
@@ -86,7 +82,7 @@ function getEntryShapeError(globalConfigPath: string, key: string, entry: unknow
     }
   }
 
-  const checkouts = entry.checkouts;
+  const checkouts = config.checkouts;
   if (checkouts !== undefined) {
     if (!isRecord(checkouts)) return `${label} field 'checkouts' must be an object.`;
     for (const role of ["primary", "secondary"] as const) {
@@ -108,83 +104,29 @@ function getEntryShapeError(globalConfigPath: string, key: string, entry: unknow
   return null;
 }
 
-interface GlobalRepositoryMap {
-  globalConfigPath: string;
-  repositories: Record<string, unknown> | null;
-  warning: string | null;
-}
-
-function readGlobalRepositoryMap(host: HostMode): GlobalRepositoryMap {
-  const globalConfigPath = resolveGlobalConfigPath(host);
-  if (!existsSync(globalConfigPath)) {
-    return { globalConfigPath, repositories: null, warning: null };
+/**
+ * Reads the repository config file. Returns null when it does not exist and
+ * throws a config error naming the file when it cannot be read or parsed or
+ * its routing fields are invalid (fail closed: never fall back to a local store).
+ */
+function readRepositoryConfig(configPath: string): Record<string, unknown> | null {
+  if (!existsSync(configPath)) {
+    return null;
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(globalConfigPath, "utf-8"));
+    parsed = JSON.parse(readFileSync(configPath, "utf-8"));
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return {
-      globalConfigPath,
-      repositories: null,
-      warning: `Global config ${globalConfigPath} could not be read (${message}); the repositories map is ignored and legacy store routing is in use.`,
-    };
+    throw new Error(`Failed to load repository config ${configPath}: ${message}`, { cause: error });
   }
 
-  if (!isRecord(parsed) || parsed.repositories === undefined) {
-    return { globalConfigPath, repositories: null, warning: null };
-  }
-  if (!isRecord(parsed.repositories)) {
-    return {
-      globalConfigPath,
-      repositories: null,
-      warning: `Config file ${globalConfigPath} field 'repositories' must be an object; it is ignored.`,
-    };
-  }
-  return { globalConfigPath, repositories: parsed.repositories, warning: null };
-}
-
-interface EntryMatch {
-  key: string;
-  entry: Record<string, unknown>;
-  warnings: string[];
-}
-
-function findMatchingEntry(
-  map: GlobalRepositoryMap,
-  layout: RepositoryLayout,
-): EntryMatch | null {
-  if (!map.repositories) return null;
-
-  const matches: Array<[string, unknown]> = [];
-  const warnings: string[] = [];
-  for (const [key, entry] of Object.entries(map.repositories)) {
-    const matchesLayout = key.trim() !== ""
-      && canonicalize(resolveRepositoryEntryPath(key, process.cwd())) === layout.commonDir;
-    if (matchesLayout) {
-      matches.push([key, entry]);
-      continue;
-    }
-    const shapeError = getEntryShapeError(map.globalConfigPath, key, entry);
-    if (shapeError) {
-      warnings.push(`${shapeError} The entry does not match this repository and is ignored.`);
-    }
-  }
-
-  if (matches.length === 0) return null;
-
-  const [key, entry] = matches[0];
-  const shapeError = getEntryShapeError(map.globalConfigPath, key, entry);
+  const shapeError = getRoutingShapeError(configPath, parsed);
   if (shapeError) {
     throw new Error(shapeError);
   }
-  if (matches.length > 1) {
-    warnings.push(
-      `Repositories keys ${matches.map(([duplicate]) => `'${duplicate}'`).join(", ")} all match ${layout.commonDir}; using '${key}'.`,
-    );
-  }
-  return { key, entry: entry as Record<string, unknown>, warnings };
+  return parsed as Record<string, unknown>;
 }
 
 interface RoleDecision {
@@ -194,8 +136,8 @@ interface RoleDecision {
   warning: string | null;
 }
 
-function decideRole(layout: RepositoryLayout, entry: Record<string, unknown>): RoleDecision {
-  const checkouts = isRecord(entry.checkouts) ? entry.checkouts : {};
+function decideRole(layout: RepositoryLayout, config: Record<string, unknown>): RoleDecision {
+  const checkouts = isRecord(config.checkouts) ? config.checkouts : {};
   const primary = isRecord(checkouts.primary) ? checkouts.primary : {};
 
   if (typeof primary.path === "string") {
@@ -226,42 +168,38 @@ function decideRole(layout: RepositoryLayout, entry: Record<string, unknown>): R
 }
 
 function buildRoute(projectRoot: string, host: HostMode): RepositoryRoute {
-  const map = readGlobalRepositoryMap(host);
   const layout = resolveRepositoryLayout(projectRoot);
+  const configPath = layout ? getRepositoryConfigPath(layout.commonDir) : null;
   const route: RepositoryRoute = {
     checkoutRoot: layout?.checkoutRoot ?? canonicalize(projectRoot),
     host,
-    globalConfigPath: map.globalConfigPath,
     layout,
-    entryKey: null,
-    entry: null,
+    configPath,
+    config: null,
     indexPath: null,
     storeSource: null,
     role: null,
     roleReason: null,
     primaryPath: null,
-    warnings: map.warning ? [map.warning] : [],
+    warnings: [],
   };
 
-  if (!layout) return route;
+  if (!layout || !configPath) return route;
 
-  const match = findMatchingEntry(map, layout);
-  if (!match) return route;
+  const config = readRepositoryConfig(configPath);
+  if (!config) return route;
 
-  route.entryKey = match.key;
-  route.entry = match.entry;
-  route.warnings.push(...match.warnings);
-
-  const storage = isRecord(match.entry.storage) ? match.entry.storage : {};
+  route.config = config;
+  const storage = isRecord(config.storage) ? config.storage : {};
   if (typeof storage.indexPath === "string") {
     route.indexPath = resolveRepositoryEntryPath(storage.indexPath, layout.commonDir);
-    route.storeSource = "repository map";
+    route.storeSource = "repository config";
   } else {
-    route.indexPath = path.join(layout.commonDir, "codebase-index", "index");
-    route.storeSource = "repository default";
+    route.indexPath = path.join(layout.commonDir, REPOSITORY_CONFIG_DIRNAME, "index");
+    route.storeSource = "repository default store";
   }
 
-  const decision = decideRole(layout, match.entry);
+  const decision = decideRole(layout, config);
   route.role = decision.role;
   route.roleReason = decision.reason;
   route.primaryPath = decision.primaryPath;
@@ -279,9 +217,9 @@ function buildRoute(projectRoot: string, host: HostMode): RepositoryRoute {
 
 /**
  * Resolves the repository route for a checkout. The first resolution in a
- * process is kept: later edits to the global config do not re-route a running
- * process (status reports the drift instead). A matching but invalid entry
- * throws a config error and is not cached.
+ * process is kept: later edits to the repository config do not re-route a
+ * running process (status reports the change instead). An invalid repository
+ * config throws a config error and is not cached.
  */
 export function resolveRepositoryRoute(projectRoot: string, host: HostMode): RepositoryRoute {
   const cacheKey = `${canonicalize(projectRoot)}\0${host}`;
@@ -289,38 +227,36 @@ export function resolveRepositoryRoute(projectRoot: string, host: HostMode): Rep
   if (cached) return cached;
 
   const route = buildRoute(projectRoot, host);
-  for (const warning of route.warnings) warnOnce(warning);
   routeCache.set(cacheKey, route);
   return route;
 }
 
-/** Returns the matched route, or null when no repositories entry matches. */
+/** Returns the route when the repository config exists, else null. */
 export function resolveMatchedRepositoryRoute(projectRoot: string, host: HostMode): RepositoryRoute | null {
   const route = resolveRepositoryRoute(projectRoot, host);
-  return route.entryKey === null ? null : route;
+  return route.config === null ? null : route;
 }
 
-/** Test-only: forget every resolved route so a test can change the global config. */
+/** Test-only: forget every resolved route so a test can change repository configs. */
 export function resetRepositoryRoutesForTests(): void {
   routeCache.clear();
-  emittedWarnings.clear();
 }
 
 function describeRouteDrift(route: RepositoryRoute): string | null {
-  if (!route.layout) return null;
-  let current: EntryMatch | null;
+  if (!route.configPath) return null;
+  let current: Record<string, unknown> | null;
   try {
-    current = findMatchingEntry(readGlobalRepositoryMap(route.host), route.layout);
+    current = readRepositoryConfig(route.configPath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return `Global config changed since start: ${message}`;
+    return `Repository config changed since start: ${message}`;
   }
 
-  const before = route.entryKey === null ? null : JSON.stringify([route.entryKey, route.entry]);
-  const after = current === null ? null : JSON.stringify([current.key, current.entry]);
+  const before = route.config === null ? null : JSON.stringify(route.config);
+  const after = current === null ? null : JSON.stringify(current);
   return before === after
     ? null
-    : "Global config changed since start: the repositories entry for this checkout differs; restart to apply it.";
+    : `Repository config ${route.configPath} changed since start; restart to apply it.`;
 }
 
 /**
@@ -337,8 +273,11 @@ export function formatRepositoryRouteStatus(projectRoot: string, host: HostMode,
   }
 
   const lines: string[] = [];
-  if (route.entryKey !== null) {
-    lines.push(`Store: ${indexPath} (${route.storeSource} '${route.entryKey}')`);
+  if (route.config !== null) {
+    const source = route.storeSource === "repository config"
+      ? `repository config ${route.configPath ?? ""}`
+      : "repository default store";
+    lines.push(`Store: ${indexPath} (${source})`);
     lines.push(`Checkout role: ${route.role} - ${route.roleReason}`);
   } else {
     lines.push(`Store: ${indexPath} (host default)`);

@@ -1630,7 +1630,7 @@ export class Indexer {
   }
 
   private canRecoverInterruptedProjectIndex(): boolean {
-    // Every checkout of a repositories entry shares one store, and recovery
+    // Every checkout of a configured repository shares one store, and recovery
     // runs under the store's writer lease, so a secondary may recover it.
     return resolveMatchedRepositoryRoute(this.projectRoot, this.host) !== null
       || this.isProjectOwnedIndexPath();

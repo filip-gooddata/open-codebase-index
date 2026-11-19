@@ -67,7 +67,7 @@ export function getProjectConfigCandidatePaths(
     candidates.push(path.join(projectRoot, OPENCODE_PROJECT_CONFIG_RELATIVE_PATH));
   }
 
-  // A repositories entry replaces config inheritance between checkouts.
+  // A repository config replaces config inheritance between checkouts.
   if (resolveMatchedRepositoryRoute(projectRoot, host)) {
     return candidates;
   }
@@ -88,7 +88,7 @@ export function isProjectIndexPathOwnedByProject(
   indexPath: string,
   host: HostMode,
 ): boolean {
-  // With a repositories entry only the primary checkout owns the shared store,
+  // With a repository config only the primary checkout owns the shared store,
   // decided before any path comparison.
   const route = resolveMatchedRepositoryRoute(projectRoot, host);
   if (route) {

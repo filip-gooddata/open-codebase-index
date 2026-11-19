@@ -262,7 +262,7 @@ function applyRepositoryLayer(merged: Record<string, unknown>, layer: Record<str
 }
 
 function getRoleOverrideLayer(route: RepositoryRoute): Record<string, unknown> {
-  const checkouts = route.entry && isRecord(route.entry.checkouts) ? route.entry.checkouts : {};
+  const checkouts = route.config && isRecord(route.config.checkouts) ? route.config.checkouts : {};
   const roleConfig = route.role ? checkouts[route.role] : undefined;
   if (!isRecord(roleConfig)) {
     return {};
@@ -278,32 +278,27 @@ function getRoleOverrideLayer(route: RepositoryRoute): Record<string, unknown> {
 }
 
 /**
- * Merge for a checkout matched by a repositories entry:
- * global (minus repositories) < entry (minus storage/checkouts) < role
- * overrides < the checkout's own project config. Recursive sections merge key
- * by key; knowledgeBases and additionalInclude are unions.
+ * Merge for a checkout whose repository has a repository config:
+ * global < repository config (minus storage/checkouts) < role overrides < the
+ * checkout's own project config. Recursive sections merge key by key;
+ * knowledgeBases and additionalInclude are unions.
  */
 function loadRepositoryMergedConfig(projectRoot: string, host: HostMode, route: RepositoryRoute): Record<string, unknown> {
-  const globalConfig = loadJsonFile(route.globalConfigPath) as Record<string, unknown> | null;
-  const globalLayer: Record<string, unknown> = { ...(globalConfig ?? {}) };
-  delete globalLayer.repositories;
+  const globalLayer = (loadJsonFile(resolveGlobalConfigPath(host)) as Record<string, unknown> | null) ?? {};
 
-  const entryLayer: Record<string, unknown> = {
-    ...validateConfigLayerShape(
-      route.entry ?? {},
-      `${route.globalConfigPath} repositories entry '${route.entryKey ?? ""}'`,
-    ),
+  const repositoryLayer: Record<string, unknown> = {
+    ...validateConfigLayerShape(route.config ?? {}, route.configPath ?? ""),
   };
-  delete entryLayer.storage;
-  delete entryLayer.checkouts;
-  if (Array.isArray(entryLayer.knowledgeBases)) {
-    entryLayer.knowledgeBases = (entryLayer.knowledgeBases as string[]).map((entry) =>
+  delete repositoryLayer.storage;
+  delete repositoryLayer.checkouts;
+  if (Array.isArray(repositoryLayer.knowledgeBases)) {
+    repositoryLayer.knowledgeBases = (repositoryLayer.knowledgeBases as string[]).map((entry) =>
       path.isAbsolute(entry) || entry.startsWith("~") ? entry : path.resolve(projectRoot, entry),
     );
   }
 
   const projectLayer = loadProjectConfigLayer(projectRoot, host);
-  const layers = [globalLayer, entryLayer, getRoleOverrideLayer(route), projectLayer];
+  const layers = [globalLayer, repositoryLayer, getRoleOverrideLayer(route), projectLayer];
 
   const merged: Record<string, unknown> = {};
   for (const layer of layers) {

@@ -21,21 +21,18 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NATIVE_PLATFORMS: linux-x64-gnu,linux-arm64-gnu,darwin-arm64
+  NATIVE_PLATFORMS: linux-x64-gnu,darwin-arm64
 
 jobs:
   build-native:
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
-          # Linux binaries build on 22.04 so they load on glibc 2.35 and newer.
+          # The Linux binary builds on 22.04 so it loads on glibc 2.35 and newer.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             platform: linux-x64-gnu
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04-arm
-            platform: linux-arm64-gnu
           - target: aarch64-apple-darwin
             os: macos-latest
             platform: darwin-arm64
@@ -50,15 +47,25 @@ jobs:
           cache: 'npm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: native -> target
           key: ${{ matrix.target }}
+
+      # usearch's SIMD kernels use AVX-512 FP16 intrinsics that 22.04's
+      # default GCC 11 lacks.
+      - name: Use GCC 12 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-12 g++-12
+          echo "CC=gcc-12" >> "${GITHUB_ENV}"
+          echo "CXX=g++-12" >> "${GITHUB_ENV}"
 
       - name: Install dependencies
         run: npm ci
@@ -159,7 +166,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        # 22.04 is the oldest glibc the Linux binary targets.
+        os: [ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,7 +203,22 @@ jobs:
           name: fork-release
           path: release
 
-      - name: Create or update the GitHub release
+      - name: Verify release files and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum -c SHA256SUMS)
+          tag_commit="$(gh api "repos/${GH_REPO}/commits/${GITHUB_REF_NAME}" --jq .sha)"
+          if [ "${tag_commit}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} now points at ${tag_commit}, but this run built ${GITHUB_SHA}"
+            exit 1
+          fi
+
+      # An existing release is never modified: a rerun passes only when the
+      # published assets are byte-identical to this build's.
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -203,10 +226,21 @@ jobs:
           set -euo pipefail
           mv release/RELEASE_NOTES.md notes.md
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} exists; replacing its assets"
-            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+            echo "Release ${GITHUB_REF_NAME} already exists; comparing its assets with this build"
+            mkdir published
+            gh release download "${GITHUB_REF_NAME}" --dir published
+            if ! diff <(cd release && ls | sort) <(cd published && ls | sort); then
+              echo "::error::Existing release assets differ from this build's file set; fix the release by hand"
+              exit 1
+            fi
+            (cd published && sha256sum -c ../release/SHA256SUMS) || {
+              echo "::error::Existing release assets differ from this build's bytes; fix the release by hand"
+              exit 1
+            }
+            echo "::warning::Release ${GITHUB_REF_NAME} already existed with identical assets; left unchanged"
           else
             gh release create "${GITHUB_REF_NAME}" release/* \
               --verify-tag --title "${GITHUB_REF_NAME}" --notes-file notes.md
           fi
-          gh release view "${GITHUB_REF_NAME}" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'
+          gh release view "${GITHUB_REF_NAME}" --json url,isDraft,assets \
+            --jq '.url, "draft=\(.isDraft)", (.assets[] | "\(.name) \(.size)")'

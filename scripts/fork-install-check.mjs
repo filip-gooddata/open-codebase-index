@@ -2,8 +2,8 @@
 // Installs a packed tarball into a fresh temporary project, imports the package
 // through both module systems, and calls a native function from the bundled
 // binary for the current platform. Usage: node scripts/fork-install-check.mjs <tarball>
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -66,6 +66,27 @@ try {
     throw new Error(`hashContent returned unexpected values: ${JSON.stringify([first, second, other])}`);
   }
   console.log(`Loaded ${path.basename(binaryPath)}; hashContent -> ${first}`);
+
+  // Exercise the package's own loader: a dry-run index parses and chunks a
+  // fixture through native code and fails or reports no chunks if the loader
+  // fell back to its stub.
+  const fixtureRoot = path.join(projectRoot, "fixture");
+  mkdirSync(fixtureRoot);
+  execFileSync("git", ["init", "-q"], { cwd: fixtureRoot });
+  writeFileSync(path.join(fixtureRoot, "math.ts"),
+    "export function add(a: number, b: number): number {\n  return a + b;\n}\n");
+  const cli = path.join(packageRoot, installedManifest.bin.ocbi);
+  const indexRun = spawnSync(process.execPath, [cli, "index", "--dry-run", "--project", fixtureRoot], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(projectRoot, "home"), USERPROFILE: path.join(projectRoot, "home") },
+  });
+  const indexOutput = `${indexRun.stdout}${indexRun.stderr}`;
+  const chunks = /Chunks to embed:\s+(\d+)/.exec(indexOutput);
+  if (indexRun.status !== 0 || !chunks || Number(chunks[1]) < 1 || indexOutput.includes("Failed to load native module")) {
+    throw new Error(`ocbi index --dry-run failed (exit ${indexRun.status}):\n${indexOutput}`);
+  }
+  console.log(`ocbi index --dry-run via the package loader: ${chunks[1]} chunk(s) to embed`);
 } finally {
   rmSync(projectRoot, { recursive: true, force: true });
 }

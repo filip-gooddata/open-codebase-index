@@ -82,6 +82,9 @@ try {
   writeFileSync(configPath, `${JSON.stringify({
     embeddingProvider: "custom",
     customProvider: { baseUrl: "http://127.0.0.1:9/v1", model: "install-check", dimensions: 8 },
+    // One-line fallback blocks make line-based chunking yield three chunks for
+    // the fixture, so only a semantic parse of `add` yields exactly one.
+    indexing: { linesPerChunk: 1 },
   })}\n`);
   const cli = path.join(packageRoot, installedManifest.bin.ocbi);
   const indexArgs = [cli, "index", "--dry-run", "--project", fixtureRoot, "--config", configPath];
@@ -92,10 +95,10 @@ try {
   });
   const indexOutput = `${indexRun.stdout}${indexRun.stderr}`;
   const chunks = /Chunks to embed:\s+(\d+)/.exec(indexOutput);
-  if (indexRun.status !== 0 || !chunks || Number(chunks[1]) < 1 || indexOutput.includes("Failed to load native module")) {
+  if (indexRun.status !== 0 || !chunks || Number(chunks[1]) !== 1 || indexOutput.includes("Failed to load native module")) {
     throw new Error(`ocbi index --dry-run failed (exit ${indexRun.status}):\n${indexOutput}`);
   }
-  console.log(`ocbi index --dry-run via the package loader: ${chunks[1]} chunk(s) to embed`);
+  console.log("ocbi index --dry-run via the package loader: 1 semantic chunk to embed");
 } finally {
   rmSync(projectRoot, { recursive: true, force: true });
 }

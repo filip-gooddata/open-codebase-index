@@ -37,7 +37,11 @@ describe("manual unlock against a concurrently replaced lock", () => {
     indexPath = path.join(tempDir, "index");
     lockPath = path.join(indexPath, "indexing.lock");
     actualFs.mkdirSync(indexPath, { recursive: true });
-    setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host" });
+    setLockHostIdentitySourcesForTesting({
+      platform: "linux",
+      hostname: () => "current-host",
+      readFile: (filePath) => filePath === "/proc/self/mounts" ? "/dev/sda1 / ext4 rw 0 0\n" : null,
+    });
   });
 
   afterEach(() => {

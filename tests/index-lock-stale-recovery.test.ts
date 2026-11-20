@@ -79,11 +79,13 @@ describe("lock host identity", () => {
     expect(resolveLocalMachineId(sources({ platform: "darwin" }))).toBeNull();
   });
 
-  it("returns no machine id and only the OS hostname on Windows without running commands", () => {
-    const run = (): string => {
-      throw new Error("no commands on Windows");
-    };
-    expect(resolveLocalMachineId(sources({ platform: "win32", run }))).toBeNull();
+  it("reads the Windows MachineGuid and tolerates a failing lookup", () => {
+    const guid = "5b9e2c1a-3d4f-4e6a-8b7c-9d0e1f2a3b4c";
+    const run = (file: string): string | null => file.endsWith("\\System32\\reg.exe")
+      ? `\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    ${guid}\r\n`
+      : null;
+    expect(resolveLocalMachineId(sources({ platform: "win32", run }))).toMatch(/^[0-9a-f]{32}$/);
+    expect(resolveLocalMachineId(sources({ platform: "win32" }))).toBeNull();
     expect(resolveLocalHostNames(sources({ platform: "win32", run }))).toEqual(["current-host"]);
   });
 
@@ -236,8 +238,18 @@ describe("stale index lock recovery", () => {
     expectBusy();
   });
 
-  it("falls back to the hostname for an old-format lock on a machine without an id", () => {
-    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+  it("keeps an exact-hostname old-format lock unverified when storage locality is unknown", () => {
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host", run: () => null });
+    writeOwner({ pid: exitedPid(), hostname: "current-host" });
+    expectBusy();
+  });
+
+  it("recovers an exact-hostname old-format lock on local storage without a machine id", () => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "linux",
+      hostname: () => "current-host",
+      readFile: (filePath) => filePath === "/proc/self/mounts" ? "/dev/sda1 / ext4 rw 0 0\n" : null,
+    });
     expectRecovered(writeOwner({ pid: exitedPid(), hostname: "current-host" }));
   });
 });
@@ -283,7 +295,11 @@ describe("manual index unlock", () => {
     indexPath = path.join(tempDir, "index");
     lockPath = path.join(indexPath, "indexing.lock");
     fs.mkdirSync(indexPath, { recursive: true });
-    setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host" });
+    setLockHostIdentitySourcesForTesting({
+      platform: "linux",
+      hostname: () => "current-host",
+      readFile: (filePath) => filePath === "/proc/self/mounts" ? "/dev/sda1 / ext4 rw 0 0\n" : null,
+    });
   });
 
   afterEach(() => {
@@ -408,6 +424,33 @@ describe("manual index unlock", () => {
 
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
     expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("vetoes a forced clear of a hostname-only owner under a forgotten name whose PID runs here", () => {
+    writeOwner({ pid: process.pid, hostname: "forgotten-name" });
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("clears a lock under several claims left by interrupted unlocks", () => {
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+    let claimDirectory = lockPath;
+    for (let level = 0; level < 4; level += 1) {
+      claimDirectory = path.join(claimDirectory, "reclaiming");
+      fs.mkdirSync(claimDirectory);
+      fs.writeFileSync(path.join(claimDirectory, "owner.json"), JSON.stringify({
+        pid: exitedPid(),
+        hostname: "current-host",
+        startedAt: oldStart(),
+        token: `${level}${level}${level}${level}${level}${level}${level}${level}-0000-4000-8000-000000000000`,
+        expectedOwnerToken: "99999999-9999-4999-8999-999999999999",
+      }));
+    }
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
+    expect(fs.existsSync(lockPath)).toBe(false);
   });
 
   it("leaves a stale claim alone while another unlock is taking it over", () => {

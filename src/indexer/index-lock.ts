@@ -13,7 +13,7 @@ import {
 import * as os from "os";
 import * as path from "path";
 
-import { getLocalMachineId, isLocalLockOwner, lockOwnerNamesThisHost } from "./lock-host-identity.js";
+import { getLocalMachineId, isLocalLockOwner } from "./lock-host-identity.js";
 
 export type IndexMutationOperation =
   | "initialize"
@@ -247,12 +247,17 @@ function getOwnerLiveness(owner: LivenessSubject, storagePath?: string): OwnerLi
 }
 
 /**
- * Veto for clearing an unverified owner: a process with its PID runs here, and either
- * the record names this host or it carries a machine id this host cannot check now.
+ * Veto for clearing an unverified owner: a process with its PID runs here, and nothing
+ * proves the record came from another machine. Only a recorded machine id that differs
+ * from this machine's proves that; a hostname cannot, since this host may have had
+ * another name when it wrote the record.
  */
 function plausiblyAliveHere(owner: LivenessSubject): boolean {
-  const identityUnavailable = owner.machineId !== undefined && getLocalMachineId() === null;
-  return (identityUnavailable || lockOwnerNamesThisHost(owner)) && probePid(owner.pid) === "alive";
+  if (owner.machineId !== undefined) {
+    const localMachineId = getLocalMachineId();
+    if (localMachineId !== null && owner.machineId !== localMachineId) return false;
+  }
+  return probePid(owner.pid) === "alive";
 }
 
 function clearableOwner(owner: LivenessSubject, storagePath: string, allowUnverified: boolean): boolean {
@@ -672,17 +677,15 @@ function createClaim(): ReclaimOwner {
   };
 }
 
-const MAX_CLAIM_DEPTH = 2;
-
 /**
  * Removes a claim left by an interrupted unlock when its holder has exited, or with
  * `force` cannot be verified. The claim is removed the same way as any directory: by
  * publishing a claim inside it, so two unlocks cannot both take it over.
  */
-function removeStaleClaim(claimPath: string, force: boolean, depth: number): boolean {
+function removeStaleClaim(claimPath: string, force: boolean): boolean {
   const record = readRecord(path.join(claimPath, OWNER_FILE_NAME), parseReclaimOwner);
   if (record.owner === null ? !force : !clearableOwner(record.owner, claimPath, force)) return false;
-  return removeClaimedDirectory(claimPath, record.contents, force, depth + 1);
+  return removeClaimedDirectory(claimPath, record.contents, force);
 }
 
 /**
@@ -691,14 +694,17 @@ function removeStaleClaim(claimPath: string, force: boolean, depth: number): boo
  * with the rename, which proves the directory moved is the one checked; anything else
  * moved by mistake is put back.
  */
-function removeClaimedDirectory(directoryPath: string, expectedContents: string | null, force: boolean, depth = 0): boolean {
-  if (depth > MAX_CLAIM_DEPTH) return false;
+/**
+ * Recursion follows claims left by interrupted unlocks, one directory level per
+ * interruption, so its depth is bounded by what is on disk.
+ */
+function removeClaimedDirectory(directoryPath: string, expectedContents: string | null, force: boolean): boolean {
   const claimPath = path.join(directoryPath, RECLAIM_DIRECTORY_NAME);
   const claim = createClaim();
   let claimed = false;
   for (let attempt = 0; attempt < 2 && !claimed; attempt += 1) {
     claimed = publishJsonDirectory(claimPath, claim);
-    if (!claimed && (attempt > 0 || !removeStaleClaim(claimPath, force, depth))) return false;
+    if (!claimed && (attempt > 0 || !removeStaleClaim(claimPath, force))) return false;
   }
   if (readTextOrNull(path.join(directoryPath, OWNER_FILE_NAME)) !== expectedContents) {
     const current = readReclaimOwner(claimPath);

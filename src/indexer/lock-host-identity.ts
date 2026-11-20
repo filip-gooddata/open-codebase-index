@@ -99,6 +99,18 @@ function readLinuxMachineId(source: LockHostIdentitySources): string | null {
   return `linux:${machineId.toLowerCase()}:${pidNamespace}`;
 }
 
+function readWindowsMachineId(source: LockHostIdentitySources): string | null {
+  const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+  const output = source.run(`${systemRoot}\\System32\\reg.exe`, [
+    "query",
+    "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+    "/v",
+    "MachineGuid",
+  ]);
+  const match = output ? /MachineGuid\s+REG_SZ\s+([0-9a-f-]{36})/i.exec(output) : null;
+  return match ? `win32:${match[1].toLowerCase()}` : null;
+}
+
 function readDarwinMachineId(source: LockHostIdentitySources): string | null {
   const output = source.run("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
   const match = output ? /"IOPlatformUUID"\s*=\s*"([0-9a-f-]{36})"/i.exec(output) : null;
@@ -113,6 +125,7 @@ export function resolveLocalMachineId(source: LockHostIdentitySources): string |
   let raw: string | null = null;
   if (source.platform === "linux") raw = readLinuxMachineId(source);
   else if (source.platform === "darwin") raw = readDarwinMachineId(source);
+  else if (source.platform === "win32") raw = readWindowsMachineId(source);
   return raw === null ? null : hashMachineId(raw);
 }
 
@@ -209,11 +222,6 @@ export function isStorageLocal(storagePath: string): boolean {
   return findMount(storagePath)?.local ?? false;
 }
 
-/** Whether the storage holding a path is known to be reachable from other machines. */
-export function isStorageShared(storagePath: string): boolean {
-  return findMount(storagePath)?.local === false;
-}
-
 /** Whether a recorded hostname is one this machine answers to now, ignoring any machine id. */
 export function lockOwnerNamesThisHost(owner: LockHostOwner): boolean {
   if (owner.hostname === sources.hostname()) return true;
@@ -224,14 +232,13 @@ export function lockOwnerNamesThisHost(owner: LockHostOwner): boolean {
 /**
  * Whether a lock owner was written on this machine, so its PID can be checked here.
  * A recorded machine id decides on its own; when this machine cannot produce one,
- * such an owner stays unverified. An owner without one counts when it records the
- * exact OS hostname, unless the lock sits on storage known to be shared, where a
- * machine elsewhere can use the same name. Any other name this machine answers to (a
- * former spelling, the macOS Bonjour name) needs storage known to be local.
+ * such an owner stays unverified. An owner without one (written by an older release,
+ * or on a machine without an id) counts only when it names this host and the lock
+ * sits on storage known to be local, since a machine elsewhere can use the same name
+ * for a store it shares.
  */
 export function isLocalLockOwner(owner: LockHostOwner, storagePath?: string): boolean {
   if (owner.machineId !== undefined) return owner.machineId === getLocalMachineId();
-  if (owner.hostname === sources.hostname()) return storagePath === undefined || !isStorageShared(storagePath);
   if (!lockOwnerNamesThisHost(owner)) return false;
   return storagePath !== undefined && isStorageLocal(storagePath);
 }

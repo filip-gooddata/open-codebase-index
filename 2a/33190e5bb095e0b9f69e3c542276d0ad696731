@@ -1,38 +1,43 @@
-contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/index.md
-  s_0597223c6852f1::t_f3aecbcbed49c0 10
-CHANGELOG.md
-  s_0597223c6852f1::t_e82110a3801eff 17-21
-contrib/local-wrapper/launcher/ocbi-mcp.sh
-  s_0597223c6852f1::t_6477111a22097e 527-532
-  s_bd362efb6487a9::t_4e1403d42b2a98 140,510-511
-  s_0597223c6852f1::t_dd021be6a170f8 6-8,38,46,431-436,494-497,503,514,607
-  s_bd362efb6487a9::t_b8096cb56ddc56 533
-contrib/local-wrapper/rebuild/ocbi-rebuild.sh
-  s_0597223c6852f1::t_d07503a857d626 140
-  s_0597223c6852f1::t_5d8bc040edd677 144-146
-contrib/local-wrapper/test/run-tests.sh
-  s_bd362efb6487a9::t_3db43fa41b0023 303
-  s_0c38e0c1509213::t_7b61e05a55f893 171
-  s_0597223c6852f1::t_8c94cf010e14b6 98-101,126,144,243,248-249,308-321,324-342,346-347,457
-  s_0597223c6852f1::t_d4373d4550c949 482-504
-  s_bd362efb6487a9::t_4c88710dc6653e 514
+docs/local-wrapper.md
+  s_bd362efb6487a9::t_31abad19a73cf8 35-44
+  s_0597223c6852f1::t_2ff800613470c5 56-57,59,61-72,122,137-139,148-149,173-174,178
+  s_bd362efb6487a9::t_eaf325d96beab7 140-143
+  s_0597223c6852f1::t_ced8420066cdff 100-111
+  s_0c38e0c1509213::t_7e318e08258754 112
 contrib/local-wrapper/README.md
   s_0597223c6852f1::t_0332381c7a6c31 13,15,55
-docs/local-wrapper.md
-  s_0597223c6852f1::t_2ff800613470c5 56-57,59,61-72,122,137-139,148-149,173-174,178
-  s_0c38e0c1509213::t_7e318e08258754 112
-  s_bd362efb6487a9::t_eaf325d96beab7 140-143
-  s_bd362efb6487a9::t_31abad19a73cf8 35-44
-  s_0597223c6852f1::t_ced8420066cdff 100-111
-contrib/local-wrapper/launcher/codebase-index.example.json
-  s_0597223c6852f1::t_6aff9f3f28d012 11-12
+  s_520d3b214cb9f0::t_49deeb31789c01 78-80
+contrib/local-wrapper/test/run-tests.sh
+  s_bd362efb6487a9::t_3db43fa41b0023 303
+  s_0597223c6852f1::t_d4373d4550c949 482-504,506-508,511-513
+  s_0c38e0c1509213::t_7b61e05a55f893 171
+  s_bd362efb6487a9::t_4c88710dc6653e 525
+  s_0597223c6852f1::t_8c94cf010e14b6 98-101,126,144,243,248-249,308-321,324-342,346-347,457
+  s_0597223c6852f1::t_23d2287e42fbf1 505,509-510,514-515
 contrib/local-wrapper/install.sh
   s_0597223c6852f1::t_fda382dcda99b1 6
+contrib/local-wrapper/launcher/codebase-index.example.json
+  s_0597223c6852f1::t_6aff9f3f28d012 11-12
+contrib/local-wrapper/launcher/ocbi-mcp.sh
+  s_bd362efb6487a9::t_b8096cb56ddc56 52-54,534
+  s_0597223c6852f1::t_6477111a22097e 528-533
+  s_bd362efb6487a9::t_4e1403d42b2a98 141,511-512
+  s_0597223c6852f1::t_dd021be6a170f8 6-8,38,46,432-437,495-498,504,515,608
+CHANGELOG.md
+  s_0597223c6852f1::t_e82110a3801eff 17-21
+contrib/local-wrapper/rebuild/ocbi-rebuild.sh
+  s_18918ce10789f7::t_178e1c7a9fa88f 86-87
+  s_bd362efb6487a9::t_ee6e0e35829a11 74-75
+  s_0597223c6852f1::t_5d8bc040edd677 147-149
+  s_0597223c6852f1::t_d07503a857d626 143
+  s_0597223c6852f1::t_321e66e70711cf 94
+contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/index.md
+  s_0597223c6852f1::t_f3aecbcbed49c0 10
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.7.5",
-  "base_commit_sha": "ec09e58483b25ba25229fa551b320dfc21b467e6",
+  "base_commit_sha": "2a33190e5bb095e0b9f69e3c542276d0ad696731",
   "prompts": {},
   "sessions": {
     "s_0597223c6852f1": {
@@ -47,6 +52,22 @@ contrib/local-wrapper/install.sh
       "agent_id": {
         "tool": "codex",
         "id": "01a1f435-dc8f-7702-93a4-4cfe1dc74f0a",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_18918ce10789f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08502177-6408-42fa-ab6d-fa10c965f9e5",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_520d3b214cb9f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f43f-e2ea-79d2-a878-dd88f319aac3",
         "model": "gpt-6-luna"
       },
       "human_author": "Filip Kalný <filip.kalny@gooddata.com>"

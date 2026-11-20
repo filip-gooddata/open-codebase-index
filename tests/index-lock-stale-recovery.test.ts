@@ -238,6 +238,31 @@ describe("stale index lock recovery", () => {
     expectBusy();
   });
 
+  it.each([
+    ["a share mounted over a local filesystem at the same point", (dir: string) => `/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 ${dir} ext4 rw 0 0\npvfs2://server:3334/fs ${dir} pvfs2 rw 0 0\n`],
+    ["a local filesystem listed before a share at the same point", (dir: string) => `/dev/sda1 / ext4 rw 0 0\npvfs2://server:3334/fs ${dir} pvfs2 rw 0 0\n/dev/sdb1 ${dir} ext4 rw 0 0\n`],
+    ["a share mounted over an ancestor of a local mount", (dir: string) => `/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 ${dir}/index ext4 rw 0 0\nserver:/export ${dir} nfs4 rw 0 0\n`],
+  ])("refuses an exact-hostname old-format lock under %s", (_label, mounts) => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "linux",
+      hostname: () => "current-host",
+      readFile: (filePath) => filePath === "/proc/self/mounts" ? mounts(tempDir) : null,
+    });
+    writeOwner({ pid: exitedPid(), hostname: "current-host" });
+    expectBusy();
+  });
+
+  it("recovers an exact-hostname old-format lock on a local filesystem mounted over a share", () => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "linux",
+      hostname: () => "current-host",
+      readFile: (filePath) => filePath === "/proc/self/mounts"
+        ? `/dev/sda1 / ext4 rw 0 0\nserver:/export ${tempDir} nfs4 rw 0 0\n/dev/sdb1 ${tempDir}/index ext4 rw 0 0\n`
+        : null,
+    });
+    expectRecovered(writeOwner({ pid: exitedPid(), hostname: "current-host" }));
+  });
+
   it("recovers a force-abandoned marker even where an unrelated process holds its PID", () => {
     const token = "abababab-abab-4bab-8bab-abababababab";
     const markerPath = path.join(indexPath, `indexing.lock.recovery.${token}`);

@@ -209,13 +209,17 @@ function findMount(storagePath: string): MountEntry | undefined {
     realPath = sources.realpath(candidate);
   }
   if (realPath === null) return undefined;
-  let best: MountEntry | undefined;
-  for (const mount of getMounts()) {
+  const resolved = realPath;
+  const covering = getMounts().filter((mount) => {
     const prefix = mount.mountPoint.endsWith(path.sep) ? mount.mountPoint : `${mount.mountPoint}${path.sep}`;
-    if (realPath !== mount.mountPoint && !realPath.startsWith(prefix)) continue;
-    if (best === undefined || mount.mountPoint.length > best.mountPoint.length) best = mount;
-  }
-  return best;
+    return resolved === mount.mountPoint || resolved.startsWith(prefix);
+  });
+  // Mount tables list mounts in mount order, and a later mount on the path (at the same
+  // point or an ancestor) hides what was mounted there before, so the last one is visible.
+  const visible = covering.at(-1);
+  if (visible === undefined) return undefined;
+  const stacked = covering.filter((mount) => mount.mountPoint === visible.mountPoint);
+  return stacked.every((mount) => mount.local) ? visible : { ...visible, local: false };
 }
 
 /** Whether the storage holding a path is known to be local to this machine; false when unknown. */

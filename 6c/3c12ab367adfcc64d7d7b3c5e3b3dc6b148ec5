@@ -1,0 +1,21 @@
+src/indexer/lock-host-identity.ts
+  s_00d0fb6d716ed8::t_20cf8b76732fd9 212-213,215-222
+tests/index-lock-stale-recovery.test.ts
+  s_00d0fb6d716ed8::t_7f4a608100657e 241-265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6c3c12ab367adfcc64d7d7b3c5e3b3dc6b148ec5",
+  "prompts": {},
+  "sessions": {
+    "s_00d0fb6d716ed8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d034eceb-634f-4a22-829a-87725b9fc776",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

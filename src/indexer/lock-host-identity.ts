@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
-import { readFileSync, readlinkSync, realpathSync, statfsSync } from "fs";
+import { readFileSync, readlinkSync, realpathSync, statSync, statfsSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 
@@ -18,6 +18,8 @@ export interface LockHostIdentitySources {
   realpath: (filePath: string) => string | null;
   /** Filesystem type of the storage visible at an existing path, as statfs reports it. */
   statfsType: (filePath: string) => number | null;
+  /** Device id of the filesystem holding an existing path, as stat reports it. */
+  deviceId: (filePath: string) => number | null;
 }
 
 interface MountEntry {
@@ -75,6 +77,14 @@ function readStatfsType(filePath: string): number | null {
   }
 }
 
+function readDeviceId(filePath: string): number | null {
+  try {
+    return statSync(filePath).dev;
+  } catch {
+    return null;
+  }
+}
+
 const defaultSources: LockHostIdentitySources = {
   platform: process.platform,
   hostname: () => os.hostname(),
@@ -83,6 +93,7 @@ const defaultSources: LockHostIdentitySources = {
   run: runCommand,
   realpath: resolveRealPath,
   statfsType: readStatfsType,
+  deviceId: readDeviceId,
 };
 
 // statfs magic numbers (Linux kernel ABI) of filesystems on this machine's own block
@@ -205,13 +216,6 @@ export function parseDarwinMounts(output: string): MountEntry[] {
   });
 }
 
-/** Parses `df -P <path>` output on macOS: the mount point of the filesystem holding the path. */
-export function parseDarwinDfMountPoint(output: string): string | null {
-  const line = output.trim().split("\n").at(-1) ?? "";
-  const match = /\s\d+%\s+(\/.*)$/.exec(line);
-  return match ? match[1] : null;
-}
-
 function nearestExistingPath(storagePath: string): string | null {
   let candidate = storagePath;
   let realPath = sources.realpath(candidate);
@@ -225,8 +229,9 @@ function nearestExistingPath(storagePath: string): string | null {
 /**
  * Whether the storage holding a path is known to be local to this machine; false when
  * unknown. Both platforms ask about the filesystem actually visible at the path rather
- * than inferring it from mount order: Linux through the statfs magic, macOS through `df`
- * for the mount point and the mount table's `local` flag for every entry stacked there.
+ * than inferring it from mount order or mount-point strings: Linux through the statfs
+ * magic; macOS by the mount-table entries on the path's ancestors whose mount point has
+ * the path's device id, all of which must carry the `local` flag.
  * Read fresh on every call: it only runs for hostname-only locks, and mounts change.
  */
 export function isStorageLocal(storagePath: string): boolean {
@@ -237,11 +242,14 @@ export function isStorageLocal(storagePath: string): boolean {
     return type !== null && LOCAL_LINUX_FILESYSTEM_MAGICS.has(type >>> 0);
   }
   if (sources.platform === "darwin") {
-    const dfOutput = sources.run("/bin/df", ["-P", existing]);
-    const mountPoint = dfOutput === null ? null : parseDarwinDfMountPoint(dfOutput);
-    const mountOutput = mountPoint === null ? null : sources.run("/sbin/mount", []);
+    const device = sources.deviceId(existing);
+    const mountOutput = device === null ? null : sources.run("/sbin/mount", []);
     if (mountOutput === null) return false;
-    const entries = parseDarwinMounts(mountOutput).filter((mount) => mount.mountPoint === mountPoint);
+    // Only ancestors of the path can hold it; statting other mount points could wake automounts.
+    const entries = parseDarwinMounts(mountOutput).filter((mount) => {
+      const prefix = mount.mountPoint.endsWith(path.sep) ? mount.mountPoint : `${mount.mountPoint}${path.sep}`;
+      return (existing === mount.mountPoint || existing.startsWith(prefix)) && sources.deviceId(mount.mountPoint) === device;
+    });
     return entries.length > 0 && entries.every((mount) => mount.local);
   }
   return false;

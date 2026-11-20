@@ -16,7 +16,6 @@ import {
   getLocalMachineId,
   normalizeLockHostName,
   parseDarwinMounts,
-  parseDarwinDfMountPoint,
   resolveLocalHostNames,
   resolveLocalMachineId,
   setLockHostIdentitySourcesForTesting,
@@ -36,22 +35,26 @@ function sources(overrides: Partial<LockHostIdentitySources>): LockHostIdentityS
     run: () => null,
     realpath: (filePath) => filePath,
     statfsType: () => null,
+    deviceId: () => null,
     ...overrides,
   };
 }
 
 const EXT4_MAGIC = 0xef53;
+
+/** Device ids for macOS fixtures: paths under `mountPoint` sit on device 2, everything else on 1. */
+function deviceUnder(mountPoint: string): (filePath: string) => number {
+  return (filePath) => filePath === mountPoint || filePath.startsWith(`${mountPoint}${path.sep}`) ? 2 : 1;
+}
 const LOCAL_LINUX_STORAGE = { statfsType: (): number => EXT4_MAGIC };
 
 function darwinRunner(
   names: Record<string, string>,
   mounts = "/dev/disk1s1 on / (apfs, local, journaled)\n",
-  mountPoint = "/",
 ): LockHostIdentitySources["run"] {
   return (file, args) => {
     if (file === "/usr/sbin/ioreg") return IOREG_OUTPUT;
     if (file === "/sbin/mount") return mounts;
-    if (file === "/bin/df") return `Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/disk1s1 100 50 50 50% ${mountPoint}\n`;
     if (file === "/usr/sbin/scutil" && args[0] === "--get") return names[args[1]] ?? null;
     return null;
   };
@@ -102,9 +105,7 @@ describe("lock host identity", () => {
   it("reads mount locality on macOS and Linux", () => {
     expect(parseDarwinMounts("/dev/disk1s1 on / (apfs, local, journaled)\n//host/share on /Volumes/team share (smbfs, nodev)\n"))
       .toEqual([{ mountPoint: "/", local: true }, { mountPoint: "/Volumes/team share", local: false }]);
-    expect(parseDarwinDfMountPoint("Filesystem 512-blocks Used Available Capacity Mounted on\n//host/share 10 5 5 50% /Volumes/team share\n"))
-      .toBe("/Volumes/team share");
-    expect(parseDarwinDfMountPoint("df: /missing: No such file or directory\n")).toBeNull();
+    expect(parseDarwinMounts("server:/export on /Volumes/Shared  (nfs, nodev)\n")).toEqual([{ mountPoint: "/Volumes/Shared ", local: false }]);
   });
 
   it("collects the macOS local and configured host names", () => {
@@ -156,6 +157,7 @@ describe("stale index lock recovery", () => {
       platform: "darwin",
       hostname: () => "current-host",
       run: darwinRunner({ LocalHostName: "former-host" }),
+      deviceId: () => 1,
     });
   });
 
@@ -217,8 +219,8 @@ describe("stale index lock recovery", () => {
       run: darwinRunner(
         { LocalHostName: "former-host" },
         `/dev/disk1s1 on / (apfs, local, journaled)\n//server/share on ${tempDir} (smbfs, nodev)\n`,
-        tempDir,
       ),
+      deviceId: deviceUnder(tempDir),
     });
     writeOwner({ pid: exitedPid(), hostname: "former-host.local" });
     expectBusy();
@@ -228,7 +230,8 @@ describe("stale index lock recovery", () => {
     setLockHostIdentitySourcesForTesting({
       platform: "darwin",
       hostname: () => "current-host",
-      run: darwinRunner({}, `/dev/disk1s1 on / (apfs, local, journaled)\nserver:/export on ${tempDir} (nfs, nodev)\n`, tempDir),
+      run: darwinRunner({}, `/dev/disk1s1 on / (apfs, local, journaled)\nserver:/export on ${tempDir} (nfs, nodev)\n`),
+      deviceId: deviceUnder(tempDir),
     });
     writeOwner({ pid: exitedPid(), hostname: "current-host" });
     expectBusy();
@@ -268,11 +271,39 @@ describe("stale index lock recovery", () => {
       run: darwinRunner(
         { LocalHostName: "former-host" },
         `/dev/disk1s1 on / (apfs, local, journaled)\n/dev/disk2s1 on ${tempDir} (apfs, local)\n//server/share on ${tempDir} (smbfs, nodev)\n`,
-        tempDir,
       ),
+      deviceId: deviceUnder(tempDir),
     });
     writeOwner({ pid: exitedPid(), hostname: "former-host.local" });
     expectBusy();
+  });
+
+  it("tells a share at a mount point with a trailing space from a local volume without it", () => {
+    const shareRoot = path.join(tempDir, "Shared ");
+    const sharedIndex = path.join(shareRoot, "index");
+    fs.mkdirSync(path.join(sharedIndex, "indexing.lock"), { recursive: true });
+    fs.writeFileSync(path.join(sharedIndex, "indexing.lock", "owner.json"), JSON.stringify({
+      pid: exitedPid(),
+      hostname: "current-host",
+      startedAt: new Date().toISOString(),
+      operation: "index",
+      token: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+    }));
+    setLockHostIdentitySourcesForTesting({
+      platform: "darwin",
+      hostname: () => "current-host",
+      run: darwinRunner(
+        {},
+        `/dev/disk1s1 on / (apfs, local, journaled)\n/dev/disk3s1 on ${path.join(tempDir, "Shared")} (apfs, local)\nserver:/export on ${shareRoot} (nfs, nodev)\n`,
+      ),
+      deviceId: deviceUnder(shareRoot),
+    });
+
+    expect(() => acquireIndexLock(sharedIndex, "index")).toThrowError(
+      expect.objectContaining({ code: "INDEX_BUSY", reason: "unknown-owner" }),
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(sharedIndex, "indexing.lock", "owner.json"), "utf-8")))
+      .toMatchObject({ token: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd" });
   });
 
   it("recovers a force-abandoned marker even where an unrelated process holds its PID", () => {

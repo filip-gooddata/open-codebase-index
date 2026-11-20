@@ -1,6 +1,7 @@
 import type { HostMode } from "../config/host.js";
 import type { ParsedCodebaseIndexConfig } from "../config/schema.js";
 import type { OperationControl } from "../utils/operation-control.js";
+import * as path from "path";
 import { parseConfig } from "../config/schema.js";
 import { configureAutoIndex, waitForAutoIndexForRetrieval } from "../utils/auto-index.js";
 import { isBackgroundWorkerManaged } from "../utils/background-worker.js";
@@ -31,18 +32,21 @@ export function getIndexBusyResult(error: unknown): IndexBusyResult | null {
 
   const owner = error.owner;
   const ownerText = owner
-    ? `PID ${owner.pid}, operation ${owner.operation}, since ${owner.startedAt}`
+    ? `PID ${owner.pid} on ${owner.hostname}, operation ${owner.operation}, since ${owner.startedAt}`
     : "unreadable owner";
+  const unlockHint = typeof error.lockPath === "string"
+    ? ` Inspect and clear it with \`ocbi unlock ${JSON.stringify(path.dirname(error.lockPath))}\`; it refuses while the owner is alive on this machine, and an owner on another machine or an unreadable record needs --force.`
+    : " Inspect and clear it with `ocbi unlock`.";
   if (error.reason === "legacy-lock") {
     return {
       kind: "busy",
-      text: `INDEX_BUSY: legacy lock format detected (${ownerText}). Verify the PID and remove this lock manually only if it is stale.`,
+      text: `INDEX_BUSY: legacy lock format detected (${ownerText}). Automatic recovery was refused.${unlockHint}`,
     };
   }
   if (error.reason === "unknown-owner") {
     return {
       kind: "busy",
-      text: `INDEX_BUSY: unreadable or remote lock owner (${ownerText}). Automatic recovery was refused; manual verification is required.`,
+      text: `INDEX_BUSY: unreadable or remote lock owner (${ownerText}). Automatic recovery was refused.${unlockHint}`,
     };
   }
   return { kind: "busy", text: `INDEX_BUSY: another index operation is already in progress (${ownerText}).` };

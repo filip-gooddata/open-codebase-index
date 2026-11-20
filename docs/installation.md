@@ -229,6 +229,16 @@ ocbi prune --apply --project /path/to/worktree --host claude  # remove stale cat
 ocbi prune old-branch 1a2b3c4 --apply --json --project /path/to/worktree --host claude
 ```
 
+Index mutations hold `indexing.lock` in the index directory. When its owner exits without releasing it, the next run on the same machine recovers it. A lock counts as this machine's when its machine id matches (new locks record a hash of `/etc/machine-id` plus the PID namespace on Linux, or the platform UUID on macOS) or, for locks without one, when its hostname matches a name the machine answers to now (the OS hostname and, on macOS, the Bonjour local hostname and configured hostname). A lock from another machine is never recovered automatically, because its process cannot be checked from here. When automatic recovery is refused, `INDEX_BUSY` names the command to run:
+
+```bash
+ocbi unlock /path/to/index            # show the lock; clear it only if its owner has exited
+ocbi unlock /path/to/index --force    # also clear an owner on another machine or an unreadable lock
+ocbi unlock --json --project /path/to/repo --host claude
+```
+
+`ocbi unlock` never clears a lock whose owner is still running on this machine, even with `--force`. Use `--force` only after making sure no index process using that index runs on the host the lock names. The next index run still recovers whatever partial writes the old owner left.
+
 Use `ocbi index --dry-run` for a parse-only embedding-token total, `--estimate-only` for an estimate, and `ocbi --help` for command usage.
 
 Ordinary status reports stored catalog facts with freshness explicitly not checked. `--check-freshness` compares current selected source/configuration and HEAD with the index; it does not refresh the index or request embeddings. A successfully inspected missing/stale index still exits successfully; operational failures exit nonzero. The `--check-freshness` and status `--json` flags apply only to status (workspace status retains its separate JSON contract).

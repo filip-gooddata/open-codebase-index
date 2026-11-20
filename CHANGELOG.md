@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.6] - 2026-11-20
+
+Fork release on top of 0.38.2-gd.5. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.
+
 ### Added
 
 - **`indexing.allowForceRebuild`**: When `false`, forced rebuilds are refused before any lock is taken, for MCP `index_codebase` with `force: true`, the OpenCode, Pi and omp `index_codebase` tools, the `/reindex` command and `ocbi index --force`. The setting is re-read from config on disk for each forced request, and a global `false` survives a project `indexing` section that omits the key. Tools return `FORCE_REBUILD_DISABLED` with the CLI command for the same host and project; MCP reports it as an error result with that code. `ocbi index --force --allow-shared-rebuild` is the explicit operator override; there is no override from tools. Defaults to `true`, which keeps current behaviour.
 
 ### Changed
+
+- **Rust sources pass `cargo fmt --check` and `cargo clippy -- -D warnings`**, so the upstream `CI` workflow's lint steps pass on the fork. No behaviour change.
 
 - **`index_status` for Claude Code**: With `--host claude`, `index_status` returns only text content, with the MCP diagnostics (active and latest interrupted operations) appended as text. Claude Code shows `structuredContent` instead of the text when both are present, which hid the formatted status. The switch keys on `--host claude`, so another client started with that host gets the same text-only result. Other hosts still receive the structured status with `mcpDiagnostics`.
 - **Local wrapper uses the native force refusal**: The example store config in `contrib/local-wrapper/` sets `indexing.allowForceRebuild: false`, and `ocbi-rebuild` runs `ocbi index --force --allow-shared-rebuild`. A checkout of a listed project that cannot be linked to its shared store (including a store config without the key set to `false`) no longer falls back to the global config: the launcher starts neither the server nor the CLI there and logs `refusing to start:` with the reason, as it does when the installed package predates the setting; `docs/local-wrapper.md` lists the upgrade steps.

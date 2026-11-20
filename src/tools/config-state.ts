@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import * as path from "path";
 
-import { loadMergedConfig, loadProjectConfigLayer } from "../config/merger.js";
+import { loadMergedConfig, loadProjectConfigLayer, type LoadMergedConfigOptions } from "../config/merger.js";
 import { resolveWritableProjectConfigPath } from "../config/paths.js";
 import { resolveConfigPathValue, serializeConfigPathValue } from "./knowledge-base-paths.js";
 import type { HostMode } from "../config/host.js";
@@ -33,8 +33,12 @@ export function getConfigPath(projectRoot: string, host: HostMode): string {
   return resolveWritableProjectConfigPath(projectRoot, host);
 }
 
-export function loadRuntimeConfig(projectRoot: string, host: HostMode): Record<string, unknown> {
-  return normalizeKnowledgeBasePaths(toConfigRecord(loadMergedConfig(projectRoot, host)), projectRoot);
+export function loadRuntimeConfig(
+  projectRoot: string,
+  host: HostMode,
+  options: LoadMergedConfigOptions = {},
+): Record<string, unknown> {
+  return normalizeKnowledgeBasePaths(toConfigRecord(loadMergedConfig(projectRoot, host, options)), projectRoot);
 }
 
 export function loadEditableConfig(projectRoot: string, host: HostMode): Record<string, unknown> {

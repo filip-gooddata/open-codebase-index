@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from "fs";
 import * as path from "path";
 
-import { resolveGlobalConfigPath, resolveProjectConfigPath } from "./paths.js";
+import {
+  getGlobalConfigPath,
+  getProjectConfigCandidatePaths,
+  resolveGlobalConfigPath,
+  resolveProjectConfigPath,
+} from "./paths.js";
 import type { HostMode } from "./host.js";
 import { resolveInheritedKnowledgeBaseEntries } from "./rebase.js";
 
@@ -47,6 +52,18 @@ function applyProjectOverride(
   if (key in globalConfig) {
     merged[key] = globalConfig[key];
   }
+}
+
+/** A project indexing section that omits allowForceRebuild must not re-enable a global refusal. */
+function preserveGlobalForceRebuildRefusal(
+  merged: Record<string, unknown>,
+  globalConfig: Record<string, unknown>,
+): void {
+  const globalIndexing = globalConfig.indexing;
+  const mergedIndexing = merged.indexing;
+  if (!isRecord(globalIndexing) || globalIndexing.allowForceRebuild !== false) return;
+  if (!isRecord(mergedIndexing) || "allowForceRebuild" in mergedIndexing) return;
+  merged.indexing = { ...mergedIndexing, allowForceRebuild: false };
 }
 
 function mergeUniqueStringArray(values: unknown[]): string[] {
@@ -100,13 +117,59 @@ function validateConfigLayerShape(rawConfig: unknown, filePath: string): Record<
   return rawConfig;
 }
 
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+interface ConfigLayer {
+  path: string;
+  config: Record<string, unknown> | null;
+}
+
+/**
+ * Path resolution treats any existsSync failure as absence. Strict loads read the same candidates
+ * directly, in the same order, and fall through only when a candidate is missing, so a config that
+ * cannot be read is an error rather than an absent layer.
+ */
+function readStrictConfigLayer(candidates: string[]): ConfigLayer {
+  for (const candidate of candidates) {
+    let content: string;
+    try {
+      content = readFileSync(candidate, "utf-8");
+    } catch (error: unknown) {
+      if (isMissingPathError(error)) continue;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Cannot read config file ${candidate}: ${message}`, { cause: error });
+    }
+    return { path: candidate, config: parseJsonConfig(content, candidate) as Record<string, unknown> };
+  }
+  return { path: candidates[0], config: null };
+}
+
+function getGlobalConfigCandidatePaths(host: HostMode): string[] {
+  return host === "opencode"
+    ? [getGlobalConfigPath(host)]
+    : [getGlobalConfigPath(host), getGlobalConfigPath("opencode")];
+}
+
 function loadJsonFile(filePath: string): unknown {
   if (!existsSync(filePath)) {
     return null;
   }
 
+  let content: string;
   try {
-    const content = readFileSync(filePath, "utf-8");
+    content = readFileSync(filePath, "utf-8");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load config file ${filePath}: ${message}`, { cause: error });
+  }
+  return parseJsonConfig(content, filePath);
+}
+
+function parseJsonConfig(content: string, filePath: string): unknown {
+  try {
     return validateConfigLayerShape(JSON.parse(content), filePath);
   } catch (error: unknown) {
     if (error instanceof Error && error.message.startsWith("Config file ")) {
@@ -115,7 +178,6 @@ function loadJsonFile(filePath: string): unknown {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to load config file ${filePath}: ${message}`, { cause: error });
   }
-
 }
 
 export function loadConfigFile(filePath: string): unknown {
@@ -125,7 +187,14 @@ export function loadConfigFile(filePath: string): unknown {
 export function loadProjectConfigLayer(projectRoot: string, host: HostMode): Record<string, unknown> {
   const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
   const projectConfig = loadJsonFile(projectConfigPath) as Record<string, unknown> | null;
+  return normalizeProjectConfigLayer(projectConfig, projectConfigPath, projectRoot);
+}
 
+function normalizeProjectConfigLayer(
+  projectConfig: Record<string, unknown> | null,
+  projectConfigPath: string,
+  projectRoot: string,
+): Record<string, unknown> {
   if (!projectConfig) {
     return {};
   }
@@ -154,20 +223,37 @@ export function loadProjectConfigLayer(projectRoot: string, host: HostMode): Rec
  * - For additionalInclude: merge arrays (union, deduplicated)
  * - For include/exclude: project overrides global if set, otherwise load global
  */
-export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
-  const globalConfigPath = resolveGlobalConfigPath(host);
-  const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
+export interface LoadMergedConfigOptions {
+  /**
+   * Throw on an unreadable global config instead of falling back to the project config alone, and
+   * on any config candidate that cannot be inspected instead of treating it as absent.
+   */
+  strict?: boolean;
+}
+
+export function loadMergedConfig(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions = {}): unknown {
   let globalConfig: Record<string, unknown> | null = null;
   let globalConfigError: Error | null = null;
 
-  try {
-    globalConfig = loadJsonFile(globalConfigPath) as Record<string, unknown> | null;
-  } catch (error: unknown) {
-    globalConfigError = error instanceof Error ? error : new Error(String(error));
-  }
+  let projectConfig: Record<string, unknown> | null;
+  let normalizedProjectConfig: Record<string, unknown>;
+  if (options.strict === true) {
+    globalConfig = readStrictConfigLayer(getGlobalConfigCandidatePaths(host)).config;
+    const projectLayer = readStrictConfigLayer(getProjectConfigCandidatePaths(projectRoot, host));
+    projectConfig = projectLayer.config;
+    normalizedProjectConfig = normalizeProjectConfigLayer(projectConfig, projectLayer.path, projectRoot);
+  } else {
+    const globalConfigPath = resolveGlobalConfigPath(host);
+    const projectConfigPath = resolveProjectConfigPath(projectRoot, host);
+    try {
+      globalConfig = loadJsonFile(globalConfigPath) as Record<string, unknown> | null;
+    } catch (error: unknown) {
+      globalConfigError = error instanceof Error ? error : new Error(String(error));
+    }
 
-  const projectConfig = loadJsonFile(projectConfigPath) as Record<string, unknown> | null;
-  const normalizedProjectConfig = loadProjectConfigLayer(projectRoot, host);
+    projectConfig = loadJsonFile(projectConfigPath) as Record<string, unknown> | null;
+    normalizedProjectConfig = loadProjectConfigLayer(projectRoot, host);
+  }
 
   if (globalConfigError) {
     if (!projectConfig) {
@@ -198,6 +284,7 @@ export function loadMergedConfig(projectRoot: string, host: HostMode): unknown {
   for (const key of PROJECT_OVERRIDE_KEYS) {
     applyProjectOverride(merged, normalizedProjectConfig, globalConfig, key);
   }
+  preserveGlobalForceRebuildRefusal(merged, globalConfig);
 
   // For other config sections: project overrides if set, otherwise use global
   if (projectConfig) {

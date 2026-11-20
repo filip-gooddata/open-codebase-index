@@ -312,7 +312,7 @@ Every MCP handler failure returns `isError: true`, a concise English instruction
 }
 ```
 
-Codes are `OPERATION_TIMEOUT`, `OPERATION_CANCELLED`, `PROVIDER_ERROR`, `INDEX_BUSY`, `INDEX_UNAVAILABLE`, and `INTERNAL_ERROR`. Provider timeouts, HTTP 429, and HTTP 5xx failures are retryable. Other HTTP 4xx failures and internal errors are not. Tool arguments, queries, paths, provider URLs, response bodies, raw causes, and secrets are never copied into this structure.
+Codes are `OPERATION_TIMEOUT`, `OPERATION_CANCELLED`, `PROVIDER_ERROR`, `INDEX_BUSY`, `INDEX_UNAVAILABLE`, `FORCE_REBUILD_DISABLED` (`index_codebase` with `force: true` while `indexing.allowForceRebuild` is `false`; not retryable), and `INTERNAL_ERROR`. Provider timeouts, HTTP 429, and HTTP 5xx failures are retryable. Other HTTP 4xx failures and internal errors are not. Tool arguments, queries, paths, provider URLs, response bodies, raw causes, and secrets are never copied into this structure.
 
 When the caller supplies a progress token, long-running operations reuse that exact token and emit serialized, strictly increasing progress from `0` through `100` with `total: 100`. No progress notification is emitted without a token. Raw progress still refreshes the inactivity deadline even when rounding produces no new percentage.
 

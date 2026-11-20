@@ -8,6 +8,8 @@ import type {
 
 import { isIndexLockContentionError } from "../../indexer/index-lock.js";
 import { UnsupportedIndexOperationError } from "../../indexer/errors.js";
+import { FORCE_REBUILD_DISABLED_CODE, FORCE_REBUILD_OVERRIDE_FLAG } from "../../tools/operations.js";
+import type { McpDiagnosticsSnapshot } from "./runtime-diagnostics.js";
 import {
   AutoIndexRetrievalUnavailableError,
   getRuntimeConfigForProject,
@@ -29,6 +31,7 @@ export type McpOperationErrorCode =
   | "PROVIDER_ERROR"
   | "INDEX_BUSY"
   | "INDEX_UNAVAILABLE"
+  | "FORCE_REBUILD_DISABLED"
   | "UNSUPPORTED_OPERATION"
   | "INTERNAL_ERROR";
 
@@ -54,7 +57,7 @@ export function hasActiveMcpExecutions(): boolean {
 
 class ReportedToolError extends Error {
   constructor(
-    readonly kind: "busy" | "unavailable" | "internal",
+    readonly kind: "busy" | "unavailable" | "refused" | "internal",
     readonly safeText?: string,
   ) {
     super("The operation reported an error result.");
@@ -84,6 +87,31 @@ function getText(result: CallToolResult): string {
     .filter((content): content is Extract<typeof content, { type: "text" }> => content.type === "text")
     .map((content) => content.text)
     .join("\n");
+}
+
+function formatMcpDiagnosticsText(diagnostics: McpDiagnosticsSnapshot): string {
+  const lines = diagnostics.activeOperations.length === 0
+    ? ["MCP operations: none active"]
+    : diagnostics.activeOperations.map((active) => (
+      `MCP operation ${active.status}: ${active.operation} (phase ${active.phase}, started ${active.startedAt}, last activity ${active.lastActivityAt})`
+    ));
+  const interrupted = diagnostics.latestInterruptedOperation;
+  if (interrupted) {
+    lines.push(
+      `Latest interrupted MCP operation: ${interrupted.operation} (phase ${interrupted.phase}, cause ${interrupted.cause}, `
+        + `last activity ${interrupted.lastActivityAt}). ${interrupted.nextAction}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/** Appends the MCP diagnostics to the status text for hosts that get index_status as text only. */
+function withTextDiagnostics(result: CallToolResult, diagnostics: McpDiagnosticsSnapshot): CallToolResult {
+  const diagnosticsText = formatMcpDiagnosticsText(diagnostics);
+  const content = result.content.length > 0 && result.content[0].type === "text"
+    ? [{ ...result.content[0], text: `${result.content[0].text}\n\n${diagnosticsText}` }, ...result.content.slice(1)]
+    : [...result.content, { type: "text" as const, text: diagnosticsText }];
+  return { ...result, content };
 }
 
 function errorDetails(
@@ -123,6 +151,12 @@ function errorDetails(
     code = "INDEX_BUSY";
     retryable = true;
     nextAction = "Wait for the current index operation to finish, then retry.";
+  } else if (error instanceof ReportedToolError && error.kind === "refused") {
+    code = "FORCE_REBUILD_DISABLED";
+    retryable = false;
+    nextAction = "Run index_codebase without force for a normal refresh. For a full rebuild, the user runs "
+      + `\`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG}\` in a terminal with this server's --host and --project; `
+      + "the text result names the exact command.";
   } else if (error instanceof AutoIndexRetrievalUnavailableError
     || (error instanceof ReportedToolError && error.kind === "unavailable")) {
     code = "INDEX_UNAVAILABLE";
@@ -159,6 +193,7 @@ function operationErrorResult(error: McpOperationError, safeText?: string): Call
 function classifyReportedResult(result: CallToolResult): ReportedToolError {
   const text = getText(result);
   if (text.startsWith("INDEX_BUSY:")) return new ReportedToolError("busy", text);
+  if (text.startsWith(`${FORCE_REBUILD_DISABLED_CODE}:`)) return new ReportedToolError("refused", text);
   if (/index (?:is )?(?:not found|unavailable|not ready)/i.test(text)) {
     return new ReportedToolError("unavailable");
   }
@@ -187,7 +222,28 @@ function waitForDiagnosticIo(promise: Promise<void>, stallTimeoutMs: number): Pr
   });
 }
 
+/**
+ * Claude Code shows structuredContent instead of the text block when both are present, so the
+ * claude host gets index_status, including its error results, as text only.
+ */
+function isTextOnlyStatus(runtime: McpServerRuntime, operation: string): boolean {
+  return operation === "index_status" && runtime.host === "claude";
+}
+
 export async function executeMcpOperation(
+  runtime: McpServerRuntime,
+  operation: string,
+  extra: McpOperationExtra,
+  handler: McpOperationHandler,
+): Promise<CallToolResult> {
+  const result = await runMcpOperation(runtime, operation, extra, handler);
+  if (!isTextOnlyStatus(runtime, operation) || result.structuredContent === undefined) return result;
+  const textOnly: CallToolResult = { ...result };
+  delete textOnly.structuredContent;
+  return textOnly;
+}
+
+async function runMcpOperation(
   runtime: McpServerRuntime,
   operation: string,
   extra: McpOperationExtra,
@@ -361,7 +417,7 @@ export async function executeMcpOperation(
         runtime.diagnostics.snapshot(tracked.id, stallTimeoutMs),
         operationController.signal,
       );
-      result = {
+      result = isTextOnlyStatus(runtime, operation) ? withTextDiagnostics(result, diagnostics) : {
         ...result,
         structuredContent: {
           ...(result.structuredContent ?? {}),

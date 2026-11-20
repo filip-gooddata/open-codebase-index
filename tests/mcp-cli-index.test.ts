@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handleIndexCommand, parseIndexArgs } from "../src/adapters/mcp/cli.js";
+import { formatForceRebuildRefusal } from "../src/tools/operations.js";
 
 describe("mcp cli index arg parsing", () => {
   let tempDir: string;
@@ -23,6 +24,7 @@ describe("mcp cli index arg parsing", () => {
       host: "opencode",
       config: undefined,
       force: false,
+      allowSharedRebuild: false,
       estimateOnly: false,
       dryRun: false,
       verbose: false,
@@ -50,6 +52,7 @@ describe("mcp cli index arg parsing", () => {
       host: "jcode",
       config: path.join(tempDir, "my.config.json"),
       force: true,
+      allowSharedRebuild: false,
       estimateOnly: true,
       dryRun: false,
       verbose: true,
@@ -64,6 +67,7 @@ describe("mcp cli index arg parsing", () => {
       host: "opencode",
       config: undefined,
       force: false,
+      allowSharedRebuild: false,
       estimateOnly: false,
       dryRun: true,
       verbose: false,
@@ -130,7 +134,7 @@ describe("mcp cli index command execution", () => {
       estimateOnly: true,
       dryRun: false,
       verbose: true,
-    }, expect.any(Function));
+    }, expect.any(Function), undefined, { allowForceRebuildOverride: false });
   });
 
   it("prints busy and exits non-zero on index errors", async () => {
@@ -212,7 +216,7 @@ describe("mcp cli index command execution", () => {
 
     expect(exitCode).toBe(0);
     expect(initialized).toEqual([{ projectRoot: tempDir, host: "opencode", provider: "custom" }]);
-    expect(runIndex).toHaveBeenCalledWith(tempDir, "opencode", { force: false, estimateOnly: false, dryRun: false, verbose: false }, expect.any(Function));
+    expect(runIndex).toHaveBeenCalledWith(tempDir, "opencode", { force: false, estimateOnly: false, dryRun: false, verbose: false }, expect.any(Function), undefined, { allowForceRebuildOverride: false });
     expect(stdout).toEqual(["ok"]);
     expect(stderr).toEqual([]);
   });
@@ -225,5 +229,77 @@ describe("mcp cli index command execution", () => {
 
     expect(exitCode).toBe(0);
     expect(stderr.join("\n")).toContain("Usage:");
+  });
+
+  it("names the refusing host and the literal project root without shell-specific quoting", () => {
+    const posix = formatForceRebuildRefusal("/srv/a $HOME `x` it's", "claude");
+    expect(posix).toContain("`ocbi index --force --allow-shared-rebuild --host claude --project <project root>`");
+    expect(posix.split("\n").at(-1)).toBe("Project root: /srv/a $HOME `x` it's");
+    const windows = formatForceRebuildRefusal("C:\\Work Space\\repo", "codex");
+    expect(windows).toContain("--host codex --project <project root>");
+    expect(windows.split("\n").at(-1)).toBe("Project root: C:\\Work Space\\repo");
+  });
+
+  it("parses --allow-shared-rebuild with --force", () => {
+    expect(parseIndexArgs(["--force", "--allow-shared-rebuild"], tempDir)).toMatchObject({
+      force: true,
+      allowSharedRebuild: true,
+    });
+  });
+
+  it("rejects --allow-shared-rebuild without --force", async () => {
+    expect(() => parseIndexArgs(["--allow-shared-rebuild"], tempDir)).toThrow("--allow-shared-rebuild requires --force.");
+    const stderr: string[] = [];
+    const runIndex = vi.fn(async () => ({ text: "ok" }));
+    const exitCode = await handleIndexCommand(["--allow-shared-rebuild"], tempDir, {
+      runIndex,
+      printStdout: () => {},
+      printStderr: (text) => stderr.push(text),
+    });
+    expect(exitCode).toBe(1);
+    expect(runIndex).not.toHaveBeenCalled();
+    expect(stderr.join("\n")).toContain("--allow-shared-rebuild requires --force.");
+  });
+
+  it("passes the shared-rebuild override only when the flag is given", async () => {
+    const runIndex = vi.fn(async () => ({ text: "ok" }));
+    const deps = { runIndex, printStdout: () => {}, printStderr: () => {} };
+
+    expect(await handleIndexCommand(["--force", "--allow-shared-rebuild"], tempDir, deps)).toBe(0);
+    expect(runIndex).toHaveBeenLastCalledWith(
+      tempDir,
+      "opencode",
+      expect.objectContaining({ force: true }),
+      expect.any(Function),
+      undefined,
+      { allowForceRebuildOverride: true },
+    );
+
+    expect(await handleIndexCommand(["--force"], tempDir, deps)).toBe(0);
+    expect(runIndex).toHaveBeenLastCalledWith(
+      tempDir,
+      "opencode",
+      expect.objectContaining({ force: true }),
+      expect.any(Function),
+      undefined,
+      { allowForceRebuildOverride: false },
+    );
+  });
+
+  it("refuses --force through the real index operation when the config disallows it", async () => {
+    const configPath = path.join(tempDir, "refuse-force.json");
+    writeFileSync(configPath, JSON.stringify({ indexing: { allowForceRebuild: false } }));
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    const exitCode = await handleIndexCommand(["--force", "--project", tempDir, "--config", configPath], tempDir, {
+      printStdout: (text) => stdout.push(text),
+      printStderr: (text) => stderr.push(text),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.join("\n")).toContain("FORCE_REBUILD_DISABLED: forced rebuild refused");
+    expect(stderr.join("\n")).toContain("ocbi index --force --allow-shared-rebuild");
   });
 });

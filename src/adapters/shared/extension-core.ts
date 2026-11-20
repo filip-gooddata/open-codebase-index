@@ -361,6 +361,7 @@ export function registerCodebaseIndexTools(pi: CodebaseIndexExtensionAPI, schema
         if (result.kind === "estimate") return text(formatCostEstimate(result.estimate), result.estimate);
         if (result.kind === "dryrun") return text(formatDryRunEstimate(result.dryrun), result.dryrun);
         if (result.kind === "busy") return text(result.text, { code: "INDEX_BUSY" });
+        if (result.kind === "refused") return text(result.text, { code: result.code });
         if (result.kind === "message") return text(result.text);
         return text(formatIndexStats(result.stats, params.verbose ?? false), result.stats);
       } catch (error: unknown) {

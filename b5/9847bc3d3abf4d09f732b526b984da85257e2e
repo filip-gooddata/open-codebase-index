@@ -1,0 +1,23 @@
+src/config/repository-route.ts
+  s_55a86ebfa4494b::t_d9388d7586681b 8,303-309,312-315,330-333,336,343-344
+src/tools/execute-common.ts
+  s_55a86ebfa4494b::t_8366d690daa15f 30
+tests/repository-route-status.test.ts
+  s_55a86ebfa4494b::t_7f6f144643a99e 5,9,19,176-177,179-180,184,186,190-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b59847bc3d3abf4d09f732b526b984da85257e2e",
+  "prompts": {},
+  "sessions": {
+    "s_55a86ebfa4494b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca0f59ce-32e4-4e8a-ad49-8d6d6c4402de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

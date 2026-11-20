@@ -198,8 +198,13 @@ function readRecoveryOwner(markerPath: string): IndexLockOwner | null {
 }
 
 function readLegacyOwner(lockPath: string): IndexLockOwner | null {
+  return parseLegacyOwnerText(readTextOrNull(lockPath));
+}
+
+function parseLegacyOwnerText(text: string | null): IndexLockOwner | null {
+  if (text === null) return null;
   try {
-    const parsed = JSON.parse(readFileSync(lockPath, "utf-8")) as {
+    const parsed = JSON.parse(text) as {
       pid?: unknown;
       startedAt?: unknown;
       hostname?: unknown;
@@ -242,11 +247,12 @@ function getOwnerLiveness(owner: LivenessSubject, storagePath?: string): OwnerLi
 }
 
 /**
- * Veto for clearing an unverified owner: it names this host and a process with its PID
- * runs here. Covers a failed machine-id lookup or shared-storage doubt about a local writer.
+ * Veto for clearing an unverified owner: a process with its PID runs here, and either
+ * the record names this host or it carries a machine id this host cannot check now.
  */
 function plausiblyAliveHere(owner: LivenessSubject): boolean {
-  return lockOwnerNamesThisHost(owner) && probePid(owner.pid) === "alive";
+  const identityUnavailable = owner.machineId !== undefined && getLocalMachineId() === null;
+  return (identityUnavailable || lockOwnerNamesThisHost(owner)) && probePid(owner.pid) === "alive";
 }
 
 function clearableOwner(owner: LivenessSubject, storagePath: string, allowUnverified: boolean): boolean {
@@ -570,13 +576,29 @@ function legacyRecordNamesHost(contents: string | null): boolean {
   }
 }
 
+function parseRecordText<T>(text: string | null, parser: (value: unknown) => T | null): T | null {
+  if (text === null) return null;
+  try {
+    return parser(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
+/** One read, so the owner judged and the bytes later compared always describe the same record. */
+function readRecord<T>(filePath: string, parser: (value: unknown) => T | null): { contents: string | null; owner: T | null } {
+  const contents = readTextOrNull(filePath);
+  return { contents, owner: parseRecordText(contents, parser) };
+}
+
 function describeLockEntry(
   kind: IndexLockEntryKind,
   entryPath: string,
   contentsPath: string,
-  owner: IndexLockEntryOwner | null,
+  record: { contents: string | null; owner: IndexLockEntryOwner | null },
   verifiable = true,
 ): IndexLockEntry {
+  const { owner } = record;
   const local = owner !== null && verifiable && isLocalLockOwner(owner, entryPath);
   let state: IndexLockEntryState = owner === null ? "unreadable" : "unverified";
   if (owner !== null && verifiable) {
@@ -590,7 +612,7 @@ function describeLockEntry(
   return {
     kind,
     path: entryPath,
-    contents: readTextOrNull(contentsPath),
+    contents: record.contents,
     owner,
     state,
     local,
@@ -609,14 +631,17 @@ export function inspectIndexLocks(indexPath: string): IndexLockEntry[] {
     if (getErrorCode(error) !== "ENOENT") throw error;
   }
   if (lockStats?.isDirectory()) {
-    entries.push(describeLockEntry("lock", lockPath, path.join(lockPath, OWNER_FILE_NAME), readDirectoryOwner(lockPath)));
+    const ownerPath = path.join(lockPath, OWNER_FILE_NAME);
+    entries.push(describeLockEntry("lock", lockPath, ownerPath, readRecord(ownerPath, parseOwner)));
     const reclaimPath = path.join(lockPath, RECLAIM_DIRECTORY_NAME);
     if (existsSync(reclaimPath)) {
-      entries.push(describeLockEntry("reclaim-marker", reclaimPath, path.join(reclaimPath, OWNER_FILE_NAME), readReclaimOwner(reclaimPath)));
+      const claimPath = path.join(reclaimPath, OWNER_FILE_NAME);
+      entries.push(describeLockEntry("reclaim-marker", reclaimPath, claimPath, readRecord(claimPath, parseReclaimOwner)));
     }
   } else if (lockStats) {
     const contents = readTextOrNull(lockPath);
-    entries.push(describeLockEntry("legacy-lock", lockPath, lockPath, readLegacyOwner(lockPath), legacyRecordNamesHost(contents)));
+    const record = { contents, owner: parseLegacyOwnerText(contents) };
+    entries.push(describeLockEntry("legacy-lock", lockPath, lockPath, record, legacyRecordNamesHost(contents)));
   }
 
   const markerNames = readdirSync(indexPath).filter((name) => (
@@ -624,12 +649,12 @@ export function inspectIndexLocks(indexPath: string): IndexLockEntry[] {
   )).sort();
   for (const markerName of markerNames) {
     const markerPath = path.join(indexPath, markerName);
-    const owner = readRecoveryOwner(markerPath);
-    const tokenMatches = owner?.token === markerName.slice(RECOVERY_MARKER_PREFIX.length);
-    if (owner && tokenMatches && isRecoverableMarkerOwner(owner, markerPath)) continue;
     const isFile = lstatSync(markerPath).isFile();
     const contentsPath = isFile ? markerPath : path.join(markerPath, OWNER_FILE_NAME);
-    entries.push(describeLockEntry("recovery-marker", markerPath, contentsPath, tokenMatches ? owner : null));
+    const record = isFile ? { contents: readTextOrNull(markerPath), owner: null } : readRecord(contentsPath, parseOwner);
+    const tokenMatches = record.owner?.token === markerName.slice(RECOVERY_MARKER_PREFIX.length);
+    if (record.owner && tokenMatches && isRecoverableMarkerOwner(record.owner, markerPath)) continue;
+    entries.push(describeLockEntry("recovery-marker", markerPath, contentsPath, tokenMatches ? record : { contents: record.contents, owner: null }));
   }
   return entries;
 }
@@ -647,24 +672,17 @@ function createClaim(): ReclaimOwner {
   };
 }
 
-/** Removes a claim left by an interrupted unlock when its holder has exited, or with `force` cannot be verified. */
-function removeStaleClaim(claimPath: string, force: boolean): boolean {
-  const claim = readReclaimOwner(claimPath);
-  if (claim === null ? !force : !clearableOwner(claim, claimPath, force)) return false;
-  const expected = readTextOrNull(path.join(claimPath, OWNER_FILE_NAME));
-  const movedPath = `${claimPath}.stale.${randomUUID()}`;
-  try {
-    renameSync(claimPath, movedPath);
-  } catch (error) {
-    if (getErrorCode(error) === "ENOENT") return true;
-    throw error;
-  }
-  if (readTextOrNull(path.join(movedPath, OWNER_FILE_NAME)) !== expected) {
-    if (!existsSync(claimPath)) renameSync(movedPath, claimPath);
-    return false;
-  }
-  rmSync(movedPath, { recursive: true, force: true });
-  return true;
+const MAX_CLAIM_DEPTH = 2;
+
+/**
+ * Removes a claim left by an interrupted unlock when its holder has exited, or with
+ * `force` cannot be verified. The claim is removed the same way as any directory: by
+ * publishing a claim inside it, so two unlocks cannot both take it over.
+ */
+function removeStaleClaim(claimPath: string, force: boolean, depth: number): boolean {
+  const record = readRecord(path.join(claimPath, OWNER_FILE_NAME), parseReclaimOwner);
+  if (record.owner === null ? !force : !clearableOwner(record.owner, claimPath, force)) return false;
+  return removeClaimedDirectory(claimPath, record.contents, force, depth + 1);
 }
 
 /**
@@ -673,13 +691,14 @@ function removeStaleClaim(claimPath: string, force: boolean): boolean {
  * with the rename, which proves the directory moved is the one checked; anything else
  * moved by mistake is put back.
  */
-function removeClaimedDirectory(directoryPath: string, expectedContents: string | null, force: boolean): boolean {
+function removeClaimedDirectory(directoryPath: string, expectedContents: string | null, force: boolean, depth = 0): boolean {
+  if (depth > MAX_CLAIM_DEPTH) return false;
   const claimPath = path.join(directoryPath, RECLAIM_DIRECTORY_NAME);
   const claim = createClaim();
   let claimed = false;
   for (let attempt = 0; attempt < 2 && !claimed; attempt += 1) {
     claimed = publishJsonDirectory(claimPath, claim);
-    if (!claimed && (attempt > 0 || !removeStaleClaim(claimPath, force))) return false;
+    if (!claimed && (attempt > 0 || !removeStaleClaim(claimPath, force, depth))) return false;
   }
   if (readTextOrNull(path.join(directoryPath, OWNER_FILE_NAME)) !== expectedContents) {
     const current = readReclaimOwner(claimPath);
@@ -726,7 +745,7 @@ function removeRecordFile(entry: IndexLockEntry): boolean {
 
 function abandonRecoveryMarker(entry: IndexLockEntry): boolean {
   const ownerPath = path.join(entry.path, OWNER_FILE_NAME);
-  const owner = readRecoveryOwner(entry.path);
+  const owner = parseRecordText(entry.contents, parseOwner);
   if (owner === null || !contentsUnchanged(entry, ownerPath) || !clearableOwner(owner, entry.path, true)) return false;
   const temporaryPath = `${ownerPath}.tmp.${process.pid}.${randomUUID()}`;
   try {
@@ -754,7 +773,7 @@ function breakLockEntry(indexPath: string, entry: IndexLockEntry, force: boolean
   if (isFile) return removeRecordFile(entry);
   if (entry.state === "unreadable") return removeClaimedDirectory(entry.path, entry.contents, force);
   if (entry.kind === "recovery-marker") return abandonRecoveryMarker(entry);
-  const owner = readDirectoryOwner(entry.path);
+  const owner = parseRecordText(entry.contents, parseOwner);
   if (owner === null || !contentsUnchanged(entry, path.join(entry.path, OWNER_FILE_NAME))) return false;
   return reclaimDeadOwner(indexPath, entry.path, owner, force);
 }
@@ -770,13 +789,13 @@ function acquireUnlockGuard(indexPath: string, force: boolean): UnlockGuard {
     if (publishJsonDirectory(guardPath, owner)) {
       return { lease: { canonicalIndexPath: indexPath, lockPath: guardPath, owner, recoveries: [] } };
     }
-    const holder = readDirectoryOwner(guardPath);
-    holderEntry = describeLockEntry("unlock-guard", guardPath, ownerPath, holder);
+    const record = readRecord(ownerPath, parseOwner);
+    holderEntry = describeLockEntry("unlock-guard", guardPath, ownerPath, record);
     if (attempt > 0) break;
-    const stale = holder === null ? force : clearableOwner(holder, guardPath, force);
-    if (!stale || !removeClaimedDirectory(guardPath, holderEntry.contents, force)) break;
+    const stale = record.owner === null ? force : clearableOwner(record.owner, guardPath, force);
+    if (!stale || !removeClaimedDirectory(guardPath, record.contents, force)) break;
   }
-  return { holder: holderEntry ?? describeLockEntry("unlock-guard", guardPath, ownerPath, null) };
+  return { holder: holderEntry ?? describeLockEntry("unlock-guard", guardPath, ownerPath, { contents: null, owner: null }) };
 }
 
 /**

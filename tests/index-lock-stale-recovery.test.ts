@@ -214,6 +214,16 @@ describe("stale index lock recovery", () => {
     expectBusy();
   });
 
+  it("refuses an exact-hostname old-format lock on shared storage", () => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "darwin",
+      hostname: () => "current-host",
+      run: darwinRunner({}, `/dev/disk1s1 on / (apfs, local, journaled)\nserver:/export on ${tempDir} (nfs, nodev)\n`),
+    });
+    writeOwner({ pid: exitedPid(), hostname: "current-host" });
+    expectBusy();
+  });
+
   it("does not widen a plain hostname into a .local alias", () => {
     setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host" });
     writeOwner({ pid: exitedPid(), hostname: "current-host.local" });
@@ -390,6 +400,33 @@ describe("manual index unlock", () => {
 
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
     expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("vetoes a forced clear of a renamed owner whose PID is alive when the machine id cannot be checked", () => {
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+    writeOwner({ pid: process.pid, hostname: "retired-name", machineId: "f".repeat(32) });
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("leaves a stale claim alone while another unlock is taking it over", () => {
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+    writeClaim(exitedPid(), "current-host");
+    const nested = path.join(lockPath, "reclaiming", "reclaiming");
+    fs.mkdirSync(nested);
+    fs.writeFileSync(path.join(nested, "owner.json"), JSON.stringify({
+      pid: process.pid,
+      hostname: "current-host",
+      startedAt: new Date().toISOString(),
+      token: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      expectedOwnerToken: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    }));
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-changed");
+    expect(fs.existsSync(path.join(nested, "owner.json"))).toBe(true);
+    expect(fs.readFileSync(path.join(lockPath, "owner.json"), "utf-8")).toBe("{");
   });
 
   it("clears a recovery marker that is a plain file only with --force", () => {

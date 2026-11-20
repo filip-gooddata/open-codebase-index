@@ -187,22 +187,31 @@ function getMounts(): MountEntry[] {
   return [];
 }
 
-/** Whether the storage holding a path is local to this machine; false when unknown. */
-export function isStorageLocal(storagePath: string): boolean {
+function findMount(storagePath: string): MountEntry | undefined {
   let candidate = storagePath;
   let realPath = sources.realpath(candidate);
   while (realPath === null && path.dirname(candidate) !== candidate) {
     candidate = path.dirname(candidate);
     realPath = sources.realpath(candidate);
   }
-  if (realPath === null) return false;
+  if (realPath === null) return undefined;
   let best: MountEntry | undefined;
   for (const mount of getMounts()) {
     const prefix = mount.mountPoint.endsWith(path.sep) ? mount.mountPoint : `${mount.mountPoint}${path.sep}`;
     if (realPath !== mount.mountPoint && !realPath.startsWith(prefix)) continue;
     if (best === undefined || mount.mountPoint.length > best.mountPoint.length) best = mount;
   }
-  return best?.local ?? false;
+  return best;
+}
+
+/** Whether the storage holding a path is known to be local to this machine; false when unknown. */
+export function isStorageLocal(storagePath: string): boolean {
+  return findMount(storagePath)?.local ?? false;
+}
+
+/** Whether the storage holding a path is known to be reachable from other machines. */
+export function isStorageShared(storagePath: string): boolean {
+  return findMount(storagePath)?.local === false;
 }
 
 /** Whether a recorded hostname is one this machine answers to now, ignoring any machine id. */
@@ -216,13 +225,13 @@ export function lockOwnerNamesThisHost(owner: LockHostOwner): boolean {
  * Whether a lock owner was written on this machine, so its PID can be checked here.
  * A recorded machine id decides on its own; when this machine cannot produce one,
  * such an owner stays unverified. An owner without one counts when it records the
- * exact OS hostname, as before. Any other name this machine answers to (a former
- * spelling, the macOS Bonjour name) counts only for a lock on local storage, since a
- * machine elsewhere can use the same name for a store it shares.
+ * exact OS hostname, unless the lock sits on storage known to be shared, where a
+ * machine elsewhere can use the same name. Any other name this machine answers to (a
+ * former spelling, the macOS Bonjour name) needs storage known to be local.
  */
 export function isLocalLockOwner(owner: LockHostOwner, storagePath?: string): boolean {
   if (owner.machineId !== undefined) return owner.machineId === getLocalMachineId();
-  if (owner.hostname === sources.hostname()) return true;
+  if (owner.hostname === sources.hostname()) return storagePath === undefined || !isStorageShared(storagePath);
   if (!lockOwnerNamesThisHost(owner)) return false;
   return storagePath !== undefined && isStorageLocal(storagePath);
 }

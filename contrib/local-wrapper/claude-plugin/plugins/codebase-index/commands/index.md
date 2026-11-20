@@ -7,7 +7,7 @@ Run the `index_codebase` tool with these settings:
 User input: $ARGUMENTS
 
 Parse the input and set tool arguments:
-- force is never set: a forced rebuild wipes the index shared by every worktree, and a PreToolUse hook blocks it
+- force is never set: a forced rebuild wipes the index shared by every worktree, and the shared store's config sets `indexing.allowForceRebuild: false`, so the server refuses it with `FORCE_REBUILD_DISABLED`
 - estimateOnly=true if input contains "estimate"
 - verbose=false (default, for token efficiency)
 - verbose=true if input contains "verbose" (for detailed output)

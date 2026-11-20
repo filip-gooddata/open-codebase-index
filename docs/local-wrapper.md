@@ -32,9 +32,16 @@ The launcher's header comment documents every rule; the summary:
   `git rev-parse --git-common-dir` resolves to that directory.
 - Linking needs a plain store directory with its `codebase-index.json`, which must set
   `"scope": "project"` (without it the package can inherit `global` from the global config and
-  use the global index), and both `.claude` paths ignored through `info/exclude` and untracked.
-  When a precondition fails, nothing is linked, links the launcher made earlier are removed, and
-  the reason is logged and shown by `index_status`.
+  use the global index) and `"indexing": { "allowForceRebuild": false }`, and both `.claude`
+  paths ignored through `info/exclude` and untracked. When a precondition fails, nothing is
+  linked, links the launcher made earlier in that checkout are removed, and the launcher starts
+  nothing there: no server, no CLI, and `--link-only` exits 1. It logs `refusing to start:` and
+  the reason in the `[ocbi-mcp]` lines of the MCP log. A checkout of a listed project never falls
+  back to the global config, because other checkouts keep their links and a worktree can inherit
+  them, with a profile that may predate `allowForceRebuild`.
+- A linked checkout needs a package with `indexing.allowForceRebuild` in `$OCBI_HOME/pkg`. With
+  an older one the launcher refuses to start the same way and says the package must be
+  upgraded.
 - Anything else in the way of a link is moved to `$OCBI_HOME/<project>/parked/<stamp>/`, never
   deleted.
 - With a `profiles.conf` line, the primary checkout gets `profiles/main.json` (background indexing
@@ -46,16 +53,23 @@ The launcher's header comment documents every rule; the summary:
 ## Host registration
 
 **Claude Code.** The `plugin` piece installs a local marketplace whose plugin starts the launcher
-and adds three hooks that call launcher modes:
+and adds one SessionStart hook, `--session-hint`, which tells the model to use the index, only
+inside listed projects.
 
-| Hook | Mode | Why |
-|---|---|---|
-| SessionStart | `--session-hint` | Tells the model to use the index, only inside listed projects. |
-| PreToolUse on `index_codebase` | `--guard-force` | Blocks `force=true`, which would wipe the shared store for every worktree. |
-| PostToolUse on `index_status` | `--status-output` | Claude Code shows the model only the tool's structured content, so the hook replaces it with the `cbi status` text plus the routing (project, store, profile, or why nothing is linked). |
+The package itself covers what earlier wrapper versions did with more hooks and a stdio guard:
 
-The server itself runs behind `mcp-force-guard.mjs`, which answers a forced `index_codebase` call
-without passing it on. That covers hosts that do not run the plugin's hooks.
+- **Forced rebuilds.** The example store config sets `"indexing": { "allowForceRebuild": false }`,
+  and both profiles inherit it. The server then refuses `index_codebase` with `force: true` in
+  every host with `FORCE_REBUILD_DISABLED`, before it takes any lock. Only the CLI can override it,
+  with `ocbi index --force --allow-shared-rebuild`, which is what `ocbi-rebuild` runs. The launcher
+  links only a store whose config sets the key to `false`.
+- **Status text.** With `--host claude`, `index_status` returns text only, with the MCP
+  diagnostics (active and latest interrupted operations) appended, so Claude Code shows the
+  formatted status rather than structured content.
+
+The launcher no longer adds a `Routing:` line to `index_status`. Why a checkout is not linked is in
+the `[ocbi-mcp]` lines of the MCP log and in `ocbi-mcp.sh --link-only`, which prints the root and
+logs the reason.
 
 **Codex.** Register the server in `~/.codex/config.toml`:
 
@@ -83,6 +97,19 @@ git -C <repo> config --local hook.ocbi-prewarm.command "'<OCBI_HOME>/ocbi-post-c
 or, on any git version, by linking it as the repository's `post-checkout` hook in
 `<git common dir>/hooks/`. git 2.43 has no config-based hooks; git 2.54 does.
 
+## Upgrading from a wrapper with the force guard
+
+The installer never edits a store config, and the default pieces do not upgrade the package. After
+updating the wrapper:
+
+1. Upgrade the package: `install.sh --pieces pkg --package <spec>`, with a release that has
+   `indexing.allowForceRebuild`.
+2. Add `"allowForceRebuild": false` to the `indexing` object of every
+   `$OCBI_HOME/<project>/codebase-index.json`. The profiles are regenerated from it.
+3. Restart the MCP servers, or the agent sessions that run them.
+
+Until both are done, the launcher starts nothing in checkouts of that project and logs why.
+
 ## Settings that matter
 
 - `indexing.autoIndexWaitMs: 360000` in the example base config. Retrieval waits this long for a
@@ -92,7 +119,7 @@ or, on any git version, by linking it as the repository's `post-checkout` hook i
   hundreds of watchers on one store cost more than they save. The profiles also set
   `autoIndexOnStartup` (true for the primary, false elsewhere) for a package that reads it. The
   current package ignores that key, so with `autoIndex: true` every worktree still indexes when
-  its server starts; `index_status` says so in its routing line. Set `autoIndex: false` in the
+  its server starts. Set `autoIndex: false` in the
   base config if only on-demand indexing is wanted, on the primary too.
 - Tune `exclude` for your repository. Generated code, build output and vendored dependencies cost
   embedding time and push real code out of results.
@@ -107,17 +134,19 @@ or, on any git version, by linking it as the repository's `post-checkout` hook i
   the checkout it linked. Hosts start MCP servers in the session's directory, which is what you
   want; when you run it by hand, run it from inside the checkout.
 - Never run `index_codebase` with `force=true` on a shared store: it drops every worktree's
-  catalog, and re-embedding a large repository can take hours. The guard and the hook block it.
-  For a full rebuild use `ocbi-rebuild <project>` (macOS today; Linux support is planned). It
-  runs the forced index through the launcher with `OCBI_REQUIRE_PROJECT=<project>`, so the
-  launcher refuses it (exit 3) unless that checkout is linked to the project's store at that
-  moment. The post-checkout hook does the same with `OCBI_REQUIRE_PROJECT='*'`, so it never
+  catalog, and re-embedding a large repository can take hours. `allowForceRebuild: false` in the
+  store config makes the server refuse it with `FORCE_REBUILD_DISABLED`. For a full rebuild use
+  `ocbi-rebuild <project>` (macOS today; Linux support is planned). It runs the forced index
+  through the launcher with `--allow-shared-rebuild` and `OCBI_REQUIRE_PROJECT=<project>`, so the
+  launcher refuses it unless that checkout is linked to the project's store at that moment. A
+  `refusing to start:` refusal fails the rebuild at once; other failures, such as `INDEX_BUSY`,
+  are retried. The post-checkout hook does the same with `OCBI_REQUIRE_PROJECT='*'`, so it never
   indexes a local or global index. A guarded run accepts only `index`, and always runs it with
   `--host claude --project <absolute root>`.
 - One process indexes a store at a time (`indexing.lock`). The CLI returns `INDEX_BUSY`; MCP
   retrieval waits up to `autoIndexWaitMs`.
-- The guard does not restart a server that dies. After a server is killed, reconnect the MCP
-  server or restart the session.
+- Nothing restarts a server that dies. After a server is killed, reconnect the MCP server or
+  restart the session.
 - Upgrading the package in `$OCBI_HOME/pkg` does not affect running servers; each keeps its
   version until its session restarts.
 - A store with hundreds of branch catalogs grows to gigabytes. `ocbi prune` (a dry run unless
@@ -141,11 +170,12 @@ From inside a checkout of a listed project:
 
 It works when `status` exits 0 and reports a ready catalog with no pending storage migrations, a
 search returns results, and a new agent session lists the `codebase-index` tools and answers
-`index_status` with a `Routing: project <name>, shared index ...` line.
+`index_status` with the formatted status text. `index_codebase` with `force: true` should return
+`FORCE_REBUILD_DISABLED`.
 
 ## Platforms
 
-The launcher, guard, hook, plugin and installer run on macOS (bash 3.2, BSD tools) and Linux
+The launcher, hook, plugin and installer run on macOS (bash 3.2, BSD tools) and Linux
 (bash 5, GNU tools); `contrib/local-wrapper/test/run-tests.sh` runs on both. The `rebuild` and
 `notify` pieces are macOS-only for now: the rebuild uses a launchd job, and notifications with an
 action button use a small Swift app built from source. Linux support for both is planned.

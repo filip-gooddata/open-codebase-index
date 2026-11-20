@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`index_status` for Claude Code**: With `--host claude`, `index_status` returns only text content, with the MCP diagnostics (active and latest interrupted operations) appended as text. Claude Code shows `structuredContent` instead of the text when both are present, which hid the formatted status. The switch keys on `--host claude`, so another client started with that host gets the same text-only result. Other hosts still receive the structured status with `mcpDiagnostics`.
+- **Local wrapper uses the native force refusal**: The example store config in `contrib/local-wrapper/` sets `indexing.allowForceRebuild: false`, and `ocbi-rebuild` runs `ocbi index --force --allow-shared-rebuild`. A checkout of a listed project that cannot be linked to its shared store (including a store config without the key set to `false`) no longer falls back to the global config: the launcher starts neither the server nor the CLI there and logs `refusing to start:` with the reason, as it does when the installed package predates the setting; `docs/local-wrapper.md` lists the upgrade steps.
+
+### Removed
+
+- **Local wrapper force guard and status hook**: `contrib/local-wrapper/launcher/mcp-force-guard.mjs`, the launcher's `--guard-force` and `--status-output` modes, and the Claude plugin's PreToolUse and PostToolUse hooks that called them. `indexing.allowForceRebuild` and the text-only Claude `index_status` replace them; the `Routing:` line the status hook added is gone, and link failures stay in the MCP log. The plugin keeps its SessionStart hint.
 
 ### Documentation
 

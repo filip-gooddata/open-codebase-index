@@ -3,7 +3,7 @@
 #
 # Usage: install.sh [options]
 #   --pieces LIST        comma-separated pieces to install (default: launcher,hook,plugin,rebuild,notify)
-#                        launcher  ocbi-mcp.sh, mcp-force-guard.mjs and config examples into OCBI_HOME
+#                        launcher  ocbi-mcp.sh and config examples into OCBI_HOME
 #                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
 #                        plugin    Claude Code / Codex local marketplace into --marketplace-dir
 #                        rebuild   ocbi-rebuild.sh into OCBI_HOME, ocbi-rebuild into --bin-dir and,
@@ -139,7 +139,6 @@ place() {
 install_launcher() {
   say "launcher -> $home"
   place 755 "$here/launcher/ocbi-mcp.sh" "$home/ocbi-mcp.sh"
-  place 644 "$here/launcher/mcp-force-guard.mjs" "$home/mcp-force-guard.mjs"
   place 644 "$here/launcher/projects.conf.example" "$home/projects.conf.example"
   place 644 "$here/launcher/profiles.conf.example" "$home/profiles.conf.example"
   place 644 "$here/launcher/codebase-index.example.json" "$home/codebase-index.example.json"

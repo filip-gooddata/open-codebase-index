@@ -60,7 +60,6 @@ elif [ "${OCBI_WRAPPER_REQUIRE_SHELLCHECK:-0}" = 1 ]; then
 else
   skip "shellcheck" "not on PATH"
 fi
-check "node --check mcp-force-guard.mjs" node --check "$here/launcher/mcp-force-guard.mjs"
 while IFS= read -r j; do
   check "valid JSON ${j#"$here"/}" node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$j"
 done < <(find "$here/claude-plugin" "$here/launcher" -name '*.json')
@@ -96,8 +95,10 @@ check "plugin index.md is the shared-store override" grep -q 'force is never set
 if grep -rq '@[A-Z_]*@' "$M" "$HOME/.local/bin/ocbi-rebuild"; then not_ok "no template placeholders left"; else ok "no template placeholders left"; fi
 got="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.mcpServers["codebase-index"].args[0])' "$M/plugins/codebase-index/.claude-plugin/plugin.json")"
 expect_eq "plugin.json points at the installed launcher" "$H/ocbi-mcp.sh" "$got"
-got="$(node -e 'const h=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(h.hooks.PreToolUse[0].hooks[0].command)' "$M/plugins/codebase-index/hooks/hooks.json")"
-expect_eq "hooks.json runs the installed launcher" "/bin/bash \"$H/ocbi-mcp.sh\" --guard-force" "$got"
+got="$(node -e 'const h=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(Object.keys(h.hooks).join(",")+" "+h.hooks.SessionStart[0].hooks[0].command)' "$M/plugins/codebase-index/hooks/hooks.json")"
+expect_eq "hooks.json wires only the session hint, through the installed launcher" "SessionStart /bin/bash \"$H/ocbi-mcp.sh\" --session-hint" "$got"
+got="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).indexing.allowForceRebuild))' "$H/codebase-index.example.json")"
+expect_eq "the example store config refuses forced rebuilds" false "$got"
 if [ "$(uname -s)" = Darwin ]; then
   plist="$HOME/Library/LaunchAgents/io.github.open-codebase-index.rebuild.plist"
   check "installed the launchd plist" grep -q "<string>$H/ocbi-rebuild.sh</string>" "$plist"
@@ -122,7 +123,7 @@ expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && ec
 P2="$T/preflight"
 mkdir -p "$P2/ocbi-mcp.sh"
 bash "$here/install.sh" --pieces launcher,hook --home "$P2" >/dev/null 2>&1
-expect_eq "install refuses a directory at a destination and writes nothing" "2 absent" "$? $([ -e "$P2/mcp-force-guard.mjs" ] || [ -e "$P2/ocbi-post-checkout.sh" ] && echo present || echo absent)"
+expect_eq "install refuses a directory at a destination and writes nothing" "2 absent" "$? $([ -e "$P2/projects.conf.example" ] || [ -e "$P2/ocbi-post-checkout.sh" ] && echo present || echo absent)"
 printf '# mine\n' >"$H/projects.conf"
 bash "$here/install.sh" "${install_args[@]}" >/dev/null 2>&1
 expect_eq "install keeps an existing projects.conf" "# mine" "$(cat "$H/projects.conf")"
@@ -140,6 +141,7 @@ rl.on("line", (line) => {
 });
 EOF
 cat >"$dist/cbi.js" <<'EOF'
+// The launcher looks for --allow-shared-rebuild to tell a package with indexing.allowForceRebuild.
 process.stdout.write("CBI " + process.argv.slice(2).join(" ") + " cwd=" + process.cwd() + "\n");
 EOF
 
@@ -154,12 +156,6 @@ W="$T/src/demo-feature"
 
 L="$H/ocbi-mcp.sh"
 
-# --- --guard-force -------------------------------------------------------------------------------
-printf '{"tool_input":{"force": true}}' | bash "$L" --guard-force 2>/dev/null
-expect_eq "--guard-force blocks force=true" 2 "$?"
-printf '{"tool_input":{"force":false}}' | bash "$L" --guard-force 2>/dev/null
-expect_eq "--guard-force allows force=false" 0 "$?"
-
 # --- not listed ----------------------------------------------------------------------------------
 out="$(cd "$R" && bash "$L" --session-hint)"
 expect_eq "--session-hint is silent for an unlisted repo" "" "$out"
@@ -172,7 +168,7 @@ printf '# test\ndemo|%s\n' "$R/.git" >"$H/projects.conf"
 mkdir -p "$H/demo"
 cp "$H/codebase-index.example.json" "$H/demo/codebase-index.json"
 err="$(cd "$R" && bash "$L" --link-only 2>&1 >/dev/null)"
-expect_eq "unexcluded paths: --link-only still exits 0" 0 "$?"
+expect_eq "unexcluded paths: a listed checkout refuses to start (--link-only exits 1)" 1 "$?"
 expect_match "unexcluded paths are reported" "must be in .*info/exclude" "$err"
 check "unexcluded paths: nothing linked" test ! -L "$R/.claude/index"
 
@@ -244,11 +240,13 @@ printf 'bare|%s\n' "$B" >"$H/projects.conf"
 check "unlisted again: launcher-made links are removed" test ! -L "$W/.claude/index" -a ! -L "$W/.claude/codebase-index.json"
 printf 'demo|%s\nbare|%s\n' "$R/.git" "$B" >"$H/projects.conf"
 
-# --- --cbi, --status-output, server --------------------------------------------------------------
+# --- --cbi, server -------------------------------------------------------------------------------
 out="$(cd "$W" && bash "$L" --cbi status --host claude 2>/dev/null)"
 expect_eq "--cbi runs the CLI in the checkout" "CBI status --host claude cwd=$W" "$out"
 out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index 2>/dev/null)"
 expect_eq "guarded --cbi names --host claude and the root" "CBI index --host claude --project $W cwd=$W" "$out"
+out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --force --allow-shared-rebuild 2>/dev/null)"
+expect_eq "guarded --cbi passes the shared-rebuild override to the CLI" "CBI index --force --allow-shared-rebuild --host claude --project $W cwd=$W" "$out"
 (cd "$W" && OCBI_REQUIRE_PROJECT=bare bash "$L" --cbi index >/dev/null 2>&1)
 expect_eq "--cbi refuses another project's checkout" 3 "$?"
 out="$(cd "$T" && OCBI_REQUIRE_PROJECT='*' bash "$L" --cbi index 2>&1)"
@@ -302,33 +300,53 @@ cp "$H/demo/codebase-index.json" "$T/demo-config.json"
 for scope in none global; do
   node -e 'const f=process.argv[1],c=JSON.parse(require("fs").readFileSync(f,"utf8"));if(process.argv[2]==="none")delete c.scope;else c.scope=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(c))' "$H/demo/codebase-index.json" "$scope"
   out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index 2>&1)"
-  expect_eq "scope $scope: guarded --cbi refuses before the CLI starts" "3 no-cli" "$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
+  expect_eq "scope $scope: guarded --cbi refuses before the CLI starts" "1 no-cli" "$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
   expect_match "scope $scope: the reason names the scope" 'must set "scope": "project"' "$out"
   check "scope $scope: the launcher removed its links" test ! -L "$W/.claude/index"
 done
 cp "$T/demo-config.json" "$H/demo/codebase-index.json"
+# A store config from an older example, without allowForceRebuild false, starts nothing: the
+# primary checkout keeps its links, and a worktree would inherit them.
+(cd "$R" && bash "$L" --link-only >/dev/null 2>&1)
+for allow in missing true; do
+  node -e 'const f=process.argv[1],c=JSON.parse(require("fs").readFileSync(f,"utf8"));if(process.argv[2]==="missing")delete c.indexing.allowForceRebuild;else c.indexing.allowForceRebuild=true;require("fs").writeFileSync(f,JSON.stringify(c))' "$H/demo/codebase-index.json" "$allow"
+  out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index 2>&1)"
+  expect_eq "allowForceRebuild $allow: guarded --cbi refuses before the CLI starts" "1 no-cli" "$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
+  expect_match "allowForceRebuild $allow: the reason names the setting" '"allowForceRebuild": false' "$out"
+  check "allowForceRebuild $allow: the launcher removed its links" test ! -L "$W/.claude/index"
+  check "allowForceRebuild $allow: the primary still has its link" test -L "$R/.claude/index"
+  out="$(cd "$W" && echo '{"jsonrpc":"2.0","id":8,"method":"ping"}' | bash "$L" 2>/dev/null; echo "exit=$?")"
+  expect_eq "allowForceRebuild $allow: server mode starts no server in a worktree" "exit=1" "$out"
+done
+cp "$T/demo-config.json" "$H/demo/codebase-index.json"
 (cd "$W" && bash "$L" --link-only >/dev/null 2>&1)
 check "scope project: linked again" test -L "$W/.claude/index"
+# A package without indexing.allowForceRebuild must not serve or rebuild a linked store.
+cp "$dist/cbi.js" "$T/cbi.js.new"
+printf 'process.stdout.write("CBI old\\n");\n' >"$dist/cbi.js"
+out="$(cd "$W" && echo '{"jsonrpc":"2.0","id":7,"method":"ping"}' | bash "$L" 2>&1)"
+expect_eq "old package: server mode exits 1 without starting" "1 no-server" "$(cd "$W" && echo '{"jsonrpc":"2.0","id":7,"method":"ping"}' | bash "$L" >/dev/null 2>&1; echo $?) $(printf '%s' "$out" | grep -q '"echo"' && echo server || echo no-server)"
+expect_match "old package: the reason says to upgrade" "predates indexing.allowForceRebuild" "$out"
+out="$(cd "$W" && OCBI_REQUIRE_PROJECT=demo bash "$L" --cbi index --force --allow-shared-rebuild 2>&1)"
+expect_eq "old package: guarded --cbi does not start the CLI" "no-cli" "$(printf '%s' "$out" | grep -q '^CBI' && echo cli || echo no-cli)"
+mv "$T/cbi.js.new" "$dist/cbi.js"
+# A listed worktree left unlinked (here: the .claude paths not excluded) could inherit the
+# primary's linked store and its profile, so it starts nothing.
+(cd "$R" && bash "$L" --link-only >/dev/null 2>&1)
+cp "$R/.git/info/exclude" "$T/exclude.bak"
+grep -v '^\.claude/' "$T/exclude.bak" >"$R/.git/info/exclude"
+out="$(cd "$W" && echo '{"jsonrpc":"2.0","id":9,"method":"ping"}' | bash "$L" 2>&1; echo "exit=$?")"
+check "unlinked listed worktree: the primary still has its links" test -L "$R/.claude/index" -a -L "$R/.claude/codebase-index.json"
+expect_match "unlinked listed worktree: refuses to start, no server" "refusing to start: demo: .*exit=1" "$(printf '%s' "$out" | tr '\n' ' ')"
+if printf '%s' "$out" | grep -q '"echo"'; then not_ok "unlinked listed worktree: no server answered" "$out"; else ok "unlinked listed worktree: no server answered"; fi
+cp "$T/exclude.bak" "$R/.git/info/exclude"
 out="$(cd "$W" && echo '{"jsonrpc":"2.0","id":5,"method":"ping"}' | bash "$L" --project /elsewhere --host codex 2>/dev/null)"
 expect_match "server mode: the launcher's --host and --project come last" "\"argv\":\\[\"--project\",\"/elsewhere\",\"--host\",\"codex\",\"--host\",\"claude\",\"--project\",\"$W\"\\]" "$out"
-out="$(cd "$R" && echo '{}' | bash "$L" --status-output 2>/dev/null)"
-got="$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s).hookSpecificOutput;process.stdout.write(o.hookEventName+"\n"+o.updatedToolOutput)})')"
-expect_match "--status-output names the routing" "^PostToolUse
-Routing: project demo, shared index $H/demo/claude-index\\. Profile: main" "$got"
-expect_match "--status-output includes the CLI status" "CBI status --host claude --project $R" "$got"
-out="$(cd "$T" && echo '{}' | bash "$L" --status-output 2>/dev/null)"
-expect_match "--status-output outside a listed repo" "is not a listed project" "$out"
 
-out="$(cd "$W" && printf '%s\n%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"index_codebase","arguments":{"force":true}}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | bash "$L" 2>/dev/null)"
-expect_match "server mode: the guard answers a forced index" '"id":1,"result":\{"content":\[\{"type":"text","text":"Blocked: index_codebase force=true' "$out"
-expect_match "server mode: other calls reach the server" '"id":2,"result":\{"echo":"tools/list"' "$out"
+out="$(cd "$W" && printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | bash "$L" 2>/dev/null)"
+expect_match "server mode: calls reach the server" '"id":2,"result":\{"echo":"tools/list"' "$out"
 expect_match "server mode: the server gets --host claude --project <root>" "\"argv\":\\[\"--host\",\"claude\",\"--project\",\"$W\"\\]" "$out"
 
-start=$SECONDS
-node "$H/mcp-force-guard.mjs" node -e 'process.exit(7)' < <(sleep 8)
-expect_eq "the guard exits with its server while stdin stays open" "7 fast" "$? $([ $((SECONDS - start)) -lt 5 ] && echo fast || echo slow)"
 
 # --- post-checkout hook --------------------------------------------------------------------------
 S="$T/stubhome"
@@ -436,7 +454,7 @@ EOF
 OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo
 expect_eq "rebuild exits 0" 0 "$?"
 expect_eq "rebuild forces the primary, then indexes each other worktree" \
-  "STUB --cbi index --force --host claude --project $R cwd=$R req=demo
+  "STUB --cbi index --force --allow-shared-rebuild --host claude --project $R cwd=$R req=demo
 STUB --cbi index --host claude --project $W cwd=$W req=demo" "$(cat "$RB/calls" 2>/dev/null)"
 # Another process holding the flock keeps a rebuild out; once it is gone the lock is free.
 : >"$RB/calls"
@@ -461,6 +479,40 @@ OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo & first=$!
 OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" demo & second=$!
 wait "$first"; wait "$second"
 expect_eq "concurrent rebuilds: one runs, one exits" 2 "$(grep -c '^STUB' "$RB/calls")"
+# A launcher refusing an old package or a store config that allows forced rebuilds fails the
+# rebuild at once, with the launcher's reason, instead of retrying.
+cat >"$RB/ocbi-mcp.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "STUB $* cwd=$PWD req=$OCBI_REQUIRE_PROJECT" >>"$OCBI_HOME/calls"
+echo "[ocbi-mcp] refusing to start: the package in $OCBI_HOME/pkg predates indexing.allowForceRebuild, which a shared store needs; upgrade it" >&2
+exit 1
+EOF
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=30 bash "$RB/ocbi-rebuild.sh" demo
+expect_eq "rebuild with an old package fails after one attempt" "1 1" "$? $(grep -c '^STUB' "$RB/calls")"
+# shellcheck disable=SC2012 # names are rebuild-<timestamp>.log
+expect_match "rebuild names the package upgrade" "Nothing was rebuilt: refusing to start: the package in .* predates indexing.allowForceRebuild" "$(cat "$(ls -1t "$RB"/logs/rebuild-*.log | head -n 1)")"
+# Ordinary launcher output that mentions allowForceRebuild does not stop the retry of a busy index.
+cat >"$RB/ocbi-mcp.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "STUB $* cwd=$PWD req=$OCBI_REQUIRE_PROJECT" >>"$OCBI_HOME/calls"
+echo "[ocbi-mcp] regenerated $OCBI_HOME/allowForceRebuild/profiles/main.json" >&2
+if [ "$(grep -c -- '--force' "$OCBI_HOME/calls")" = 1 ]; then echo "INDEX_BUSY" >&2; exit 1; fi
+EOF
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=1 bash "$RB/ocbi-rebuild.sh" demo
+expect_eq "rebuild retries a busy index despite an allowForceRebuild log line" "0 2" "$? $(grep -c -- '--force' "$RB/calls")"
+# A worktree the launcher refuses is not retried after the primary's forced index.
+cat >"$RB/ocbi-mcp.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "STUB $* cwd=$PWD req=$OCBI_REQUIRE_PROJECT" >>"$OCBI_HOME/calls"
+case " $* " in *" --force "*) exit 0 ;; esac
+echo "[ocbi-mcp] refusing to start: demo: $PWD/.claude is not a directory; a checkout of a listed project runs only on its linked shared store" >&2
+exit 1
+EOF
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=30 bash "$RB/ocbi-rebuild.sh" demo >/dev/null 2>&1
+expect_eq "rebuild tries a refused worktree once" "1 1" "$(grep -c -- '--force' "$RB/calls") $(grep -c "cwd=$W " "$RB/calls")"
 # With the real launcher, a primary that is not linked to the store is never force-indexed.
 mkdir -p "$T/src/loose" && git -C "$T/src/loose" init -q -b main && git -C "$T/src/loose" commit -q --allow-empty -m init
 printf 'loose|%s\n' "$T/src/loose/.git" >>"$H/projects.conf"
@@ -470,7 +522,7 @@ expect_eq "rebuild of an unlinked primary fails" 1 "$?"
 log_file="$(ls -1t "$H"/logs/rebuild-*.log | head -n 1)"
 if grep -q 'CBI index --force' "$log_file"; then not_ok "rebuild of an unlinked primary runs no forced index" "$(cat "$log_file")"; else
   ok "rebuild of an unlinked primary runs no forced index"; fi
-expect_match "rebuild names the reason" "is not linked to the shared store of loose" "$(cat "$log_file")"
+expect_match "rebuild names the reason" "Nothing was rebuilt: refusing to start: loose: " "$(cat "$log_file")"
 printf 'demo|%s\nbare|%s\n' "$R/.git" "$B" >"$H/projects.conf"
 
 # --- stale check ---------------------------------------------------------------------------------

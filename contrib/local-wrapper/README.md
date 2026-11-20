@@ -10,9 +10,9 @@ directory once the package does its job natively.
 
 | Piece | Files | Installs to | What it does | Platforms |
 |---|---|---|---|---|
-| `launcher` | `launcher/ocbi-mcp.sh`, `launcher/mcp-force-guard.mjs`, `launcher/*.example*` | `$OCBI_HOME` | Links each worktree's `.claude/index` and `.claude/codebase-index.json` to a shared store, picks the primary or worktree profile, then starts the MCP server behind a guard that blocks `index_codebase force=true`. Also the hook modes the plugin calls. | macOS, Linux |
+| `launcher` | `launcher/ocbi-mcp.sh`, `launcher/*.example*` | `$OCBI_HOME` | Links each worktree's `.claude/index` and `.claude/codebase-index.json` to a shared store, picks the primary or worktree profile, then starts the MCP server. Also the session-hint mode the plugin calls. | macOS, Linux |
 | `hook` | `hook/ocbi-post-checkout.sh` | `$OCBI_HOME` | git `post-checkout` hook: refreshes the shared index in the background after a branch checkout or `git worktree add`. | macOS, Linux |
-| `plugin` | `claude-plugin/` (copies of the repository's commands and skill; `index.md` and `status.md` differ) | local marketplace dir | Claude Code plugin that starts the launcher and wires three hooks (session hint, force guard, status output); a Codex skill plugin in the same marketplace. | macOS, Linux |
+| `plugin` | `claude-plugin/` (copies of the repository's commands and skill; `index.md` and `status.md` differ) | local marketplace dir | Claude Code plugin that starts the launcher and wires the session-hint hook; a Codex skill plugin in the same marketplace. | macOS, Linux |
 | `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-rebuild`, `rebuild/rebuild.plist.template` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` | `ocbi-rebuild <project>`: full rebuild of a shared store in the background, through an on-demand launchd job. | macOS; Linux support is planned |
 | `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the stale-catalog check and the rebuild, with an action button when the notifier app is built. | macOS; Linux support is planned |
 | `pkg` | none | `$OCBI_HOME/pkg` | `npm install` of the package spec you pass with `--package`. | macOS, Linux |
@@ -52,7 +52,7 @@ For a repository at `~/src/myproject` (a normal clone, git common dir `~/src/myp
 H="${XDG_DATA_HOME:-$HOME/.local/share}/ocbi"
 echo "myproject|$HOME/src/myproject/.git" >>"$H/projects.conf"
 mkdir -p "$H/myproject"
-cp "$H/codebase-index.example.json" "$H/myproject/codebase-index.json"   # keep "scope": "project"; edit exclude
+cp "$H/codebase-index.example.json" "$H/myproject/codebase-index.json"   # keep "scope" and allowForceRebuild; edit exclude
 printf '.claude/index\n.claude/codebase-index.json\n' >>"$HOME/src/myproject/.git/info/exclude"
 echo "myproject|$HOME/src/myproject" >>"$H/profiles.conf"                 # optional: primary checkout
 (cd ~/src/myproject && "$H/ocbi-mcp.sh" --link-only)                     # check the links
@@ -75,7 +75,8 @@ makes its absence a failure.
 Delete the installed files listed in the table, then the piece's directory here, its
 `install_<piece>` function and `--pieces` entry in `install.sh`, and its section in
 `test/run-tests.sh`. The launcher is the only piece others call: `hook` and `rebuild` run
-`ocbi-mcp.sh --cbi` with `OCBI_REQUIRE_PROJECT` set, which makes the launcher refuse (exit 3)
-unless the checkout is linked to that project's shared store, and the plugin starts
+`ocbi-mcp.sh --cbi` with `OCBI_REQUIRE_PROJECT` set, which makes the launcher refuse (exit 3, or
+exit 1 with `refusing to start:` for a listed checkout it cannot link) unless the checkout is
+linked to that project's shared store, and the plugin starts
 `ocbi-mcp.sh`. Point them at the package's `cbi` and MCP binaries, with an equivalent check,
 before removing it.

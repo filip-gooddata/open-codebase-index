@@ -3,9 +3,9 @@
 # Launches the pinned open-codebase-index MCP server for Claude Code and Codex.
 #
 # OCBI_HOME is the directory this script is installed in unless the environment sets it. It holds
-# pkg/ (the npm install of open-codebase-index), mcp-force-guard.mjs, projects.conf, profiles.conf
-# and one store directory per listed project. Runs on macOS (bash 3.2, BSD tools) and Linux (bash
-# 4/5, GNU tools); needs git, perl, Node.js >= 22, and sqlite3 for --stale-check only.
+# pkg/ (the npm install of open-codebase-index), projects.conf, profiles.conf and one store
+# directory per listed project. Runs on macOS (bash 3.2, BSD tools) and Linux (bash 4/5, GNU
+# tools); needs git, perl, Node.js >= 22, and sqlite3 for --stale-check only.
 #
 # Projects listed in $OCBI_HOME/projects.conf ("name|git common dir" per line; nothing is listed
 # when the file is missing) get one index shared by every worktree. open-codebase-index only
@@ -35,7 +35,7 @@
 # must pin the git dir: the declared checkout's common dir, git dir and the git dir's gitdir
 # back-pointer must all match the pin. Branch and path names, or being a listed worktree, play no
 # part. A missing or wrong pin, an invalid line or a declared path git does not confirm gives
-# every checkout the worktree profile, with the reason logged and in status. A profile is
+# every checkout the worktree profile, with the reason logged. A profile is
 # regenerated whenever it differs from what the base config yields; one whose content no longer
 # matches its recorded hash is parked first. Generation is serialized by a flock on
 # profiles/.lock and repeated until the base config is unchanged across it. A profiles dir,
@@ -43,16 +43,15 @@
 # without writing through it.
 #
 # Modes:
-#   (no args)        link if listed, then exec the MCP server behind mcp-force-guard.mjs
+#   (no args)        link if listed, then exec the MCP server
 #   --link-only      link if listed, print the project root, exit
 #   --session-hint   print the routing hint for listed projects only (SessionStart hook)
-#   --guard-force    PreToolUse hook: block index_codebase force=true, which would wipe the
-#                    shared index for every worktree; rebuild from a terminal instead
 #   --cbi ARGS...    link if listed, then run the ocbi CLI (dist/cbi.js) with ARGS. With
 #                    OCBI_REQUIRE_PROJECT=<name> it runs only when this checkout is linked to
 #                    the shared store of <name> (any listed project for "*") and exits 3
-#                    otherwise, so a forced or background index never lands on a local or
-#                    global index. A guarded run accepts only the `index` subcommand, refuses
+#                    otherwise (a listed checkout that cannot be linked already exits 1 with
+#                    "refusing to start:"), so a forced or background index never lands on a
+#                    local or global index. A guarded run accepts only the `index` subcommand, refuses
 #                    --config and any --host or --project other than claude and this root,
 #                    passes its own --host claude --project <absolute root>, and checks that
 #                    the linked config is project-scoped. The hook and the rebuild set it.
@@ -61,18 +60,7 @@
 #                    (15), notify through $OCBI_HOME/ocbi-notify.sh when it is installed. The
 #                    server start runs it in the background, at most once a day per project;
 #                    OCBI_STALE_CHECK=0 turns that off.
-#   --status-output  PostToolUse hook for index_status: Claude Code shows the model only the
-#                    tool's structuredContent ({"mcpDiagnostics":...}), not the status text,
-#                    so replace the output with the text of `cbi status`
 set -u
-
-if [ "${1:-}" = "--guard-force" ]; then
-  if tr -d '\n\r' | grep -Eq '"force"[[:space:]]*:[[:space:]]*true'; then
-    echo "Blocked: index_codebase force=true wipes the shared index for every worktree and re-embeds everything. Use index_codebase without force for normal refreshes. If a full rebuild is really needed, ask the user to run one from a terminal (ocbi-rebuild, when installed)." >&2
-    exit 2
-  fi
-  exit 0
-fi
 
 # OCBI_HOME defaults to the directory of this script, after following symlinks to it.
 if [ -z "${OCBI_HOME:-}" ]; then
@@ -150,7 +138,7 @@ list_projects() {
   return 0
 }
 
-# project: the listed name owning this worktree; route: linked, global, local or error.
+# project: the listed name owning this worktree; route: linked, global, local, error or refused.
 root="$PWD"
 common=""
 project=""
@@ -441,6 +429,12 @@ link_shared_index() {
     why="$SHARED_DIR/codebase-index.json must set \"scope\": \"project\""
     return 1
   fi
+  # A forced rebuild clears the catalogs of every worktree; only the CLI override may run one.
+  if ! "$node_bin" -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit(c && c.indexing && c.indexing.allowForceRebuild === false ? 0 : 1)' \
+    "$SHARED_DIR/codebase-index.json" 2>/dev/null; then
+    why="$SHARED_DIR/codebase-index.json must set \"indexing\": {\"allowForceRebuild\": false}"
+    return 1
+  fi
   if [ -L "$SHARED_DIR/claude-index" ] || { [ -e "$SHARED_DIR/claude-index" ] && [ ! -d "$SHARED_DIR/claude-index" ]; }; then
     why="$SHARED_DIR/claude-index is not a plain directory"
     return 1
@@ -498,23 +492,27 @@ fi
 
 pick_policy
 [ -n "$policy_why" ] && log "$project: $policy_why; using the worktree profile"
+# A checkout of a listed project runs only on its linked shared store. Unlinked, it could still
+# reach that store through another checkout's links (worktree inheritance) with a stale or
+# unprotected config, so it starts nothing. "refusing to start:" marks a refusal that a retry
+# cannot fix; ocbi-rebuild stops on it.
 if [ -n "$project" ]; then
   link_shared_index
   case $? in
     0) route=linked ;;
     2) route=error ;;
-    *) settle_unlinked ;;
+    *) settle_unlinked; route=refused ;;
   esac
 else
   settle_unlinked
 fi
 case "$route" in
   error) log "$project: linking the shared index failed${why:+: $why}; nothing started" ;;
-  global) [ -n "$project" ] && log "$project: $why; using the global config" ;;
-  local) log "${project:-$root}: ${why:+$why; }not linked, the local$local_paths in $root applies instead of the global config" ;;
+  refused) log "refusing to start: $project: $why; a checkout of a listed project runs only on its linked shared store" ;;
+  local) log "$root: not linked, the local$local_paths in $root applies instead of the global config" ;;
 esac
 
-if [ "$route" = error ] && [ "${1:-}" != "--status-output" ]; then
+if [ "$route" = error ] || [ "$route" = refused ]; then
   exit 1
 fi
 
@@ -526,6 +524,13 @@ fi
 [ -n "$node_bin" ] || node_bin="$(pick_node)" || { log "no Node.js >= 22 found"; exit 1; }
 
 need_js() { [ -f "$1" ] || { log "$1 is missing; install the package into $OCBI_HOME/pkg"; exit 1; }; }
+
+# A shared store relies on the package refusing forced rebuilds, and ocbi-rebuild on its
+# --allow-shared-rebuild override. An older package has neither.
+if [ "$route" = linked ] && ! grep -qs -- --allow-shared-rebuild "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js"; then
+  log "refusing to start: the package in $OCBI_HOME/pkg predates indexing.allowForceRebuild, which a shared store needs; upgrade it with install.sh --pieces pkg --package <spec>"
+  exit 1
+fi
 
 if [ "${1:-}" = "--cbi" ]; then
   shift
@@ -591,45 +596,6 @@ if [ "${1:-}" = "--cbi" ]; then
   exec "$node_bin" "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js" "$@"
 fi
 
-if [ "${1:-}" = "--status-output" ]; then
-  cat >/dev/null
-  status="$("$node_bin" "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js" status --host claude --project "$root" 2>&1)" || exit 0
-  case "$route" in
-    linked)
-      routing="Routing: project $project, shared index $SHARED_DIR/claude-index."
-      if [ -n "$policy" ]; then
-        flags="$("$node_bin" -e 'const i = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).indexing; process.stdout.write(["autoIndex", "autoIndexOnStartup", "watchFiles"].map((k) => k + " " + i[k]).join(", "))' "$SHARED_DIR/profiles/$policy.json" 2>/dev/null)"
-        if [ "$policy" = main ]; then
-          routing="$routing Profile: main (primary checkout, background indexing as configured): $flags."
-        else
-          routing="$routing Profile: worktree (not the primary checkout, indexes on demand): $flags.${policy_why:+ Reason: $policy_why.}"
-        fi
-        grep -qs autoIndexOnStartup "$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/mcp-worker.js" ||
-          routing="$routing The installed core ignores autoIndexOnStartup, so autoIndex still indexes at startup."
-      fi
-      ;;
-    error) routing="Routing: ERROR, linking the shared index of project $project failed${why:+ ($why)}, so the MCP server does not start here. See the [ocbi-mcp] messages in the MCP log." ;;
-    *)
-      if [ -n "$project" ]; then
-        routing="Routing: project $project is listed but its shared index is not linked: $why."
-      else
-        routing="Routing: $root is not a listed project."
-      fi
-      if [ "$route" = local ]; then
-        routing="$routing The local$local_paths in $root applies, not the global config."
-      elif [ -n "$project" ]; then
-        routing="$routing The global config applies. Linking needs $SHARED_DIR/codebase-index.json and both .claude/index and .claude/codebase-index.json in info/exclude and untracked."
-      else
-        routing="$routing The global config ~/.claude/codebase-index.json applies (auto-index off). Retrieval returns INDEX_UNAVAILABLE unless that store has a catalog for this branch."
-      fi
-      ;;
-  esac
-  status="$routing
-$status
-(Read from the index on disk by a separate \`cbi status\` process. \"Ready\" means a compatible catalog is registered for the branch. It does not mean the next retrieval passes the freshness check, and it does not show the live MCP server: its background indexing, refresh owner or worker health. A retrieval can still return INDEX_UNAVAILABLE when the snapshot is stale and the refresh does not finish within the wait; retry shortly and quote the reason it gives.)"
-  STATUS="$status" "$node_bin" -e 'process.stdout.write(JSON.stringify({hookSpecificOutput: {hookEventName: "PostToolUse", updatedToolOutput: process.env.STATUS}}))'
-  exit 0
-fi
 need_js "$SERVER_JS"
 if [ "$route" = linked ] && [ "${OCBI_STALE_CHECK:-1}" != 0 ]; then
   /bin/bash "$0" --stale-check </dev/null >/dev/null 2>&1 &
@@ -639,4 +605,4 @@ fi
 # idle supervisor that stops the file watcher after 15 idle minutes.
 # The package takes the last --host and --project, so the launcher's own come last: the server always
 # runs on the checkout this script linked.
-exec "$node_bin" "$OCBI_HOME/mcp-force-guard.mjs" "$node_bin" "$SERVER_JS" "$@" --host claude --project "$root"
+exec "$node_bin" "$SERVER_JS" "$@" --host claude --project "$root"

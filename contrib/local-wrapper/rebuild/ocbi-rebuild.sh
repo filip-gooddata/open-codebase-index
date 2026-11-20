@@ -71,7 +71,8 @@ fail() {
 # The progress lines repeat every second; keep only the summary lines in the log. The output of
 # the last call is also left in $CBI_OUT. OCBI_REQUIRE_PROJECT makes the launcher check, in the
 # same call that indexes, that the checkout is linked to $PROJECT's shared store; otherwise it
-# exits 3 and nothing is indexed, so a forced index never reaches a local or global index.
+# refuses (exit 3, or exit 1 with "refusing to start:" for a listed checkout that cannot be
+# linked) and nothing is indexed, so a forced index never reaches a local or global index.
 cbi() {
   local worktree="$1"
   shift
@@ -82,13 +83,15 @@ cbi() {
 
 # The forced index drops every catalog, so agents in open sessions call index_codebase and their
 # MCP workers take the index lock for minutes at a time. Wait for them instead of skipping the
-# worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, any other failure once.
+# worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, a launcher refusal (exit 3, or
+# "refusing to start:" for a listed checkout that cannot be linked) never, any other failure once.
 index_worktree() {
   local worktree="$1" deadline=$(($(date +%s) + BUSY_WAIT_SECONDS)) retried=0
   local rc
   until cbi "$worktree" index; do
     rc=$?
     [ "$rc" = 3 ] && return 1
+    grep -q '^\[ocbi-mcp\] refusing to start: ' "$CBI_OUT" && return 1
     if grep -q '^INDEX_BUSY: another index operation is already in progress' "$CBI_OUT"; then
       [ "$(date +%s)" -lt "$deadline" ] || return 1
       sleep "$BUSY_POLL_SECONDS"
@@ -137,9 +140,12 @@ log "forced rebuild of $MAIN_WORKTREE"
 # A session's auto-index can hold the index lock; give it a few chances to finish.
 rebuilt=0
 for attempt in 1 2 3; do
-  if cbi "$MAIN_WORKTREE" index --force; then
+  if cbi "$MAIN_WORKTREE" index --force --allow-shared-rebuild; then
     rebuilt=1
     break
+  fi
+  if grep -q '^\[ocbi-mcp\] refusing to start: ' "$CBI_OUT"; then
+    fail "Nothing was rebuilt: $(grep -m 1 '^\[ocbi-mcp\] refusing to start: ' "$CBI_OUT" | sed 's/^\[ocbi-mcp\] //')"
   fi
   if grep -q "refusing to run the CLI" "$CBI_OUT"; then
     fail "$MAIN_WORKTREE is not linked to the shared store of $PROJECT, so nothing was rebuilt. Run ocbi-mcp.sh --link-only there to see why."

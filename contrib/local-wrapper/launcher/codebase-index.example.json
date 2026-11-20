@@ -8,7 +8,8 @@
     "watchFiles": true,
     "autoIndexWaitMs": 360000,
     "autoIndexMaxRetries": 10,
-    "autoIndexRetryDelayMs": 1000
+    "autoIndexRetryDelayMs": 1000,
+    "allowForceRebuild": false
   },
   "exclude": [
     "**/node_modules/**",

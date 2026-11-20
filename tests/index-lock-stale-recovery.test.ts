@@ -16,7 +16,7 @@ import {
   getLocalMachineId,
   normalizeLockHostName,
   parseDarwinMounts,
-  parseLinuxMounts,
+  parseDarwinDfMountPoint,
   resolveLocalHostNames,
   resolveLocalMachineId,
   setLockHostIdentitySourcesForTesting,
@@ -34,14 +34,24 @@ function sources(overrides: Partial<LockHostIdentitySources>): LockHostIdentityS
     readFile: () => null,
     readLink: () => null,
     run: () => null,
+    realpath: (filePath) => filePath,
+    statfsType: () => null,
     ...overrides,
   };
 }
 
-function darwinRunner(names: Record<string, string>, mounts = "/dev/disk1s1 on / (apfs, local, journaled)\n"): LockHostIdentitySources["run"] {
+const EXT4_MAGIC = 0xef53;
+const LOCAL_LINUX_STORAGE = { statfsType: (): number => EXT4_MAGIC };
+
+function darwinRunner(
+  names: Record<string, string>,
+  mounts = "/dev/disk1s1 on / (apfs, local, journaled)\n",
+  mountPoint = "/",
+): LockHostIdentitySources["run"] {
   return (file, args) => {
     if (file === "/usr/sbin/ioreg") return IOREG_OUTPUT;
     if (file === "/sbin/mount") return mounts;
+    if (file === "/bin/df") return `Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/disk1s1 100 50 50 50% ${mountPoint}\n`;
     if (file === "/usr/sbin/scutil" && args[0] === "--get") return names[args[1]] ?? null;
     return null;
   };
@@ -92,12 +102,9 @@ describe("lock host identity", () => {
   it("reads mount locality on macOS and Linux", () => {
     expect(parseDarwinMounts("/dev/disk1s1 on / (apfs, local, journaled)\n//host/share on /Volumes/team share (smbfs, nodev)\n"))
       .toEqual([{ mountPoint: "/", local: true }, { mountPoint: "/Volumes/team share", local: false }]);
-    expect(parseLinuxMounts("/dev/sda1 / ext4 rw 0 0\nserver:/srv /mnt/shared\\040store nfs4 rw 0 0\nsshfs#h /mnt/s fuse.sshfs rw 0 0\n"))
-      .toEqual([
-        { mountPoint: "/", local: true },
-        { mountPoint: "/mnt/shared store", local: false },
-        { mountPoint: "/mnt/s", local: false },
-      ]);
+    expect(parseDarwinDfMountPoint("Filesystem 512-blocks Used Available Capacity Mounted on\n//host/share 10 5 5 50% /Volumes/team share\n"))
+      .toBe("/Volumes/team share");
+    expect(parseDarwinDfMountPoint("df: /missing: No such file or directory\n")).toBeNull();
   });
 
   it("collects the macOS local and configured host names", () => {
@@ -210,6 +217,7 @@ describe("stale index lock recovery", () => {
       run: darwinRunner(
         { LocalHostName: "former-host" },
         `/dev/disk1s1 on / (apfs, local, journaled)\n//server/share on ${tempDir} (smbfs, nodev)\n`,
+        tempDir,
       ),
     });
     writeOwner({ pid: exitedPid(), hostname: "former-host.local" });
@@ -220,47 +228,51 @@ describe("stale index lock recovery", () => {
     setLockHostIdentitySourcesForTesting({
       platform: "darwin",
       hostname: () => "current-host",
-      run: darwinRunner({}, `/dev/disk1s1 on / (apfs, local, journaled)\nserver:/export on ${tempDir} (nfs, nodev)\n`),
-    });
-    writeOwner({ pid: exitedPid(), hostname: "current-host" });
-    expectBusy();
-  });
-
-  it("refuses an exact-hostname old-format lock on a Linux filesystem type it does not know to be local", () => {
-    setLockHostIdentitySourcesForTesting({
-      platform: "linux",
-      hostname: () => "current-host",
-      readFile: (filePath) => filePath === "/proc/self/mounts"
-        ? `/dev/sda1 / ext4 rw 0 0\npvfs2://server:3334/fs ${tempDir} pvfs2 rw 0 0\n`
-        : null,
+      run: darwinRunner({}, `/dev/disk1s1 on / (apfs, local, journaled)\nserver:/export on ${tempDir} (nfs, nodev)\n`, tempDir),
     });
     writeOwner({ pid: exitedPid(), hostname: "current-host" });
     expectBusy();
   });
 
   it.each([
-    ["a share mounted over a local filesystem at the same point", (dir: string) => `/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 ${dir} ext4 rw 0 0\npvfs2://server:3334/fs ${dir} pvfs2 rw 0 0\n`],
-    ["a local filesystem listed before a share at the same point", (dir: string) => `/dev/sda1 / ext4 rw 0 0\npvfs2://server:3334/fs ${dir} pvfs2 rw 0 0\n/dev/sdb1 ${dir} ext4 rw 0 0\n`],
-    ["a share mounted over an ancestor of a local mount", (dir: string) => `/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 ${dir}/index ext4 rw 0 0\nserver:/export ${dir} nfs4 rw 0 0\n`],
-  ])("refuses an exact-hostname old-format lock under %s", (_label, mounts) => {
-    setLockHostIdentitySourcesForTesting({
-      platform: "linux",
-      hostname: () => "current-host",
-      readFile: (filePath) => filePath === "/proc/self/mounts" ? mounts(tempDir) : null,
-    });
+    ["NFS", 0x6969],
+    ["OrangeFS", 0x20030528],
+    ["FUSE", 0x65735546],
+    ["SMB", 0xfe534d42],
+    ["an unreadable filesystem", null],
+  ])("refuses an exact-hostname old-format lock when the visible Linux filesystem is %s", (_label, type) => {
+    setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host", statfsType: () => type });
     writeOwner({ pid: exitedPid(), hostname: "current-host" });
     expectBusy();
   });
 
-  it("recovers an exact-hostname old-format lock on a local filesystem mounted over a share", () => {
+  it("asks statfs about the lock's own directory, not a mount table", () => {
+    const asked: string[] = [];
     setLockHostIdentitySourcesForTesting({
       platform: "linux",
       hostname: () => "current-host",
-      readFile: (filePath) => filePath === "/proc/self/mounts"
-        ? `/dev/sda1 / ext4 rw 0 0\nserver:/export ${tempDir} nfs4 rw 0 0\n/dev/sdb1 ${tempDir}/index ext4 rw 0 0\n`
-        : null,
+      statfsType: (filePath) => {
+        asked.push(filePath);
+        return EXT4_MAGIC;
+      },
     });
     expectRecovered(writeOwner({ pid: exitedPid(), hostname: "current-host" }));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((filePath) => filePath.startsWith(indexPath))).toBe(true);
+  });
+
+  it("refuses a former-hostname lock where a share is stacked on the macOS mount point", () => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "darwin",
+      hostname: () => "current-host",
+      run: darwinRunner(
+        { LocalHostName: "former-host" },
+        `/dev/disk1s1 on / (apfs, local, journaled)\n/dev/disk2s1 on ${tempDir} (apfs, local)\n//server/share on ${tempDir} (smbfs, nodev)\n`,
+        tempDir,
+      ),
+    });
+    writeOwner({ pid: exitedPid(), hostname: "former-host.local" });
+    expectBusy();
   });
 
   it("recovers a force-abandoned marker even where an unrelated process holds its PID", () => {
@@ -304,7 +316,7 @@ describe("stale index lock recovery", () => {
     setLockHostIdentitySourcesForTesting({
       platform: "linux",
       hostname: () => "current-host",
-      readFile: (filePath) => filePath === "/proc/self/mounts" ? "/dev/sda1 / ext4 rw 0 0\n" : null,
+      ...LOCAL_LINUX_STORAGE,
     });
     expectRecovered(writeOwner({ pid: exitedPid(), hostname: "current-host" }));
   });
@@ -354,7 +366,7 @@ describe("manual index unlock", () => {
     setLockHostIdentitySourcesForTesting({
       platform: "linux",
       hostname: () => "current-host",
-      readFile: (filePath) => filePath === "/proc/self/mounts" ? "/dev/sda1 / ext4 rw 0 0\n" : null,
+      ...LOCAL_LINUX_STORAGE,
     });
   });
 

@@ -40,7 +40,7 @@ describe("manual unlock against a concurrently replaced lock", () => {
     setLockHostIdentitySourcesForTesting({
       platform: "linux",
       hostname: () => "current-host",
-      readFile: (filePath) => filePath === "/proc/self/mounts" ? "/dev/sda1 / ext4 rw 0 0\n" : null,
+      statfsType: () => 0xef53,
     });
   });
 

@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
-import { readFileSync, readlinkSync, realpathSync } from "fs";
+import { readFileSync, readlinkSync, realpathSync, statfsSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 
@@ -16,6 +16,8 @@ export interface LockHostIdentitySources {
   readLink: (filePath: string) => string | null;
   run: (file: string, args: readonly string[]) => string | null;
   realpath: (filePath: string) => string | null;
+  /** Filesystem type of the storage visible at an existing path, as statfs reports it. */
+  statfsType: (filePath: string) => number | null;
 }
 
 interface MountEntry {
@@ -65,6 +67,14 @@ function resolveRealPath(filePath: string): string | null {
   }
 }
 
+function readStatfsType(filePath: string): number | null {
+  try {
+    return statfsSync(filePath).type;
+  } catch {
+    return null;
+  }
+}
+
 const defaultSources: LockHostIdentitySources = {
   platform: process.platform,
   hostname: () => os.hostname(),
@@ -72,13 +82,31 @@ const defaultSources: LockHostIdentitySources = {
   readLink: readLinkTarget,
   run: runCommand,
   realpath: resolveRealPath,
+  statfsType: readStatfsType,
 };
 
-// Linux filesystem types known to live on this machine's own block devices or memory.
-// Anything else (network, cluster, FUSE, or a type not listed) counts as possibly shared.
-const LOCAL_LINUX_FILESYSTEMS = new Set([
-  "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "bcachefs", "jfs", "reiserfs", "nilfs2",
-  "vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "apfs", "tmpfs", "ramfs", "overlay", "squashfs", "erofs",
+// statfs magic numbers (Linux kernel ABI) of filesystems on this machine's own block
+// devices or memory. Any other type (network, cluster, FUSE, unknown) counts as possibly shared.
+const LOCAL_LINUX_FILESYSTEM_MAGICS = new Set([
+  0xef53, // ext2, ext3, ext4
+  0x58465342, // xfs
+  0x9123683e, // btrfs
+  0x2fc12fc1, // zfs
+  0xf2f52010, // f2fs
+  0xca451a4e, // bcachefs
+  0x3153464a, // jfs
+  0x52654973, // reiserfs
+  0x3434, // nilfs2
+  0x4d44, // vfat, msdos
+  0x2011bab0, // exfat
+  0x5346544e, // ntfs
+  0x7366746e, // ntfs3
+  0x482b, // hfsplus
+  0x01021994, // tmpfs
+  0x858458f6, // ramfs
+  0x794c7630, // overlay
+  0x73717368, // squashfs
+  0xe0f5e1e2, // erofs
 ]);
 
 let sources: LockHostIdentitySources = defaultSources;
@@ -177,54 +205,46 @@ export function parseDarwinMounts(output: string): MountEntry[] {
   });
 }
 
-/** Parses /proc/self/mounts on Linux; only known local filesystem types count as local. */
-export function parseLinuxMounts(contents: string): MountEntry[] {
-  return contents.split("\n").flatMap((line) => {
-    const fields = line.trim().split(/\s+/);
-    if (fields.length < 3) return [];
-    const mountPoint = fields[1].replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
-    const type = fields[2];
-    return [{ mountPoint, local: LOCAL_LINUX_FILESYSTEMS.has(type) }];
-  });
+/** Parses `df -P <path>` output on macOS: the mount point of the filesystem holding the path. */
+export function parseDarwinDfMountPoint(output: string): string | null {
+  const line = output.trim().split("\n").at(-1) ?? "";
+  const match = /\s\d+%\s+(\/.*)$/.exec(line);
+  return match ? match[1] : null;
 }
 
-/** Read fresh on every call: it only runs for a lock naming a host alias, and mounts change. */
-function getMounts(): MountEntry[] {
-  if (sources.platform === "darwin") {
-    const output = sources.run("/sbin/mount", []);
-    return output === null ? [] : parseDarwinMounts(output);
-  }
-  if (sources.platform === "linux") {
-    const contents = sources.readFile("/proc/self/mounts");
-    return contents === null ? [] : parseLinuxMounts(contents);
-  }
-  return [];
-}
-
-function findMount(storagePath: string): MountEntry | undefined {
+function nearestExistingPath(storagePath: string): string | null {
   let candidate = storagePath;
   let realPath = sources.realpath(candidate);
   while (realPath === null && path.dirname(candidate) !== candidate) {
     candidate = path.dirname(candidate);
     realPath = sources.realpath(candidate);
   }
-  if (realPath === null) return undefined;
-  const resolved = realPath;
-  const covering = getMounts().filter((mount) => {
-    const prefix = mount.mountPoint.endsWith(path.sep) ? mount.mountPoint : `${mount.mountPoint}${path.sep}`;
-    return resolved === mount.mountPoint || resolved.startsWith(prefix);
-  });
-  // Mount tables list mounts in mount order, and a later mount on the path (at the same
-  // point or an ancestor) hides what was mounted there before, so the last one is visible.
-  const visible = covering.at(-1);
-  if (visible === undefined) return undefined;
-  const stacked = covering.filter((mount) => mount.mountPoint === visible.mountPoint);
-  return stacked.every((mount) => mount.local) ? visible : { ...visible, local: false };
+  return realPath;
 }
 
-/** Whether the storage holding a path is known to be local to this machine; false when unknown. */
+/**
+ * Whether the storage holding a path is known to be local to this machine; false when
+ * unknown. Both platforms ask about the filesystem actually visible at the path rather
+ * than inferring it from mount order: Linux through the statfs magic, macOS through `df`
+ * for the mount point and the mount table's `local` flag for every entry stacked there.
+ * Read fresh on every call: it only runs for hostname-only locks, and mounts change.
+ */
 export function isStorageLocal(storagePath: string): boolean {
-  return findMount(storagePath)?.local ?? false;
+  const existing = nearestExistingPath(storagePath);
+  if (existing === null) return false;
+  if (sources.platform === "linux") {
+    const type = sources.statfsType(existing);
+    return type !== null && LOCAL_LINUX_FILESYSTEM_MAGICS.has(type >>> 0);
+  }
+  if (sources.platform === "darwin") {
+    const dfOutput = sources.run("/bin/df", ["-P", existing]);
+    const mountPoint = dfOutput === null ? null : parseDarwinDfMountPoint(dfOutput);
+    const mountOutput = mountPoint === null ? null : sources.run("/sbin/mount", []);
+    if (mountOutput === null) return false;
+    const entries = parseDarwinMounts(mountOutput).filter((mount) => mount.mountPoint === mountPoint);
+    return entries.length > 0 && entries.every((mount) => mount.local);
+  }
+  return false;
 }
 
 /** Whether a recorded hostname is one this machine answers to now, ignoring any machine id. */

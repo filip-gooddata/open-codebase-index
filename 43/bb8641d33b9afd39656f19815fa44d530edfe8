@@ -1,0 +1,29 @@
+src/config/repository-route.ts
+  s_55a86ebfa4494b::t_ee93faef56a9e9 8,299-304,311,319,329-331
+src/indexer/index.ts
+  s_55a86ebfa4494b::t_ff065cdd08a015 7822-7826
+src/tools/execute-common.ts
+  s_55a86ebfa4494b::t_3398a97f0fa586 22,103,105
+src/tools/operations.ts
+  s_55a86ebfa4494b::t_dcefb3082d0861 767-774,779,794-800,804-812
+tests/mcp-server.test.ts
+  s_55a86ebfa4494b::t_8bbb59b2cc9ec4 195
+tests/repository-route-status.test.ts
+  s_55a86ebfa4494b::t_992b9ade56574e 177-179,184,186,190-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "43bb8641d33b9afd39656f19815fa44d530edfe8",
+  "prompts": {},
+  "sessions": {
+    "s_55a86ebfa4494b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca0f59ce-32e4-4e8a-ad49-8d6d6c4402de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

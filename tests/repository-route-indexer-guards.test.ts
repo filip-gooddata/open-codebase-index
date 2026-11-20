@@ -188,6 +188,31 @@ describe("shared repository store guards on secondary checkouts", () => {
       expect(fs.existsSync(keywordPath)).toBe(false);
     });
 
+    it("keeps an unreadable structural keyword index on a secondary, while the primary still rebuilds it", async () => {
+      writeRepoConfig({
+        indexing: {
+          mode: "structural", autoIndex: true, watchFiles: false, autoGc: false, requireProjectMarker: false,
+        },
+      });
+      await indexFromPrimary();
+      const keywordPath = path.join(store, "structural", "inverted-index.json");
+      fs.writeFileSync(keywordPath, "{ not a keyword index");
+
+      const secondary = createIndexer(worktreeRoot);
+      await expect(secondary.index()).rejects.toThrow(
+        `The structural keyword index ${keywordPath} of the shared repository store is unreadable. `
+        + "This checkout is secondary (linked worktree; "
+        + `the main worktree ${fs.realpathSync(mainRoot)} is primary) and does not reset shared store artifacts; `
+        + `repair it by running index_codebase with force=true from the primary checkout ${fs.realpathSync(mainRoot)}.`,
+      );
+      expect(fs.readFileSync(keywordPath, "utf8")).toBe("{ not a keyword index");
+
+      const primary = createIndexer(mainRoot, "claude");
+      expect((await primary.index()).failedChunks).toBe(0);
+      expect(fs.readFileSync(keywordPath, "utf8")).not.toBe("{ not a keyword index");
+      expect((await primary.search("sharedGuardTarget")).length).toBeGreaterThan(0);
+    });
+
     it("keeps a corrupted database on a secondary and names the primary, while the primary still resets it", async () => {
       writeRepoConfig();
       await indexFromPrimary();

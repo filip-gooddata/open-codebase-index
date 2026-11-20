@@ -15,7 +15,9 @@ import {
 } from "../src/config/repository-route.js";
 import codebaseIndexOmpExtension from "../src/omp-extension.js";
 import codebaseIndexPiExtension from "../src/pi-extension.js";
+import { parseConfig } from "../src/config/schema.js";
 import { executeIndexStatus } from "../src/tools/execute-common.js";
+import { getIndexerForProject, initializeTools } from "../src/tools/operation-runtime.js";
 import { getIndexStatus } from "../src/tools/operations.js";
 import { TOOL_NAME } from "../src/tools/tool-names.js";
 import { formatStatus } from "../src/tools/utils.js";
@@ -156,6 +158,15 @@ describe("repository route status and config reads", () => {
         expect(() => loadMergedConfig(worktreeRoot, host)).toThrow(`Config file ${configPath} ${message}`);
       }
     });
+    it("rejects a non-boolean indexing.autoIndexOnStartup, naming the file and field", () => {
+      writeJson(configPath, { indexing: { autoIndexOnStartup: "no" } });
+      const message = `Repository config ${configPath} field 'indexing.autoIndexOnStartup' must be a boolean.`;
+      for (const host of HOSTS) {
+        resetRepositoryRoutesForTests();
+        expect(() => resolveProjectIndexPath(worktreeRoot, "project", host)).toThrow(message);
+        expect(() => loadMergedConfig(worktreeRoot, host)).toThrow(message);
+      }
+    });
   });
 
   describe("status route block", () => {
@@ -183,6 +194,35 @@ describe("repository route status and config reads", () => {
       expect(routeBlock).toMatch(/^Store: .+ \(global scope\)$/);
       expect(result.text).not.toContain("Checkout role:");
       expect(result.text).not.toContain("repository default store");
+    });
+
+    async function statusWithExplicitConfig(scope: "global" | "project"): Promise<string> {
+      initializeTools(worktreeRoot, parseConfig({
+        scope,
+        indexing: { mode: "structural", autoIndex: false, watchFiles: false, requireProjectMarker: false },
+      }), "claude");
+      try {
+        const result = await executeIndexStatus(worktreeRoot, "claude");
+        return result.text.slice(result.text.lastIndexOf("\n\n") + 2);
+      } finally {
+        await getIndexerForProject(worktreeRoot, "claude").close();
+      }
+    }
+
+    it("index_status labels the store with the explicit config's global scope", async () => {
+      writeJson(configPath, { scope: "project" });
+      writeJson(path.join(worktreeRoot, ".claude", "codebase-index.json"), { scope: "project" });
+      const routeBlock = await statusWithExplicitConfig("global");
+      expect(routeBlock).toMatch(/^Store: .+ \(global scope\)$/);
+      expect(routeBlock).not.toContain("Checkout role:");
+    });
+
+    it("index_status keeps the routed project store when the explicit config overrides a global scope", async () => {
+      writeJson(configPath, {});
+      writeJson(path.join(worktreeRoot, ".claude", "codebase-index.json"), { scope: "global" });
+      const routeBlock = await statusWithExplicitConfig("project");
+      expect(routeBlock).not.toContain("(global scope)");
+      expect(routeBlock).toContain("Checkout role:");
     });
 
     it.each(["pi", "omp"] as const)("%s status appends the route block for a routed checkout", async (extension) => {

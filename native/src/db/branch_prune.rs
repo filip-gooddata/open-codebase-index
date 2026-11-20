@@ -209,8 +209,12 @@ mod tests {
     }
 
     fn pending_gc_rows(conn: &Connection) -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM branch_call_edges_pending_gc", [], |row| row.get(0))
-            .unwrap()
+        conn.query_row(
+            "SELECT COUNT(*) FROM branch_call_edges_pending_gc",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -230,10 +234,19 @@ mod tests {
         assert_eq!(pending_gc_rows(&conn), 0);
     }
 
-    fn delete_in_tx(conn: &Connection, branches: &[String], keys: &[String]) -> DbResult<BranchCatalogPrune> {
+    fn delete_in_tx(
+        conn: &Connection,
+        branches: &[String],
+        keys: &[String],
+    ) -> DbResult<BranchCatalogPrune> {
         conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
         let result = delete_branch_catalogs(conn, branches, keys);
-        conn.execute_batch(if result.is_ok() { "COMMIT;" } else { "ROLLBACK;" }).unwrap();
+        conn.execute_batch(if result.is_ok() {
+            "COMMIT;"
+        } else {
+            "ROLLBACK;"
+        })
+        .unwrap();
         result
     }
 
@@ -243,7 +256,10 @@ mod tests {
         let conn = init_db(&dir.path().join("autocommit.db")).unwrap();
         seed(&conn, "gone", true);
         assert!(delete_branch_catalogs(&conn, &strings(&["gone"]), &[]).is_err());
-        assert_eq!(count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(), vec![rows("gone", 2, 1, 1, 1)]);
+        assert_eq!(
+            count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(),
+            vec![rows("gone", 2, 1, 1, 1)]
+        );
     }
 
     #[test]
@@ -254,10 +270,19 @@ mod tests {
         conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
         delete_branch_catalogs(&conn, &strings(&["gone"]), &[]).unwrap();
         conn.execute_batch("ROLLBACK;").unwrap();
-        assert_eq!(count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(), vec![rows("gone", 2, 1, 1, 1)]);
+        assert_eq!(
+            count_branch_catalog_rows(&conn, &strings(&["gone"])).unwrap(),
+            vec![rows("gone", 2, 1, 1, 1)]
+        );
     }
 
-    fn rows(branch: &str, chunks: usize, symbols: usize, edges: usize, stale: usize) -> BranchCatalogRows {
+    fn rows(
+        branch: &str,
+        chunks: usize,
+        symbols: usize,
+        edges: usize,
+        stale: usize,
+    ) -> BranchCatalogRows {
         BranchCatalogRows {
             branch: branch.to_string(),
             branch_chunks: chunks,
@@ -284,7 +309,8 @@ mod tests {
             vec![rows("gone", 2, 1, 1, 1)]
         );
 
-        let pruned = delete_in_tx(&conn,
+        let pruned = delete_in_tx(
+            &conn,
             &strings(&["gone", "missing"]),
             &strings(&["index.branchCommit.gone", "index.branchCommit.absent"]),
         )

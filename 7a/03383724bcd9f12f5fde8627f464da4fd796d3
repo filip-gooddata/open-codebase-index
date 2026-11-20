@@ -1,0 +1,25 @@
+docs/installation.md
+  s_00d0fb6d716ed8::t_f62548259ef0cc 232
+src/indexer/lock-host-identity.ts
+  s_00d0fb6d716ed8::t_62f8f3773c762c 3,19-20,70-77,85,88-109,208-212,215,222,225-231,233-247
+tests/index-lock-stale-recovery.test.ts
+  s_00d0fb6d716ed8::t_28de5962597503 19,37-38,43-50,54,105-107,220,231,237-244,249-250,254-257,259-261,264,266,268-272,274-275,319,369
+tests/index-lock-unlock-race.test.ts
+  s_00d0fb6d716ed8::t_283321680ac7b8 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7a03383724bcd9f12f5fde8627f464da4fd796d3",
+  "prompts": {},
+  "sessions": {
+    "s_00d0fb6d716ed8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d034eceb-634f-4a22-829a-87725b9fc776",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

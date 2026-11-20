@@ -27,9 +27,7 @@ import {
 } from "./operations.js";
 import { formatCostEstimate, formatDryRunEstimate } from "../utils/cost.js";
 import { formatRepositoryRouteStatus } from "../config/repository-route.js";
-import { parseConfig } from "../config/schema.js";
-import { loadRuntimeConfig } from "./config-state.js";
-import { getProjectRoot } from "./operation-runtime.js";
+import { getProjectRoot, getRuntimeConfigForProject } from "./operation-runtime.js";
 import { resolveCodebaseEditContext } from "./edit-context.js";
 import { resolveCodebaseContext } from "./context.js";
 import {
@@ -105,7 +103,8 @@ export async function executeIndexStatus(
 ): Promise<ExecutionResult> {
   const status = await getIndexStatus(projectRoot, host, args, control);
   const root = getProjectRoot(projectRoot, host);
-  const { scope } = parseConfig(loadRuntimeConfig(root, host));
+  // The scope the Indexer was initialized with, so an explicit --config is honoured.
+  const { scope } = getRuntimeConfigForProject(root, host);
   const routeText = formatRepositoryRouteStatus(root, host, status.indexPath, {
     scope,
     omitLegacy: options.omitLegacyRoute,

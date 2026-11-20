@@ -4638,6 +4638,15 @@ export class Indexer {
         this.invertedIndex.load();
       } catch (error) {
         if (isUnsupportedKeywordIndexVersion(error)) throw error;
+        if (existsSync(invertedIndexPath)) {
+          const secondaryRoute = this.getRoutedSecondaryCheckout();
+          if (secondaryRoute) {
+            throw new Error(
+              this.getSharedStoreRepairRefusal(secondaryRoute, "structural keyword index", invertedIndexPath, error),
+              { cause: error },
+            );
+          }
+        }
         this.structuralKeywordRebuildRequired = existsSync(invertedIndexPath);
         this.logger.warn("Structural keyword index is unreadable; rebuilding it from source files", {
           error: getErrorMessage(error),

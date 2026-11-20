@@ -102,6 +102,12 @@ function getRoutingShapeError(configPath: string, config: unknown): string | nul
     }
   }
 
+  const indexing = config.indexing;
+  if (isRecord(indexing) && indexing.autoIndexOnStartup !== undefined
+    && typeof indexing.autoIndexOnStartup !== "boolean") {
+    return `${label} field 'indexing.autoIndexOnStartup' must be a boolean.`;
+  }
+
   return null;
 }
 

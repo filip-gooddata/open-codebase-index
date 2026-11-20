@@ -396,7 +396,7 @@ function formatBreakLockOutcome(result: BreakIndexLockResult): string {
     case "refused-alive":
       return "Refused: the lock owner is still running on this machine. Let it finish or stop it first.";
     case "refused-busy":
-      return "Refused: another unlock is running on this index. Try again when it finishes.";
+      return "Refused: another unlock holds the guard shown above. If no unlock is still running, rerun with --force; a holder alive on this machine is never displaced.";
     case "refused-changed":
       return "Refused: the lock changed while it was being cleared. Run the command again to inspect the new state.";
     case "refused-fresh":

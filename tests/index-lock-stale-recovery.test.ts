@@ -15,6 +15,8 @@ import {
 import {
   getLocalMachineId,
   normalizeLockHostName,
+  parseDarwinMounts,
+  parseLinuxMounts,
   resolveLocalHostNames,
   resolveLocalMachineId,
   setLockHostIdentitySourcesForTesting,
@@ -36,9 +38,10 @@ function sources(overrides: Partial<LockHostIdentitySources>): LockHostIdentityS
   };
 }
 
-function darwinRunner(names: Record<string, string>): LockHostIdentitySources["run"] {
+function darwinRunner(names: Record<string, string>, mounts = "/dev/disk1s1 on / (apfs, local, journaled)\n"): LockHostIdentitySources["run"] {
   return (file, args) => {
     if (file === "/usr/sbin/ioreg") return IOREG_OUTPUT;
+    if (file === "/sbin/mount") return mounts;
     if (file === "/usr/sbin/scutil" && args[0] === "--get") return names[args[1]] ?? null;
     return null;
   };
@@ -84,6 +87,17 @@ describe("lock host identity", () => {
     expect(resolveLocalHostNames(sources({ platform: "win32", run }))).toEqual(["current-host"]);
   });
 
+  it("reads mount locality on macOS and Linux", () => {
+    expect(parseDarwinMounts("/dev/disk1s1 on / (apfs, local, journaled)\n//host/share on /Volumes/team share (smbfs, nodev)\n"))
+      .toEqual([{ mountPoint: "/", local: true }, { mountPoint: "/Volumes/team share", local: false }]);
+    expect(parseLinuxMounts("/dev/sda1 / ext4 rw 0 0\nserver:/srv /mnt/shared\\040store nfs4 rw 0 0\nsshfs#h /mnt/s fuse.sshfs rw 0 0\n"))
+      .toEqual([
+        { mountPoint: "/", local: true },
+        { mountPoint: "/mnt/shared store", local: false },
+        { mountPoint: "/mnt/s", local: false },
+      ]);
+  });
+
   it("collects the macOS local and configured host names", () => {
     const names = resolveLocalHostNames(sources({
       platform: "darwin",
@@ -125,7 +139,7 @@ describe("stale index lock recovery", () => {
   }
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "index-lock-stale-"));
+    tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "index-lock-stale-")));
     indexPath = path.join(tempDir, "index");
     lockPath = path.join(indexPath, "indexing.lock");
     fs.mkdirSync(indexPath, { recursive: true });
@@ -187,6 +201,19 @@ describe("stale index lock recovery", () => {
     expectRecovered(writeOwner({ pid: exitedPid(), hostname: "former-host" }));
   });
 
+  it("refuses a former-hostname lock on shared storage", () => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "darwin",
+      hostname: () => "current-host",
+      run: darwinRunner(
+        { LocalHostName: "former-host" },
+        `/dev/disk1s1 on / (apfs, local, journaled)\n//server/share on ${tempDir} (smbfs, nodev)\n`,
+      ),
+    });
+    writeOwner({ pid: exitedPid(), hostname: "former-host.local" });
+    expectBusy();
+  });
+
   it("does not widen a plain hostname into a .local alias", () => {
     setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host" });
     writeOwner({ pid: exitedPid(), hostname: "current-host.local" });
@@ -242,7 +269,7 @@ describe("manual index unlock", () => {
   }
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "index-unlock-"));
+    tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "index-unlock-")));
     indexPath = path.join(tempDir, "index");
     lockPath = path.join(indexPath, "indexing.lock");
     fs.mkdirSync(indexPath, { recursive: true });
@@ -324,12 +351,76 @@ describe("manual index unlock", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("does not clear an unreadable lock another process is already claiming", () => {
+  function writeClaim(pid: number, hostname: string): void {
     fs.mkdirSync(path.join(lockPath, "reclaiming"), { recursive: true });
-    fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+    fs.writeFileSync(path.join(lockPath, "reclaiming", "owner.json"), JSON.stringify({
+      pid,
+      hostname,
+      startedAt: oldStart(),
+      token: "88888888-8888-4888-8888-888888888888",
+      expectedOwnerToken: "99999999-9999-4999-8999-999999999999",
+    }));
+  }
 
-    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-changed");
+  it("does not clear an unreadable lock a live local process is claiming", () => {
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+    writeClaim(process.pid, "current-host");
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
     expect(fs.readFileSync(path.join(lockPath, "owner.json"), "utf-8")).toBe("{");
+  });
+
+  it.each([
+    ["an exited local unlock", "current-host"],
+    ["an unlock on another machine", "remote-host"],
+  ])("retries an unreadable lock whose claim was left by %s", (_label, hostname) => {
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+    writeClaim(hostname === "current-host" ? exitedPid() : 4246, hostname);
+
+    expect(breakIndexLock(indexPath).status).not.toBe("removed");
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("vetoes a forced clear when the machine id cannot be checked but the PID is alive under this hostname", () => {
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+    writeOwner({ pid: process.pid, hostname: "current-host", machineId: "f".repeat(32) });
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("clears a recovery marker that is a plain file only with --force", () => {
+    const markerPath = path.join(indexPath, "indexing.lock.recovery.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    fs.writeFileSync(markerPath, "damaged");
+    expect(() => acquireIndexLock(indexPath, "index")).toThrowError(expect.objectContaining({ code: "INDEX_BUSY" }));
+
+    expect(breakIndexLock(indexPath).status).toBe("refused-unverified");
+    const result = breakIndexLock(indexPath, { force: true });
+    expect(result).toMatchObject({ status: "removed", recoverable: false });
+    expect(fs.existsSync(markerPath)).toBe(false);
+  });
+
+  it("takes over a stale unlock guard and releases its own guard afterwards", () => {
+    const guardPath = path.join(indexPath, "indexing.lock.unlock");
+    writeOwner({ pid: exitedPid(), hostname: "current-host", startedAt: oldStart() });
+    makeOld(path.join(lockPath, "owner.json"), lockPath);
+    writeOwner({ pid: exitedPid(), hostname: "current-host", operation: "recovery" }, guardPath);
+
+    expect(breakIndexLock(indexPath).status).toBe("removed");
+    expect(fs.existsSync(guardPath)).toBe(false);
+  });
+
+  it("displaces an unlock guard from another machine only with --force", () => {
+    const guardPath = path.join(indexPath, "indexing.lock.unlock");
+    writeOwner({ pid: 4247, hostname: "remote-host" });
+    writeOwner({ pid: 4248, hostname: "remote-host", operation: "recovery", token: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }, guardPath);
+
+    const forced = breakIndexLock(indexPath, { force: true });
+    expect(forced.status).toBe("removed");
+    expect(fs.existsSync(guardPath)).toBe(false);
   });
 
   it("refuses while another unlock holds the guard", () => {

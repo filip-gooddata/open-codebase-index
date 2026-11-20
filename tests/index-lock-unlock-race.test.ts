@@ -62,4 +62,39 @@ describe("manual unlock against a concurrently replaced lock", () => {
     expect(actualFs.readFileSync(path.join(lockPath, "owner.json"), "utf-8")).toBe(liveOwner);
     expect(actualFs.existsSync(path.join(lockPath, "reclaiming"))).toBe(false);
   });
+
+  it("leaves a live unlock guard in place when it replaced a stale one before the takeover rename", () => {
+    const guardPath = path.join(indexPath, "indexing.lock.unlock");
+    actualFs.mkdirSync(lockPath);
+    actualFs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+    const staleGuard = JSON.stringify({
+      pid: 2_147_483_000,
+      hostname: "current-host",
+      startedAt: new Date().toISOString(),
+      operation: "recovery",
+      token: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    });
+    const liveGuard = JSON.stringify({
+      pid: process.pid,
+      hostname: "current-host",
+      startedAt: new Date().toISOString(),
+      operation: "recovery",
+      token: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    });
+    actualFs.mkdirSync(guardPath);
+    actualFs.writeFileSync(path.join(guardPath, "owner.json"), staleGuard);
+    renameHook.before = (from) => {
+      if (from !== guardPath) return;
+      renameHook.before = null;
+      actualFs.rmSync(guardPath, { recursive: true, force: true });
+      actualFs.mkdirSync(guardPath);
+      actualFs.writeFileSync(path.join(guardPath, "owner.json"), liveGuard);
+    };
+
+    const result = breakIndexLock(indexPath, { force: true });
+
+    expect(result.status).toBe("refused-busy");
+    expect(actualFs.readFileSync(path.join(guardPath, "owner.json"), "utf-8")).toBe(liveGuard);
+    expect(actualFs.existsSync(path.join(lockPath, "owner.json"))).toBe(true);
+  });
 });

@@ -1,34 +1,38 @@
-contrib/local-wrapper/install.sh
-  s_0597223c6852f1::t_fda382dcda99b1 6
-contrib/local-wrapper/launcher/codebase-index.example.json
-  s_0597223c6852f1::t_6aff9f3f28d012 11-12
-contrib/local-wrapper/test/run-tests.sh
-  s_0597223c6852f1::t_8c94cf010e14b6 98-101,126,144,243,248-249,308-321,324-339,343-344,454
-  s_0597223c6852f1::t_d4373d4550c949 479-491
 contrib/local-wrapper/claude-plugin/plugins/codebase-index/commands/index.md
   s_0597223c6852f1::t_f3aecbcbed49c0 10
-contrib/local-wrapper/README.md
-  s_0597223c6852f1::t_0332381c7a6c31 13,15,55
-docs/local-wrapper.md
-  s_bd362efb6487a9::t_31abad19a73cf8 35-43
-  s_0597223c6852f1::t_ced8420066cdff 99-110
-  s_0c38e0c1509213::t_7e318e08258754 111
-  s_0597223c6852f1::t_2ff800613470c5 55-56,58,60-71,121,136-137,145-146,170-171,175
+CHANGELOG.md
+  s_0597223c6852f1::t_e82110a3801eff 17-21
 contrib/local-wrapper/launcher/ocbi-mcp.sh
-  s_bd362efb6487a9::t_4e1403d42b2a98 412
-  s_0597223c6852f1::t_6477111a22097e 526-532
-  s_0597223c6852f1::t_dd021be6a170f8 6-8,38,46,431-438,501,513,607
+  s_0597223c6852f1::t_6477111a22097e 527-532
+  s_bd362efb6487a9::t_4e1403d42b2a98 140,510-511
+  s_0597223c6852f1::t_dd021be6a170f8 6-8,38,46,431-436,494-497,503,514,607
   s_bd362efb6487a9::t_b8096cb56ddc56 533
 contrib/local-wrapper/rebuild/ocbi-rebuild.sh
   s_0597223c6852f1::t_d07503a857d626 140
   s_0597223c6852f1::t_5d8bc040edd677 144-146
-CHANGELOG.md
-  s_0597223c6852f1::t_e82110a3801eff 17-21
+contrib/local-wrapper/test/run-tests.sh
+  s_bd362efb6487a9::t_3db43fa41b0023 303
+  s_0c38e0c1509213::t_7b61e05a55f893 171
+  s_0597223c6852f1::t_8c94cf010e14b6 98-101,126,144,243,248-249,308-321,324-342,346-347,457
+  s_0597223c6852f1::t_d4373d4550c949 482-504
+  s_bd362efb6487a9::t_4c88710dc6653e 514
+contrib/local-wrapper/README.md
+  s_0597223c6852f1::t_0332381c7a6c31 13,15,55
+docs/local-wrapper.md
+  s_0597223c6852f1::t_2ff800613470c5 56-57,59,61-72,122,137-139,148-149,173-174,178
+  s_0c38e0c1509213::t_7e318e08258754 112
+  s_bd362efb6487a9::t_eaf325d96beab7 140-143
+  s_bd362efb6487a9::t_31abad19a73cf8 35-44
+  s_0597223c6852f1::t_ced8420066cdff 100-111
+contrib/local-wrapper/launcher/codebase-index.example.json
+  s_0597223c6852f1::t_6aff9f3f28d012 11-12
+contrib/local-wrapper/install.sh
+  s_0597223c6852f1::t_fda382dcda99b1 6
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.7.5",
-  "base_commit_sha": "2f3acc5d87badf3407c5eccb8f39eee924c2721d",
+  "base_commit_sha": "ec09e58483b25ba25229fa551b320dfc21b467e6",
   "prompts": {},
   "sessions": {
     "s_0597223c6852f1": {

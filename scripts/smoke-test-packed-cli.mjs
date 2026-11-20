@@ -19,6 +19,14 @@ const scratchRoot = args.length === 0
 if (args.length !== 0) mkdirSync(scratchRoot, { mode: 0o700 });
 const manifest = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(path.join(repositoryRoot, "package-lock.json"), "utf8"));
+const ciRepositoryUrl = process.env.GITHUB_REPOSITORY ? `https://github.com/${process.env.GITHUB_REPOSITORY}` : null;
+const catalogRepositoryUrls = [catalog.product.current.repository, catalog.product.future.repository];
+const repositoryUrlArgs = ciRepositoryUrl && catalogRepositoryUrls.includes(ciRepositoryUrl)
+  ? ["--repository-url", ciRepositoryUrl]
+  : [];
+if (ciRepositoryUrl && repositoryUrlArgs.length === 0) {
+  console.log(`Keeping the checked-in repository URL: ${ciRepositoryUrl} is not in the identity catalog.`);
+}
 let commandNumber = 0;
 console.log(`Packed smoke evidence: ${scratchRoot}`);
 
@@ -121,9 +129,7 @@ async function smokeIdentity(identity, expectedBinaries) {
     repositoryRoot,
     "--output-dir",
     stageRoot,
-    ...(process.env.GITHUB_REPOSITORY
-      ? ["--repository-url", `https://github.com/${process.env.GITHUB_REPOSITORY}`]
-      : []),
+    ...repositoryUrlArgs,
   ], repositoryRoot);
 
   const packOutput = JSON.parse(run("npm", ["pack", "--ignore-scripts", "--json"], stageRoot));

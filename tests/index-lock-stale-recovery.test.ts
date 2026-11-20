@@ -226,6 +226,37 @@ describe("stale index lock recovery", () => {
     expectBusy();
   });
 
+  it("refuses an exact-hostname old-format lock on a Linux filesystem type it does not know to be local", () => {
+    setLockHostIdentitySourcesForTesting({
+      platform: "linux",
+      hostname: () => "current-host",
+      readFile: (filePath) => filePath === "/proc/self/mounts"
+        ? `/dev/sda1 / ext4 rw 0 0\npvfs2://server:3334/fs ${tempDir} pvfs2 rw 0 0\n`
+        : null,
+    });
+    writeOwner({ pid: exitedPid(), hostname: "current-host" });
+    expectBusy();
+  });
+
+  it("recovers a force-abandoned marker even where an unrelated process holds its PID", () => {
+    const token = "abababab-abab-4bab-8bab-abababababab";
+    const markerPath = path.join(indexPath, `indexing.lock.recovery.${token}`);
+    fs.mkdirSync(markerPath, { recursive: true });
+    fs.writeFileSync(path.join(markerPath, "owner.json"), JSON.stringify({
+      pid: process.pid,
+      hostname: "remote-host",
+      startedAt: new Date().toISOString(),
+      operation: "index",
+      token,
+      abandonedAt: new Date().toISOString(),
+    }));
+
+    const lease = acquireIndexLock(indexPath, "recovery");
+    expect(lease.recoveries.map((recovery) => recovery.owner.token)).toEqual([token]);
+    completeLeaseRecovery(lease);
+    expect(releaseIndexLock(lease)).toBe(true);
+  });
+
   it("does not widen a plain hostname into a .local alias", () => {
     setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host" });
     writeOwner({ pid: exitedPid(), hostname: "current-host.local" });
@@ -233,7 +264,7 @@ describe("stale index lock recovery", () => {
   });
 
   it("keeps a machine-id owner unverified when this machine cannot produce an id", () => {
-    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host", run: () => null });
     writeOwner({ pid: exitedPid(), hostname: "current-host", machineId: "f".repeat(32) });
     expectBusy();
   });
@@ -325,7 +356,7 @@ describe("manual index unlock", () => {
   });
 
   it("refuses an owner on another machine until --force, then lets the next run recover it", async () => {
-    const owner = writeOwner({ pid: 4242, hostname: "remote-host" });
+    const owner = writeOwner({ pid: exitedPid(), hostname: "remote-host" });
 
     const refused = await cli(indexPath);
     expect(refused.exitCode).toBe(1);
@@ -403,7 +434,7 @@ describe("manual index unlock", () => {
   ])("retries an unreadable lock whose claim was left by %s", (_label, hostname) => {
     fs.mkdirSync(lockPath, { recursive: true });
     fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
-    writeClaim(hostname === "current-host" ? exitedPid() : 4246, hostname);
+    writeClaim(exitedPid(), hostname);
 
     expect(breakIndexLock(indexPath).status).not.toBe("removed");
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
@@ -411,7 +442,7 @@ describe("manual index unlock", () => {
   });
 
   it("vetoes a forced clear when the machine id cannot be checked but the PID is alive under this hostname", () => {
-    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host", run: () => null });
     writeOwner({ pid: process.pid, hostname: "current-host", machineId: "f".repeat(32) });
 
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
@@ -419,7 +450,7 @@ describe("manual index unlock", () => {
   });
 
   it("vetoes a forced clear of a renamed owner whose PID is alive when the machine id cannot be checked", () => {
-    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host", run: () => null });
     writeOwner({ pid: process.pid, hostname: "retired-name", machineId: "f".repeat(32) });
 
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
@@ -495,8 +526,8 @@ describe("manual index unlock", () => {
 
   it("displaces an unlock guard from another machine only with --force", () => {
     const guardPath = path.join(indexPath, "indexing.lock.unlock");
-    writeOwner({ pid: 4247, hostname: "remote-host" });
-    writeOwner({ pid: 4248, hostname: "remote-host", operation: "recovery", token: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }, guardPath);
+    writeOwner({ pid: exitedPid(), hostname: "remote-host" });
+    writeOwner({ pid: exitedPid(), hostname: "remote-host", operation: "recovery", token: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }, guardPath);
 
     const forced = breakIndexLock(indexPath, { force: true });
     expect(forced.status).toBe("removed");
@@ -533,10 +564,10 @@ describe("manual index unlock", () => {
   });
 
   it("shows a stranded reclaimer from another machine and clears it only with --force", async () => {
-    const owner = writeOwner({ pid: 4244, hostname: "remote-host", startedAt: oldStart() });
+    const owner = writeOwner({ pid: exitedPid(), hostname: "remote-host", startedAt: oldStart() });
     fs.mkdirSync(path.join(lockPath, "reclaiming"));
     fs.writeFileSync(path.join(lockPath, "reclaiming", "owner.json"), JSON.stringify({
-      pid: 4245,
+      pid: exitedPid(),
       hostname: "remote-host",
       startedAt: oldStart(),
       token: "66666666-6666-4666-8666-666666666666",
@@ -546,7 +577,7 @@ describe("manual index unlock", () => {
     const refused = await cli(indexPath);
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("- reclaim-marker:");
-    expect(refused.stderr).toContain("PID 4245 on remote-host");
+    expect(refused.stderr).toMatch(/PID \d+ on remote-host/);
 
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
     const lease = acquireIndexLock(indexPath, "recovery");
@@ -569,7 +600,7 @@ describe("manual index unlock", () => {
 
   it("abandons a blocking recovery marker from another machine only with --force", async () => {
     const markerPath = path.join(indexPath, "indexing.lock.recovery.44444444-4444-4444-8444-444444444444");
-    writeOwner({ pid: 4243, hostname: "remote-host", token: "44444444-4444-4444-8444-444444444444" }, markerPath);
+    writeOwner({ pid: exitedPid(), hostname: "remote-host", token: "44444444-4444-4444-8444-444444444444" }, markerPath);
     expect(() => acquireIndexLock(indexPath, "index")).toThrowError(expect.objectContaining({ code: "INDEX_BUSY" }));
 
     const refused = await cli(indexPath, "--json");
@@ -578,7 +609,7 @@ describe("manual index unlock", () => {
 
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
     const lease = acquireIndexLock(indexPath, "recovery");
-    expect(lease.recoveries.map((recovery) => recovery.owner.pid)).toEqual([4243]);
+    expect(lease.recoveries.map((recovery) => recovery.owner.token)).toEqual(["44444444-4444-4444-8444-444444444444"]);
     completeLeaseRecovery(lease);
     expect(releaseIndexLock(lease)).toBe(true);
     expect(fs.existsSync(markerPath)).toBe(false);

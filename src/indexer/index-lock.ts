@@ -376,8 +376,14 @@ function getPendingRecoveries(indexPath: string): IndexLockRecovery[] {
   return recoveries;
 }
 
+/**
+ * A marker whose owner was explicitly abandoned with `ocbi unlock --force` is recovered
+ * unless its owner is verifiably alive here; the unlock already vetoed a running PID, and
+ * repeating that veto on another machine would let any process with that PID block it.
+ */
 function isRecoverableMarkerOwner(owner: IndexLockOwner, markerPath: string): boolean {
-  return clearableOwner(owner, markerPath, owner.abandonedAt !== undefined);
+  const liveness = getOwnerLiveness(owner, markerPath);
+  return liveness === "dead" || (owner.abandonedAt !== undefined && liveness === "unknown");
 }
 
 function cleanupDeadPublicationCandidates(indexPath: string): void {

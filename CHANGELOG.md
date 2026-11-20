@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Stale lock recovery after a hostname change**: New locks record a hashed machine id (Linux machine-id plus PID namespace, macOS platform UUID, Windows MachineGuid), so a lock left by a dead process is recovered after any rename, and two machines that share a hostname are no longer mistaken for one. A lock without a machine id is recovered when it names one of the machine's current names (the OS hostname, a different spelling, or on macOS the configured HostName or the Bonjour LocalHostName, with or without `.local`) and the index sits on storage known to be local; on network, FUSE or undetectable storage it now waits for `ocbi unlock`. Older readers ignore the new field and still see such locks as held.
+- **Stale lock recovery after a hostname change**: New locks record a hashed machine id (Linux machine-id plus PID namespace, macOS platform UUID, Windows MachineGuid), so a lock left by a dead process is recovered after any rename, and two machines that share a hostname are no longer mistaken for one. A lock without a machine id is recovered when it names one of the machine's current names (the OS hostname, a different spelling, or on macOS the configured HostName or the Bonjour LocalHostName, with or without `.local`) and the index sits on storage known to be local; on any storage not known to be local it now waits for `ocbi unlock`. Older readers ignore the new field and still see such locks as held.
 
 ## [0.38.2-gd.5] - 2026-11-19
 

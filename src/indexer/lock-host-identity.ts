@@ -74,10 +74,11 @@ const defaultSources: LockHostIdentitySources = {
   realpath: resolveRealPath,
 };
 
-// Linux filesystem types whose files other machines can also reach.
-const SHARED_LINUX_FILESYSTEMS = new Set([
-  "nfs", "nfs4", "cifs", "smb3", "smbfs", "ncpfs", "9p", "afs", "ceph", "glusterfs", "lustre", "gpfs", "beegfs",
-  "ocfs2", "gfs2", "davfs", "virtiofs",
+// Linux filesystem types known to live on this machine's own block devices or memory.
+// Anything else (network, cluster, FUSE, or a type not listed) counts as possibly shared.
+const LOCAL_LINUX_FILESYSTEMS = new Set([
+  "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "bcachefs", "jfs", "reiserfs", "nilfs2",
+  "vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "apfs", "tmpfs", "ramfs", "overlay", "squashfs", "erofs",
 ]);
 
 let sources: LockHostIdentitySources = defaultSources;
@@ -176,14 +177,14 @@ export function parseDarwinMounts(output: string): MountEntry[] {
   });
 }
 
-/** Parses /proc/self/mounts on Linux; FUSE and shared filesystem types count as not local. */
+/** Parses /proc/self/mounts on Linux; only known local filesystem types count as local. */
 export function parseLinuxMounts(contents: string): MountEntry[] {
   return contents.split("\n").flatMap((line) => {
     const fields = line.trim().split(/\s+/);
     if (fields.length < 3) return [];
     const mountPoint = fields[1].replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
     const type = fields[2];
-    return [{ mountPoint, local: !SHARED_LINUX_FILESYSTEMS.has(type) && !type.startsWith("fuse") }];
+    return [{ mountPoint, local: LOCAL_LINUX_FILESYSTEMS.has(type) }];
   });
 }
 

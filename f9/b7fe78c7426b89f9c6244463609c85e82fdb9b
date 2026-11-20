@@ -1,0 +1,19 @@
+scripts/smoke-test-packed-cli.mjs
+  s_c4801a495a12b5::t_5a676855e3695b 22-29,132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f9b7fe78c7426b89f9c6244463609c85e82fdb9b",
+  "prompts": {},
+  "sessions": {
+    "s_c4801a495a12b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45d34c86-83df-43d4-8d2f-36067c0c00f0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -174,17 +174,24 @@ describe("repository route status and config reads", () => {
     it("labels a global-scope store without a checkout role", () => {
       writeJson(configPath, {});
       const globalStore = resolveGlobalIndexPath("claude");
-      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore))
+      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { scope: "global" }))
         .toBe(`Store: ${globalStore} (global scope)`);
-      expect(formatRepositoryRouteStatus(mainRoot, "claude", path.join(globalStore, "structural"), { omitLegacy: true }))
-        .toBe(`Store: ${path.join(globalStore, "structural")} (global scope)`);
+      expect(formatRepositoryRouteStatus(mainRoot, "claude", globalStore, { scope: "global", omitLegacy: true }))
+        .toBe(`Store: ${globalStore} (global scope)`);
 
       fs.rmSync(configPath);
       resetRepositoryRoutesForTests();
-      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore))
+      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { scope: "global" }))
         .toBe(`Store: ${globalStore} (global scope)`);
-      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { omitLegacy: true }))
+      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { scope: "global", omitLegacy: true }))
         .toBe("");
+    });
+
+    it("reports global scope when the repository store is the host global index", async () => {
+      const globalStore = resolveGlobalIndexPath("claude");
+      writeJson(configPath, { storage: { indexPath: globalStore } });
+      const routeBlock = await statusWithExplicitConfig("global");
+      expect(routeBlock).toBe(`Store: ${path.join(globalStore, "structural")} (global scope)`);
     });
 
     it("labels the store the indexer inspected even if the config is reloaded mid-request", async () => {

@@ -7819,6 +7819,11 @@ export class Indexer {
     return results.slice(0, normalizedLimit);
   }
 
+  /** The scope this indexer was initialized with. */
+  getConfiguredScope(): "project" | "global" {
+    return this.config.scope;
+  }
+
   async getStatus(): Promise<StatusResult> {
     const { store, configuredProviderInfo, database, readIssues, compatibility } = await this.ensureInitialized();
     const failedBatchesCount = this.getFailedBatchesCount();

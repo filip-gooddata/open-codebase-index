@@ -19,7 +19,7 @@ import {
   getArchitectureContext,
   getIndexLogs,
   getIndexMetrics,
-  getIndexStatus,
+  readIndexStatusSnapshot,
   implementationLookup,
   isExactSymbolQuery,
   runIndexCodebase,
@@ -27,7 +27,6 @@ import {
 } from "./operations.js";
 import { formatCostEstimate, formatDryRunEstimate } from "../utils/cost.js";
 import { formatRepositoryRouteStatus } from "../config/repository-route.js";
-import { getProjectRoot } from "./operation-runtime.js";
 import { resolveCodebaseEditContext } from "./edit-context.js";
 import { resolveCodebaseContext } from "./context.js";
 import {
@@ -101,9 +100,9 @@ export async function executeIndexStatus(
   control?: OperationControl,
   options: IndexStatusExecutionOptions = {},
 ): Promise<ExecutionResult> {
-  const status = await getIndexStatus(projectRoot, host, args, control);
-  const root = getProjectRoot(projectRoot, host);
+  const { root, scope, status } = await readIndexStatusSnapshot(projectRoot, host, args, control);
   const routeText = formatRepositoryRouteStatus(root, host, status.indexPath, {
+    scope,
     omitLegacy: options.omitLegacyRoute,
   });
   const statusText = formatStatus(status);

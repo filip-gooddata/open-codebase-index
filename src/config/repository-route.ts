@@ -5,7 +5,7 @@ import * as path from "path";
 import type { HostMode } from "./host.js";
 import { validateConfigLayerShape } from "./layer-shape.js";
 import { resolveRepositoryLayout, type RepositoryLayout } from "../git/layout.js";
-import { getHostProjectIndexRelativePath, resolveGlobalIndexPath } from "./paths.js";
+import { getHostProjectIndexRelativePath } from "./paths.js";
 
 export type CheckoutRole = "primary" | "secondary";
 export type RepositoryStoreSource = "repository config" | "repository default store";
@@ -296,23 +296,19 @@ function describeRouteDrift(route: RepositoryRoute): string | null {
 }
 
 export interface RepositoryRouteStatusOptions {
+  /**
+   * Scope of the indexer that reported `indexPath`, taken from that same
+   * instance so a config reload during the request cannot change the label.
+   * A global-scope store never gets a checkout role.
+   */
+  scope?: "project" | "global";
   /** Return an empty string for a legacy checkout with nothing to warn about. */
   omitLegacy?: boolean;
 }
 
-/** True when `indexPath` is `storePath` or its structural-mode subdirectory. */
-function isIndexPathInStore(indexPath: string, storePath: string): boolean {
-  const canonicalIndexPath = canonicalize(indexPath);
-  return canonicalIndexPath === canonicalize(storePath)
-    || canonicalIndexPath === canonicalize(path.join(storePath, "structural"));
-}
-
 /**
  * Status lines for the repository route of a checkout. `indexPath` is the
- * store the running indexer inspected; the label is derived from that path,
- * so a config reload during the request cannot pair it with another scope.
- * Store routing never depends on settings, so a routed checkout whose
- * indexer does not use the repository store is running in global scope.
+ * store the indexer inspected and `options.scope` that indexer's scope.
  */
 export function formatRepositoryRouteStatus(
   projectRoot: string,
@@ -320,6 +316,7 @@ export function formatRepositoryRouteStatus(
   indexPath: string,
   options: RepositoryRouteStatusOptions = {},
 ): string {
+  const scope = options.scope ?? "project";
   let route: RepositoryRoute;
   try {
     route = resolveRepositoryRoute(projectRoot, host);
@@ -327,21 +324,17 @@ export function formatRepositoryRouteStatus(
     return `Repository route error: ${getErrorMessage(error)}`;
   }
 
-  const routedStore = route.config !== null && route.indexPath !== null
-    && isIndexPathInStore(indexPath, route.indexPath);
-  const globalStore = !routedStore && isIndexPathInStore(indexPath, resolveGlobalIndexPath(host));
-
   const lines: string[] = [];
   const warnings: string[] = [];
-  if (routedStore) {
+  if (scope === "global") {
+    lines.push(`Store: ${indexPath} (global scope)`);
+  } else if (route.config !== null) {
     const source = route.storeSource === "repository config"
       ? `repository config ${route.configPath ?? ""}`
       : "repository default store";
     lines.push(`Store: ${indexPath} (${source})`);
     lines.push(`Checkout role: ${route.role} - ${route.roleReason}`);
     warnings.push(...route.warnings);
-  } else if (globalStore || route.config !== null) {
-    lines.push(`Store: ${indexPath} (global scope)`);
   } else {
     lines.push(`Store: ${indexPath} (host default)`);
     warnings.push(...route.warnings);

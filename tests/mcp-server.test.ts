@@ -192,6 +192,7 @@ vi.mock("../src/indexer/index.js", () => {
     index = vi.fn().mockImplementation(async () => mockIndexResult);
     forceIndex = vi.fn().mockImplementation(async () => mockIndexResult);
     getStatus = vi.fn().mockImplementation(async () => mockStatusResult);
+    getConfiguredScope = vi.fn().mockReturnValue("project");
     healthCheck = vi.fn().mockImplementation(async () => mockHealthCheckResult);
     clearIndex = vi.fn().mockResolvedValue(undefined);
     getCallGraphSymbols = vi.fn().mockResolvedValue([

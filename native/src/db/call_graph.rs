@@ -446,8 +446,10 @@ struct BranchEdgeStatements<'conn> {
 }
 
 enum CallEdgeWriter<'conn> {
-    Shared { upsert_edge: rusqlite::Statement<'conn> },
-    Branch(BranchEdgeStatements<'conn>),
+    Shared {
+        upsert_edge: rusqlite::Statement<'conn>,
+    },
+    Branch(Box<BranchEdgeStatements<'conn>>),
 }
 
 impl<'conn> CallEdgeWriter<'conn> {
@@ -459,14 +461,14 @@ impl<'conn> CallEdgeWriter<'conn> {
                 } else {
                     None
                 };
-                Self::Branch(BranchEdgeStatements {
+                Self::Branch(Box::new(BranchEdgeStatements {
                     branch,
                     freeze: conn.prepare(FREEZE_OTHER_BRANCH_TARGETS_SQL)?,
                     update_edge: conn.prepare(UPDATE_CALL_EDGE_SQL)?,
                     insert_edge: conn.prepare(INSERT_CALL_EDGE_SQL)?,
                     upsert_target: conn.prepare(UPSERT_BRANCH_TARGET_SQL)?,
                     clear_stale,
-                })
+                }))
             }
             _ => Self::Shared {
                 upsert_edge: conn.prepare(UPSERT_CALL_EDGE_SQL)?,
@@ -795,7 +797,10 @@ pub fn gc_pending_branch_call_edges(conn: &Connection) -> DbResult<usize> {
 
 /// Delete edge targets and stale marks in every branch for the call edges
 /// `edge_ids_sql` selects, before those edges are deleted.
-pub(crate) fn delete_branch_call_edges_for_edges(conn: &Connection, edge_ids_sql: &str) -> DbResult<usize> {
+pub(crate) fn delete_branch_call_edges_for_edges(
+    conn: &Connection,
+    edge_ids_sql: &str,
+) -> DbResult<usize> {
     if !has_branch_call_edges(conn)? {
         return Ok(0);
     }
@@ -1737,8 +1742,7 @@ pub fn delete_branch_symbols_for_branch(
         let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let branch_params =
-            || std::iter::once(branch).chain(chunk.iter().map(|s| s.as_str()));
+        let branch_params = || std::iter::once(branch).chain(chunk.iter().map(|s| s.as_str()));
         if has_overlay {
             let overlay_sql = format!(
                 "DELETE FROM branch_call_edges WHERE branch = ? AND edge_id IN (SELECT id FROM call_edges WHERE from_symbol_id IN ({}))",

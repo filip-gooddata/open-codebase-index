@@ -589,7 +589,10 @@ impl Database {
     }
 
     #[napi]
-    pub fn count_branch_catalog_rows(&self, branches: Vec<String>) -> Result<Vec<BranchCatalogRows>> {
+    pub fn count_branch_catalog_rows(
+        &self,
+        branches: Vec<String>,
+    ) -> Result<Vec<BranchCatalogRows>> {
         self.with_conn(|conn| {
             let rows = db::count_branch_catalog_rows(conn, &branches)
                 .map_err(|e| Error::from_reason(e.to_string()))?;
@@ -607,7 +610,11 @@ impl Database {
             let pruned = db::delete_branch_catalogs(conn, &branches, &metadata_keys)
                 .map_err(|e| Error::from_reason(e.to_string()))?;
             Ok(BranchCatalogPrune {
-                branches: pruned.branches.into_iter().map(BranchCatalogRows::from).collect(),
+                branches: pruned
+                    .branches
+                    .into_iter()
+                    .map(BranchCatalogRows::from)
+                    .collect(),
                 metadata: pruned.metadata as u32,
             })
         })

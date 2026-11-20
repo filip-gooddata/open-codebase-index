@@ -283,7 +283,7 @@ pub fn extract_calls(content: &str, language_name: &str) -> Result<Vec<CallSite>
     let mut indirect_types = HashSet::new();
     if excluded_name_idx.is_some() || indirect_type_idx.is_some() {
         let mut exclusion_cursor = QueryCursor::new();
-        let mut exclusion_matches = exclusion_cursor.captures(&query, tree.root_node(), text_bytes);
+        let mut exclusion_matches = exclusion_cursor.captures(query, tree.root_node(), text_bytes);
         while let Some((match_, _)) = exclusion_matches.next() {
             for capture in match_.captures {
                 if excluded_name_idx == Some(capture.index) {
@@ -312,7 +312,7 @@ pub fn extract_calls(content: &str, language_name: &str) -> Result<Vec<CallSite>
         && indirect_variable_idx.is_some()
     {
         let mut variable_cursor = QueryCursor::new();
-        let mut variables = variable_cursor.captures(&query, tree.root_node(), text_bytes);
+        let mut variables = variable_cursor.captures(query, tree.root_node(), text_bytes);
         while let Some((match_, _)) = variables.next() {
             let mut variable_type = None;
             let mut variable_name = None;
@@ -347,7 +347,7 @@ pub fn extract_calls(content: &str, language_name: &str) -> Result<Vec<CallSite>
     let mut cursor = QueryCursor::new();
     let mut calls = Vec::new();
 
-    let mut captures_iter = cursor.captures(&query, tree.root_node(), text_bytes);
+    let mut captures_iter = cursor.captures(query, tree.root_node(), text_bytes);
 
     while let Some((match_, _)) = captures_iter.next() {
         // A `foo(...)` reference is a call only when the PHP pipe invokes it,
@@ -613,7 +613,11 @@ mod tests {
                     }
                     "inherits.name" | "implements.name" => {
                         name = Some(text.to_owned());
-                        kind = if capture_name == "inherits.name" { CallType::Inherits } else { CallType::Implements };
+                        kind = if capture_name == "inherits.name" {
+                            CallType::Inherits
+                        } else {
+                            CallType::Implements
+                        };
                         let point = capture.node.start_position();
                         position = Some((point.row as u32 + 1, point.column as u32));
                     }
@@ -623,36 +627,74 @@ mod tests {
                 }
             }
             if let (Some(callee_name), Some((line, column))) = (name, position) {
-                calls.push(CallSite { callee_name, line, column, call_type: kind, confidence: Confidence::Direct });
+                calls.push(CallSite {
+                    callee_name,
+                    line,
+                    column,
+                    call_type: kind,
+                    confidence: Confidence::Direct,
+                });
             }
         }
-        calls.dedup_by(|a, b| a.callee_name == b.callee_name && a.line == b.line && a.column == b.column && a.call_type == b.call_type);
-        calls.sort_by(|a, b| (a.line, a.column, &a.callee_name).cmp(&(b.line, b.column, &b.callee_name)));
+        calls.dedup_by(|a, b| {
+            a.callee_name == b.callee_name
+                && a.line == b.line
+                && a.column == b.column
+                && a.call_type == b.call_type
+        });
+        calls.sort_by(|a, b| {
+            (a.line, a.column, &a.callee_name).cmp(&(b.line, b.column, &b.callee_name))
+        });
         Ok(calls)
     }
 
     #[test]
     fn cached_matches_uncached_and_reuses_query_for_supported_languages() {
         let samples = [
-            (Language::TypeScript, "function run() { alpha(); obj.beta(); }"),
-            (Language::JavaScript, "function run() { alpha(); obj.beta(); }"),
-            (Language::Python, "def run():\n    alpha()\n    obj.beta()\n"),
+            (
+                Language::TypeScript,
+                "function run() { alpha(); obj.beta(); }",
+            ),
+            (
+                Language::JavaScript,
+                "function run() { alpha(); obj.beta(); }",
+            ),
+            (
+                Language::Python,
+                "def run():\n    alpha()\n    obj.beta()\n",
+            ),
             (Language::Rust, "fn run() { alpha(); obj.beta(); }"),
             (Language::Swift, "func run() { alpha(); obj.beta() }"),
-            (Language::Go, "package p\nfunc run() { alpha(); obj.beta() }"),
+            (
+                Language::Go,
+                "package p\nfunc run() { alpha(); obj.beta() }",
+            ),
             (Language::Kotlin, "fun run() { alpha(); obj.beta() }"),
             (Language::Metal, "void run() { alpha(); obj.beta(); }"),
-            (Language::Php, "<?php function run() { alpha(); $obj->beta(); }"),
+            (
+                Language::Php,
+                "<?php function run() { alpha(); $obj->beta(); }",
+            ),
             (Language::Zig, "fn run() void { alpha(); obj.beta(); }"),
-            (Language::Gdscript, "func run():\n    alpha()\n    obj.beta()\n"),
+            (
+                Language::Gdscript,
+                "func run():\n    alpha()\n    obj.beta()\n",
+            ),
             (Language::Matlab, "function run()\n alpha();\nend"),
-            (Language::Apex, "class A { void run() { alpha(); obj.beta(); } }"),
+            (
+                Language::Apex,
+                "class A { void run() { alpha(); obj.beta(); } }",
+            ),
             (Language::Bash, "run() { alpha; beta; }"),
             (Language::C, "void run() { alpha(); obj.beta(); }"),
             (Language::Cpp, "void run() { alpha(); obj.beta(); }"),
         ];
         for (language, source) in samples {
-            assert_eq!(extract_calls(source, language.as_str()).unwrap(), uncached_extract(language, source).unwrap(), "{language:?}");
+            assert_eq!(
+                extract_calls(source, language.as_str()).unwrap(),
+                uncached_extract(language, source).unwrap(),
+                "{language:?}"
+            );
             let (ts_language, query_source) = call_language_spec(language).unwrap();
             let first = cached_call_query(&ts_language, query_source).unwrap();
             let second = cached_call_query(&ts_language, query_source).unwrap();
@@ -664,7 +706,10 @@ mod tests {
     fn malformed_then_valid_input_matches_uncached_on_same_thread() {
         let _ = extract_calls("function ( {", "typescript").unwrap();
         let valid = "function run() { alpha(); }";
-        assert_eq!(extract_calls(valid, "typescript").unwrap(), uncached_extract(Language::TypeScript, valid).unwrap());
+        assert_eq!(
+            extract_calls(valid, "typescript").unwrap(),
+            uncached_extract(Language::TypeScript, valid).unwrap()
+        );
     }
 
     #[test]

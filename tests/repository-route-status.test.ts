@@ -2,11 +2,11 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HostMode } from "../src/config/host.js";
 import { loadMergedConfig } from "../src/config/merger.js";
-import { resolveGlobalConfigPath, resolveProjectIndexPath } from "../src/config/paths.js";
+import { resolveGlobalConfigPath, resolveGlobalIndexPath, resolveProjectIndexPath } from "../src/config/paths.js";
 import {
   formatRepositoryRouteStatus,
   getRepositoryConfigPath,
@@ -16,6 +16,7 @@ import {
 import codebaseIndexOmpExtension from "../src/omp-extension.js";
 import codebaseIndexPiExtension from "../src/pi-extension.js";
 import { parseConfig } from "../src/config/schema.js";
+import { Indexer } from "../src/indexer/index.js";
 import { executeIndexStatus } from "../src/tools/execute-common.js";
 import { getIndexerForProject, initializeTools } from "../src/tools/operation-runtime.js";
 import { getIndexStatus } from "../src/tools/operations.js";
@@ -172,18 +173,48 @@ describe("repository route status and config reads", () => {
   describe("status route block", () => {
     it("labels a global-scope store without a checkout role", () => {
       writeJson(configPath, {});
-      const globalStore = path.join(tempDir, "global-index");
-      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { scope: "global" }))
+      const globalStore = resolveGlobalIndexPath("claude");
+      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore))
         .toBe(`Store: ${globalStore} (global scope)`);
-      expect(formatRepositoryRouteStatus(mainRoot, "claude", globalStore, { scope: "global", omitLegacy: true }))
-        .toBe(`Store: ${globalStore} (global scope)`);
+      expect(formatRepositoryRouteStatus(mainRoot, "claude", path.join(globalStore, "structural"), { omitLegacy: true }))
+        .toBe(`Store: ${path.join(globalStore, "structural")} (global scope)`);
 
       fs.rmSync(configPath);
       resetRepositoryRoutesForTests();
-      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { scope: "global" }))
+      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore))
         .toBe(`Store: ${globalStore} (global scope)`);
-      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { scope: "global", omitLegacy: true }))
+      expect(formatRepositoryRouteStatus(worktreeRoot, "claude", globalStore, { omitLegacy: true }))
         .toBe("");
+    });
+
+    it("labels the store the indexer inspected even if the config is reloaded mid-request", async () => {
+      writeJson(configPath, {});
+      const store = path.join(commonDir, "codebase-index", "index");
+      initializeTools(worktreeRoot, parseConfig({
+        scope: "project",
+        indexing: { mode: "structural", autoIndex: false, watchFiles: false, requireProjectMarker: false },
+      }), "claude");
+      const inspected = getIndexerForProject(worktreeRoot, "claude");
+      const originalGetStatus = Indexer.prototype.getStatus;
+      const spy = vi.spyOn(Indexer.prototype, "getStatus").mockImplementation(async function (this: Indexer) {
+        const status = await originalGetStatus.call(this);
+        // A watcher config reload swaps in a global-scope indexer while this request is in flight.
+        initializeTools(worktreeRoot, parseConfig({
+          scope: "global",
+          indexing: { mode: "structural", autoIndex: false, watchFiles: false, requireProjectMarker: false },
+        }), "claude");
+        return status;
+      });
+      try {
+        const result = await executeIndexStatus(worktreeRoot, "claude");
+        const routeBlock = result.text.slice(result.text.lastIndexOf("\n\n") + 2);
+        expect(routeBlock.split("\n")[0]).toBe(`Store: ${path.join(store, "structural")} (repository default store)`);
+        expect(routeBlock).toContain("Checkout role: secondary - linked worktree");
+      } finally {
+        spy.mockRestore();
+        await inspected.close();
+        await getIndexerForProject(worktreeRoot, "claude").close();
+      }
     });
 
     it("index_status uses the effective global scope", async () => {

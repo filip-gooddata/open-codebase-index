@@ -75,8 +75,17 @@ try {
   execFileSync("git", ["init", "-q"], { cwd: fixtureRoot });
   writeFileSync(path.join(fixtureRoot, "math.ts"),
     "export function add(a: number, b: number): number {\n  return a + b;\n}\n");
+  // A dry run reads the chunk token limit from the configured embedding model
+  // but never calls the provider, so an unreachable custom endpoint suffices on
+  // runners without credentials or a local Ollama.
+  const configPath = path.join(projectRoot, "codebase-index.json");
+  writeFileSync(configPath, `${JSON.stringify({
+    embeddingProvider: "custom",
+    customProvider: { baseUrl: "http://127.0.0.1:9/v1", model: "install-check", dimensions: 8 },
+  })}\n`);
   const cli = path.join(packageRoot, installedManifest.bin.ocbi);
-  const indexRun = spawnSync(process.execPath, [cli, "index", "--dry-run", "--project", fixtureRoot], {
+  const indexArgs = [cli, "index", "--dry-run", "--project", fixtureRoot, "--config", configPath];
+  const indexRun = spawnSync(process.execPath, indexArgs, {
     cwd: projectRoot,
     encoding: "utf8",
     env: { ...process.env, HOME: path.join(projectRoot, "home"), USERPROFILE: path.join(projectRoot, "home") },

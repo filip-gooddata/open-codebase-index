@@ -708,7 +708,7 @@ function removeClaimedDirectory(directoryPath: string, expectedContents: string 
  * guard excludes that.
  */
 function removeRecordFile(entry: IndexLockEntry): boolean {
-  if (!contentsUnchanged(entry, entry.path)) return false;
+  if (!contentsUnchanged(entry, entry.path) || (entry.owner !== null && plausiblyAliveHere(entry.owner))) return false;
   const quarantinePath = `${entry.path}.stale.manual.${randomUUID()}`;
   try {
     renameSync(entry.path, quarantinePath);
@@ -727,7 +727,7 @@ function removeRecordFile(entry: IndexLockEntry): boolean {
 function abandonRecoveryMarker(entry: IndexLockEntry): boolean {
   const ownerPath = path.join(entry.path, OWNER_FILE_NAME);
   const owner = readRecoveryOwner(entry.path);
-  if (owner === null || !contentsUnchanged(entry, ownerPath)) return false;
+  if (owner === null || !contentsUnchanged(entry, ownerPath) || !clearableOwner(owner, entry.path, true)) return false;
   const temporaryPath = `${ownerPath}.tmp.${process.pid}.${randomUUID()}`;
   try {
     writeFileSync(temporaryPath, JSON.stringify({ ...owner, abandonedAt: new Date().toISOString() }), {

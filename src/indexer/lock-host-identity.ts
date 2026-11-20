@@ -83,7 +83,6 @@ const SHARED_LINUX_FILESYSTEMS = new Set([
 let sources: LockHostIdentitySources = defaultSources;
 let cachedMachineId: { id: string | null; expiresAt: number } | undefined;
 let cachedHostNames: { names: string[]; expiresAt: number } | undefined;
-let cachedMounts: { mounts: MountEntry[]; expiresAt: number } | undefined;
 
 function hashMachineId(raw: string): string {
   return createHash("sha256").update(`${MACHINE_ID_NAMESPACE}\0${raw}`).digest("hex").slice(0, 32);
@@ -175,20 +174,17 @@ export function parseLinuxMounts(contents: string): MountEntry[] {
   });
 }
 
+/** Read fresh on every call: it only runs for a lock naming a host alias, and mounts change. */
 function getMounts(): MountEntry[] {
-  const now = Date.now();
-  if (cachedMounts === undefined || cachedMounts.expiresAt <= now) {
-    let mounts: MountEntry[] = [];
-    if (sources.platform === "darwin") {
-      const output = sources.run("/sbin/mount", []);
-      mounts = output === null ? [] : parseDarwinMounts(output);
-    } else if (sources.platform === "linux") {
-      const contents = sources.readFile("/proc/self/mounts");
-      mounts = contents === null ? [] : parseLinuxMounts(contents);
-    }
-    cachedMounts = { mounts, expiresAt: now + HOST_NAMES_TTL_MS };
+  if (sources.platform === "darwin") {
+    const output = sources.run("/sbin/mount", []);
+    return output === null ? [] : parseDarwinMounts(output);
   }
-  return cachedMounts.mounts;
+  if (sources.platform === "linux") {
+    const contents = sources.readFile("/proc/self/mounts");
+    return contents === null ? [] : parseLinuxMounts(contents);
+  }
+  return [];
 }
 
 /** Whether the storage holding a path is local to this machine; false when unknown. */
@@ -235,5 +231,4 @@ export function setLockHostIdentitySourcesForTesting(override: Partial<LockHostI
   sources = override === null ? defaultSources : { ...defaultSources, ...override };
   cachedMachineId = undefined;
   cachedHostNames = undefined;
-  cachedMounts = undefined;
 }

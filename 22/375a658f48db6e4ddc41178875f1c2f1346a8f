@@ -1,0 +1,19 @@
+scripts/fork-install-check.mjs
+  s_c78ab8eb4e9016::t_61b947b5c407be 78-85,87-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "22375a658f48db6e4ddc41178875f1c2f1346a8f",
+  "prompts": {},
+  "sessions": {
+    "s_c78ab8eb4e9016": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea6bcc6-de6b-4a5c-922f-08edf8477a90",
+        "model": "unknown"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

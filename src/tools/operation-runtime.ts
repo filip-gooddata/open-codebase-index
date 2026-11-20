@@ -34,9 +34,10 @@ export function getIndexBusyResult(error: unknown): IndexBusyResult | null {
   const ownerText = owner
     ? `PID ${owner.pid} on ${owner.hostname}, operation ${owner.operation}, since ${owner.startedAt}`
     : "unreadable owner";
-  const unlockHint = typeof error.lockPath === "string"
-    ? ` Inspect and clear it with \`ocbi unlock ${JSON.stringify(path.dirname(error.lockPath))}\`; it refuses while the owner is alive on this machine, and an owner on another machine or an unreadable record needs --force.`
-    : " Inspect and clear it with `ocbi unlock`.";
+  const unlockCommand = typeof error.lockPath === "string"
+    ? `ocbi unlock ${JSON.stringify(path.dirname(error.lockPath))}`
+    : "ocbi unlock";
+  const unlockHint = ` Inspect it with \`${unlockCommand}\`. It never clears a lock whose owner is alive on this machine. Add --force only after confirming that no index process using this index is running on any machine that can reach it.`;
   if (error.reason === "legacy-lock") {
     return {
       kind: "busy",
@@ -47,6 +48,12 @@ export function getIndexBusyResult(error: unknown): IndexBusyResult | null {
     return {
       kind: "busy",
       text: `INDEX_BUSY: unreadable or remote lock owner (${ownerText}). Automatic recovery was refused.${unlockHint}`,
+    };
+  }
+  if (error.reason === "reclaiming") {
+    return {
+      kind: "busy",
+      text: `INDEX_BUSY: another process is recovering a stale lock (${ownerText}). If this persists, a recovery may have been interrupted.${unlockHint}`,
     };
   }
   return { kind: "busy", text: `INDEX_BUSY: another index operation is already in progress (${ownerText}).` };

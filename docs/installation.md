@@ -229,15 +229,17 @@ ocbi prune --apply --project /path/to/worktree --host claude  # remove stale cat
 ocbi prune old-branch 1a2b3c4 --apply --json --project /path/to/worktree --host claude
 ```
 
-Index mutations hold `indexing.lock` in the index directory. When its owner exits without releasing it, the next run on the same machine recovers it. A lock counts as this machine's when its machine id matches (new locks record a hash of `/etc/machine-id` plus the PID namespace on Linux, or the platform UUID on macOS) or, for locks without one, when its hostname matches a name the machine answers to now (the OS hostname and, on macOS, the Bonjour local hostname and configured hostname). A lock from another machine is never recovered automatically, because its process cannot be checked from here. When automatic recovery is refused, `INDEX_BUSY` names the command to run:
+Index mutations hold `indexing.lock` in the index directory. When its owner exits without releasing it, the next run on the same machine recovers it. A lock counts as this machine's when its machine id matches (new locks record a hash of `/etc/machine-id` plus the PID namespace on Linux, or of the platform UUID on macOS). A lock without a machine id counts when its hostname matches a name the machine answers to now: the OS hostname and, on macOS, the configured HostName and the Bonjour LocalHostName with or without `.local`. A lock that records a machine id this machine cannot confirm, or one from another machine, is never recovered automatically, because its process cannot be checked from here, and neither is a lock's age taken as proof that its owner stopped. When automatic recovery is refused, `INDEX_BUSY` names the command to run:
 
 ```bash
 ocbi unlock /path/to/index            # show the lock; clear it only if its owner has exited
-ocbi unlock /path/to/index --force    # also clear an owner on another machine or an unreadable lock
+ocbi unlock /path/to/index --force    # confirm: owner on another machine, unreadable record, or a lock under 15 minutes old
 ocbi unlock --json --project /path/to/repo --host claude
 ```
 
-`ocbi unlock` never clears a lock whose owner is still running on this machine, even with `--force`. Use `--force` only after making sure no index process using that index runs on the host the lock names. The next index run still recovers whatever partial writes the old owner left.
+`ocbi unlock` lists the lock, any recovery in progress inside it, and any recovery marker that blocks the next run, with their raw contents. It never clears a lock whose owner is still running on this machine, even with `--force`. Use `--force` only after confirming that no index process using that index runs on any machine that can reach it. A cleared lock with a readable record leaves a recovery marker, so the next index run restores the partial writes its owner left. An unreadable or legacy single-file record carries nothing to recover from, and the command says so; rebuild with `ocbi index --force` if results look wrong. Releases before this one do not understand a force-cleared marker and keep reporting `INDEX_BUSY` until a run of this release completes the recovery.
+
+Known limitation: after a reboot, an unrelated process can reuse the dead owner's PID. The lock then looks alive and stays until that process exits.
 
 Use `ocbi index --dry-run` for a parse-only embedding-token total, `--estimate-only` for an estimate, and `ocbi --help` for command usage.
 

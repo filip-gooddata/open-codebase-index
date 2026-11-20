@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`ocbi unlock`**: Shows the index lock and any blocking recovery markers with their raw contents, and clears them when the owner has exited. It never clears a lock whose owner is running on this machine; an owner on another machine or an unreadable lock record needs `--force`. `INDEX_BUSY` for an unverifiable or legacy lock now names this command instead of asking for the lock to be removed by hand.
+- **`ocbi unlock`**: Shows the index lock, a recovery in progress inside it, and blocking recovery markers with their raw contents, and clears them when the owner has exited. It never clears a lock whose owner is running on this machine. An owner on another machine, an unreadable record, or a lock under 15 minutes old needs `--force`. A cleared lock with a readable record leaves a recovery marker for the next run; the command says when a record was unreadable and nothing can be recovered. `INDEX_BUSY` for an unverifiable, legacy or stuck lock now names this command instead of asking for the lock to be removed by hand.
 
 ### Fixed
 
-- **Stale lock recovery after a hostname change**: A lock left by a dead process is now recovered when it names one of the machine's current names (on macOS also the Bonjour local hostname, with or without `.local`), not only the exact `os.hostname()`. New locks also record a hashed machine id (Linux machine-id plus PID namespace, macOS platform UUID), so later renames do not matter and two machines that share a hostname are no longer mistaken for one. Older readers ignore the new field and still see such locks as held.
+- **Stale lock recovery after a hostname change**: A lock left by a dead process is now recovered when it names one of the machine's current names (on macOS also the configured HostName and the Bonjour LocalHostName, with or without `.local`), not only the exact `os.hostname()`. New locks also record a hashed machine id (Linux machine-id plus PID namespace, macOS platform UUID), so later renames do not matter and two machines that share a hostname are no longer mistaken for one. A lock whose machine id cannot be confirmed stays unverified. Older readers ignore the new field and still see such locks as held.
 
 ## [0.38.2-gd.5] - 2026-11-19
 

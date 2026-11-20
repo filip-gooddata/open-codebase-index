@@ -222,7 +222,9 @@ function readLegacyOwner(lockPath: string): IndexLockOwner | null {
   }
 }
 
-function getOwnerLiveness(owner: Pick<IndexLockOwner, "pid" | "hostname" | "machineId">): OwnerLiveness {
+type LivenessSubject = Pick<IndexLockOwner, "pid" | "hostname" | "machineId">;
+
+function getOwnerLiveness(owner: LivenessSubject): OwnerLiveness {
   if (!isLocalLockOwner(owner)) return "unknown";
   try {
     process.kill(owner.pid, 0);
@@ -366,11 +368,11 @@ function cleanupDeadPublicationCandidates(indexPath: string): void {
 function removeDeadReclaimMarker(
   lockPath: string,
   expectedOwner: IndexLockOwner,
-  reclaimable: (owner: IndexLockOwner) => boolean,
+  reclaimable: (owner: LivenessSubject) => boolean,
 ): boolean {
   const markerPath = path.join(lockPath, RECLAIM_DIRECTORY_NAME);
   const marker = readReclaimOwner(markerPath);
-  if (!marker || marker.expectedOwnerToken !== expectedOwner.token || getOwnerLiveness(marker) !== "dead") {
+  if (!marker || marker.expectedOwnerToken !== expectedOwner.token || !reclaimable(marker)) {
     return false;
   }
 
@@ -410,7 +412,7 @@ function reclaimDeadOwner(
   expectedOwner: IndexLockOwner,
   abandonUnverified = false,
 ): boolean {
-  const reclaimable = (owner: IndexLockOwner): boolean => {
+  const reclaimable = (owner: LivenessSubject): boolean => {
     const liveness = getOwnerLiveness(owner);
     return liveness === "dead" || (abandonUnverified && liveness === "unknown");
   };
@@ -487,14 +489,22 @@ export function isTransientIndexLockContention(error: unknown): boolean {
   return error.reason === "active" || error.reason === "reclaiming";
 }
 
-export type IndexLockEntryKind = "lock" | "legacy-lock" | "recovery-marker";
+export type IndexLockEntryKind = "lock" | "legacy-lock" | "reclaim-marker" | "recovery-marker";
 export type IndexLockEntryState = "alive" | "dead" | "unverified" | "unreadable";
+
+export interface IndexLockEntryOwner {
+  pid: number;
+  hostname: string;
+  machineId?: string;
+  startedAt: string;
+  operation?: IndexMutationOperation;
+}
 
 export interface IndexLockEntry {
   kind: IndexLockEntryKind;
   path: string;
   contents: string | null;
-  owner: IndexLockOwner | null;
+  owner: IndexLockEntryOwner | null;
   state: IndexLockEntryState;
   /** Whether the owner was written on this machine, so its PID was checked here. */
   local: boolean;
@@ -503,10 +513,23 @@ export interface IndexLockEntry {
 }
 
 export interface BreakIndexLockResult {
-  status: "no-lock" | "removed" | "refused-alive" | "refused-unverified" | "refused-changed";
+  status:
+    | "no-lock"
+    | "removed"
+    | "refused-alive"
+    | "refused-unverified"
+    | "refused-fresh"
+    | "refused-busy"
+    | "refused-changed";
   indexPath: string;
   entries: IndexLockEntry[];
+  /** After a removal: whether the next index mutation can recover the old owner's partial writes. */
+  recoverable: boolean;
 }
+
+/** Locks younger than this need explicit confirmation before a manual clear. */
+export const FRESH_INDEX_LOCK_MS = 15 * 60 * 1000;
+const UNLOCK_GUARD_NAME = "indexing.lock.unlock";
 
 function readTextOrNull(filePath: string): string | null {
   try {
@@ -524,16 +547,26 @@ function modifiedTimeOrNull(filePath: string): number | null {
   }
 }
 
+function legacyRecordNamesHost(contents: string | null): boolean {
+  if (contents === null) return false;
+  try {
+    const parsed = JSON.parse(contents) as { hostname?: unknown };
+    return typeof parsed.hostname === "string" && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function describeLockEntry(
   kind: IndexLockEntryKind,
   entryPath: string,
   contentsPath: string,
-  owner: IndexLockOwner | null,
-  ownerMatchesEntry = true,
+  owner: IndexLockEntryOwner | null,
+  verifiable = true,
 ): IndexLockEntry {
-  const local = owner !== null && isLocalLockOwner(owner);
-  let state: IndexLockEntryState = "unreadable";
-  if (owner !== null && ownerMatchesEntry) {
+  const local = owner !== null && verifiable && isLocalLockOwner(owner);
+  let state: IndexLockEntryState = owner === null ? "unreadable" : "unverified";
+  if (owner !== null && verifiable) {
     const liveness = getOwnerLiveness(owner);
     state = liveness === "unknown" ? "unverified" : liveness;
   }
@@ -551,7 +584,7 @@ function describeLockEntry(
   };
 }
 
-/** Lists the lock and every recovery marker that would block the next index mutation. */
+/** Lists the lock, its reclaimer, and every recovery marker that would block the next index mutation. */
 export function inspectIndexLocks(indexPath: string): IndexLockEntry[] {
   const entries: IndexLockEntry[] = [];
   const lockPath = path.join(indexPath, "indexing.lock");
@@ -563,8 +596,13 @@ export function inspectIndexLocks(indexPath: string): IndexLockEntry[] {
   }
   if (lockStats?.isDirectory()) {
     entries.push(describeLockEntry("lock", lockPath, path.join(lockPath, OWNER_FILE_NAME), readDirectoryOwner(lockPath)));
+    const reclaimPath = path.join(lockPath, RECLAIM_DIRECTORY_NAME);
+    if (existsSync(reclaimPath)) {
+      entries.push(describeLockEntry("reclaim-marker", reclaimPath, path.join(reclaimPath, OWNER_FILE_NAME), readReclaimOwner(reclaimPath)));
+    }
   } else if (lockStats) {
-    entries.push(describeLockEntry("legacy-lock", lockPath, lockPath, readLegacyOwner(lockPath)));
+    const contents = readTextOrNull(lockPath);
+    entries.push(describeLockEntry("legacy-lock", lockPath, lockPath, readLegacyOwner(lockPath), legacyRecordNamesHost(contents)));
   }
 
   const markerNames = readdirSync(indexPath).filter((name) => (
@@ -575,34 +613,78 @@ export function inspectIndexLocks(indexPath: string): IndexLockEntry[] {
     const owner = readRecoveryOwner(markerPath);
     const tokenMatches = owner?.token === markerName.slice(RECOVERY_MARKER_PREFIX.length);
     if (owner && tokenMatches && isRecoverableMarkerOwner(owner)) continue;
-    entries.push(describeLockEntry("recovery-marker", markerPath, path.join(markerPath, OWNER_FILE_NAME), owner, tokenMatches));
+    entries.push(describeLockEntry("recovery-marker", markerPath, path.join(markerPath, OWNER_FILE_NAME), tokenMatches ? owner : null));
   }
   return entries;
 }
 
-function quarantineAndRemove(entryPath: string, expectedContents: string | null, contentsPath: (moved: string) => string): boolean {
-  const quarantinePath = `${entryPath}.stale.manual.${randomUUID()}`;
+function contentsUnchanged(entry: IndexLockEntry, contentsPath: string): boolean {
+  return entry.contents !== null && readTextOrNull(contentsPath) === entry.contents;
+}
+
+/**
+ * Removes an unreadable lock or marker directory. A reclaim marker published inside it
+ * travels with the rename, which proves the directory moved is the one that was checked.
+ */
+function removeUnreadableDirectory(entry: IndexLockEntry): boolean {
+  const claimPath = path.join(entry.path, RECLAIM_DIRECTORY_NAME);
+  const claim: ReclaimOwner = {
+    ...localIdentityFields(),
+    startedAt: new Date().toISOString(),
+    token: randomUUID(),
+    expectedOwnerToken: randomUUID(),
+  };
+  if (!publishJsonDirectory(claimPath, claim)) return false;
+  const ownerPath = path.join(entry.path, OWNER_FILE_NAME);
+  if (readTextOrNull(ownerPath) !== entry.contents) {
+    const current = readReclaimOwner(claimPath);
+    if (current && sameReclaimOwner(current, claim)) rmSync(claimPath, { recursive: true, force: true });
+    return false;
+  }
+  const quarantinePath = `${entry.path}.stale.manual.${claim.token}`;
   try {
-    renameSync(entryPath, quarantinePath);
+    renameSync(entry.path, quarantinePath);
   } catch (error) {
     if (getErrorCode(error) === "ENOENT") return false;
     throw error;
   }
-  if (readTextOrNull(contentsPath(quarantinePath)) !== expectedContents) {
-    if (!existsSync(entryPath)) renameSync(quarantinePath, entryPath);
+  const moved = readReclaimOwner(path.join(quarantinePath, RECLAIM_DIRECTORY_NAME));
+  if (!moved || !sameReclaimOwner(moved, claim)) {
+    if (!existsSync(entry.path)) renameSync(quarantinePath, entry.path);
     return false;
   }
   rmSync(quarantinePath, { recursive: true, force: true });
   return true;
 }
 
+/**
+ * Removes a single-file lock from a pre-directory release. Writers never remove these,
+ * so only another unlock could replace one, and the unlock guard excludes that.
+ */
+function removeLegacyLockFile(entry: IndexLockEntry): boolean {
+  if (!contentsUnchanged(entry, entry.path)) return false;
+  const quarantinePath = `${entry.path}.stale.manual.${randomUUID()}`;
+  try {
+    renameSync(entry.path, quarantinePath);
+  } catch (error) {
+    if (getErrorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+  if (!lstatSync(quarantinePath).isFile() || !contentsUnchanged(entry, quarantinePath)) {
+    if (!existsSync(entry.path)) renameSync(quarantinePath, entry.path);
+    return false;
+  }
+  rmSync(quarantinePath, { force: true });
+  return true;
+}
+
 function abandonRecoveryMarker(entry: IndexLockEntry): boolean {
-  if (entry.owner === null) return false;
   const ownerPath = path.join(entry.path, OWNER_FILE_NAME);
-  if (readTextOrNull(ownerPath) !== entry.contents) return false;
+  const owner = readRecoveryOwner(entry.path);
+  if (owner === null || !contentsUnchanged(entry, ownerPath)) return false;
   const temporaryPath = `${ownerPath}.tmp.${process.pid}.${randomUUID()}`;
   try {
-    writeFileSync(temporaryPath, JSON.stringify({ ...entry.owner, abandonedAt: new Date().toISOString() }), {
+    writeFileSync(temporaryPath, JSON.stringify({ ...owner, abandonedAt: new Date().toISOString() }), {
       encoding: "utf-8",
       flag: "wx",
       mode: 0o600,
@@ -615,39 +697,74 @@ function abandonRecoveryMarker(entry: IndexLockEntry): boolean {
 }
 
 function breakLockEntry(indexPath: string, entry: IndexLockEntry, force: boolean): boolean {
-  if (entry.kind === "lock" && entry.owner !== null) {
-    return reclaimDeadOwner(indexPath, entry.path, entry.owner, force);
+  if (entry.kind === "reclaim-marker") return true;
+  if (entry.kind === "legacy-lock") return removeLegacyLockFile(entry);
+  if (entry.state === "unreadable") return removeUnreadableDirectory(entry);
+  if (entry.kind === "recovery-marker") return abandonRecoveryMarker(entry);
+  const owner = readDirectoryOwner(entry.path);
+  if (owner === null || !contentsUnchanged(entry, path.join(entry.path, OWNER_FILE_NAME))) return false;
+  return reclaimDeadOwner(indexPath, entry.path, owner, force);
+}
+
+function acquireUnlockGuard(indexPath: string): string | null {
+  const guardPath = path.join(indexPath, UNLOCK_GUARD_NAME);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (publishJsonDirectory(guardPath, createOwner("recovery"))) return guardPath;
+    const holder = readDirectoryOwner(guardPath);
+    if (attempt > 0 || !holder || getOwnerLiveness(holder) !== "dead") return null;
+    const stalePath = `${guardPath}.stale.${holder.token}.${randomUUID()}`;
+    try {
+      renameSync(guardPath, stalePath);
+    } catch (error) {
+      if (getErrorCode(error) !== "ENOENT") throw error;
+      continue;
+    }
+    const moved = readDirectoryOwner(stalePath);
+    if (!moved || !sameOwner(moved, holder)) {
+      if (!existsSync(guardPath)) renameSync(stalePath, guardPath);
+      return null;
+    }
+    rmSync(stalePath, { recursive: true, force: true });
   }
-  if (entry.kind === "recovery-marker" && entry.state !== "unreadable") {
-    return abandonRecoveryMarker(entry);
-  }
-  const contentsPath = entry.kind === "legacy-lock"
-    ? (moved: string) => moved
-    : (moved: string) => path.join(moved, OWNER_FILE_NAME);
-  return quarantineAndRemove(entry.path, entry.contents, contentsPath);
+  return null;
 }
 
 /**
  * Manual escape hatch for a lock automatic recovery refused. It never touches a lock
- * whose owner is alive on this machine; owners it cannot verify (another machine,
- * an unreadable record) need `force`. Recovery of an interrupted owner's partial
- * writes still runs on the next index mutation.
+ * whose owner is alive on this machine. `force` is required for an owner it cannot
+ * verify (another machine, an unreadable record) and for any lock younger than
+ * FRESH_INDEX_LOCK_MS. A cleared owner with a readable record leaves a recovery
+ * marker, so the next index mutation still restores its partial writes.
  */
 export function breakIndexLock(target: string, options: { force?: boolean } = {}): BreakIndexLockResult {
   const requestedPath = path.basename(target) === "indexing.lock" ? path.dirname(target) : target;
-  if (!existsSync(requestedPath)) return { status: "no-lock", indexPath: requestedPath, entries: [] };
+  const result = (status: BreakIndexLockResult["status"], indexPath: string, entries: IndexLockEntry[]): BreakIndexLockResult => ({
+    status,
+    indexPath,
+    entries,
+    recoverable: entries.every((entry) => entry.kind !== "legacy-lock" && entry.state !== "unreadable"),
+  });
+  if (!existsSync(requestedPath)) return result("no-lock", requestedPath, []);
   const indexPath = realpathSync.native(requestedPath);
   const entries = inspectIndexLocks(indexPath);
-  if (entries.length === 0) return { status: "no-lock", indexPath, entries };
-  if (entries.some((entry) => entry.state === "alive")) return { status: "refused-alive", indexPath, entries };
+  if (entries.length === 0) return result("no-lock", indexPath, entries);
+  if (entries.some((entry) => entry.state === "alive")) return result("refused-alive", indexPath, entries);
   const force = options.force === true;
-  if (!force && entries.some((entry) => entry.state !== "dead")) {
-    return { status: "refused-unverified", indexPath, entries };
+  if (!force && entries.some((entry) => entry.state !== "dead")) return result("refused-unverified", indexPath, entries);
+  if (!force && entries.some((entry) => entry.ageMs === null || entry.ageMs < FRESH_INDEX_LOCK_MS)) {
+    return result("refused-fresh", indexPath, entries);
   }
-  for (const entry of entries) {
-    if (!breakLockEntry(indexPath, entry, force)) return { status: "refused-changed", indexPath, entries };
+
+  const guardPath = acquireUnlockGuard(indexPath);
+  if (guardPath === null) return result("refused-busy", indexPath, entries);
+  try {
+    for (const entry of entries) {
+      if (!breakLockEntry(indexPath, entry, force)) return result("refused-changed", indexPath, entries);
+    }
+    return result("removed", indexPath, entries);
+  } finally {
+    rmSync(guardPath, { recursive: true, force: true });
   }
-  return { status: "removed", indexPath, entries };
 }
 
 export function acquireIndexLock(

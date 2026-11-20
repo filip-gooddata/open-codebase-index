@@ -52,7 +52,7 @@ function exitedPid(): number {
 
 describe("lock host identity", () => {
   it("normalizes Bonjour and trailing-dot host names", () => {
-    expect(normalizeLockHostName(" Former-Host.local. ")).toBe("former-host");
+    expect(normalizeLockHostName(" Former-Host.local. ")).toBe("former-host.local");
     expect(normalizeLockHostName("build.example.com")).toBe("build.example.com");
   });
 
@@ -89,7 +89,7 @@ describe("lock host identity", () => {
       platform: "darwin",
       run: darwinRunner({ LocalHostName: "former-host", HostName: "current-host" }),
     }));
-    expect(names).toEqual(["current-host", "former-host"]);
+    expect(names).toEqual(["current-host", "former-host", "former-host.local"]);
   });
 });
 
@@ -183,9 +183,25 @@ describe("stale index lock recovery", () => {
     expectBusy();
   });
 
-  it("falls back to host names when this machine has no id", () => {
+  it("recovers the bare Bonjour name as well as its .local form", () => {
+    expectRecovered(writeOwner({ pid: exitedPid(), hostname: "former-host" }));
+  });
+
+  it("does not widen a plain hostname into a .local alias", () => {
+    setLockHostIdentitySourcesForTesting({ platform: "linux", hostname: () => "current-host" });
+    writeOwner({ pid: exitedPid(), hostname: "current-host.local" });
+    expectBusy();
+  });
+
+  it("keeps a machine-id owner unverified when this machine cannot produce an id", () => {
     setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
-    expectRecovered(writeOwner({ pid: exitedPid(), hostname: "current-host", machineId: "f".repeat(32) }));
+    writeOwner({ pid: exitedPid(), hostname: "current-host", machineId: "f".repeat(32) });
+    expectBusy();
+  });
+
+  it("falls back to the hostname for an old-format lock on a machine without an id", () => {
+    setLockHostIdentitySourcesForTesting({ platform: "win32", hostname: () => "current-host" });
+    expectRecovered(writeOwner({ pid: exitedPid(), hostname: "current-host" }));
   });
 });
 
@@ -204,6 +220,15 @@ describe("manual index unlock", () => {
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, "owner.json"), JSON.stringify(record));
     return record;
+  }
+
+  function makeOld(...paths: string[]): void {
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    for (const target of paths) fs.utimesSync(target, old, old);
+  }
+
+  function oldStart(): string {
+    return new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   }
 
   async function cli(...args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
@@ -253,13 +278,13 @@ describe("manual index unlock", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain('"hostname":"remote-host"');
     expect(refused.stderr).toContain("cannot be verified");
-    expect(refused.stderr).toContain("rerun with --force");
-    expect(refused.stderr).toContain("updated recently");
+    expect(refused.stderr).toContain("Rerun with --force only after confirming");
+    expect(refused.stderr).toContain("may still be in use");
     expect(fs.existsSync(lockPath)).toBe(true);
 
     const forced = await cli(lockPath, "--force");
     expect(forced.exitCode).toBe(0);
-    expect(forced.stdout).toContain("Cleared");
+    expect(forced.stdout).toContain("next index run recovers");
     expect(fs.existsSync(lockPath)).toBe(false);
 
     const lease = acquireIndexLock(indexPath, "recovery");
@@ -268,35 +293,107 @@ describe("manual index unlock", () => {
     expect(releaseIndexLock(lease)).toBe(true);
   });
 
-  it("clears a dead local owner without --force and keeps its recovery marker", () => {
-    const owner = writeOwner({ pid: exitedPid(), hostname: "current-host" });
+  it("requires --force for a fresh lock even when its local owner has exited", () => {
+    writeOwner({ pid: exitedPid(), hostname: "current-host" });
+
+    expect(breakIndexLock(indexPath).status).toBe("refused-fresh");
+    expect(fs.existsSync(lockPath)).toBe(true);
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
+  });
+
+  it("clears an old dead local owner without --force and keeps its recovery marker", () => {
+    const owner = writeOwner({ pid: exitedPid(), hostname: "current-host", startedAt: oldStart() });
+    makeOld(path.join(lockPath, "owner.json"), lockPath);
 
     const result = breakIndexLock(indexPath);
 
-    expect(result.status).toBe("removed");
+    expect(result).toMatchObject({ status: "removed", recoverable: true });
     expect(result.entries.map((entry) => entry.state)).toEqual(["dead"]);
     expect(fs.existsSync(path.join(indexPath, `indexing.lock.recovery.${owner.token}`))).toBe(true);
   });
 
-  it("requires --force for an unreadable lock record", () => {
+  it("requires --force for an unreadable lock record and reports that recovery is unavailable", async () => {
     fs.mkdirSync(lockPath, { recursive: true });
     fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
 
     expect(breakIndexLock(indexPath).status).toBe("refused-unverified");
     expect(fs.existsSync(lockPath)).toBe(true);
-    expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
+    const forced = await cli(indexPath, "--force");
+    expect(forced.exitCode).toBe(0);
+    expect(forced.stdout).toContain("cannot be recovered automatically");
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("handles legacy single-file locks by owner liveness", () => {
+  it("does not clear an unreadable lock another process is already claiming", () => {
+    fs.mkdirSync(path.join(lockPath, "reclaiming"), { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), "{");
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-changed");
+    expect(fs.readFileSync(path.join(lockPath, "owner.json"), "utf-8")).toBe("{");
+  });
+
+  it("refuses while another unlock holds the guard", () => {
+    writeOwner({ pid: exitedPid(), hostname: "current-host" });
+    writeOwner({ pid: process.pid, hostname: "current-host", operation: "recovery" }, path.join(indexPath, "indexing.lock.unlock"));
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-busy");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("handles legacy single-file locks by owner liveness and age", () => {
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, hostname: "current-host", startedAt: new Date().toISOString() }));
     expect(breakIndexLock(indexPath, { force: true }).status).toBe("refused-alive");
 
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: exitedPid(), hostname: "current-host", startedAt: new Date().toISOString() }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: exitedPid(), hostname: "current-host", startedAt: oldStart() }));
+    expect(breakIndexLock(indexPath).status).toBe("refused-fresh");
+    makeOld(lockPath);
     const result = breakIndexLock(indexPath);
-    expect(result.status).toBe("removed");
+    expect(result).toMatchObject({ status: "removed", recoverable: false });
     expect(result.entries[0]?.kind).toBe("legacy-lock");
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("treats a legacy lock without a hostname as unverified", () => {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: exitedPid(), startedAt: oldStart() }));
+    makeOld(lockPath);
+
+    expect(breakIndexLock(indexPath).status).toBe("refused-unverified");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("shows a stranded reclaimer from another machine and clears it only with --force", async () => {
+    const owner = writeOwner({ pid: 4244, hostname: "remote-host", startedAt: oldStart() });
+    fs.mkdirSync(path.join(lockPath, "reclaiming"));
+    fs.writeFileSync(path.join(lockPath, "reclaiming", "owner.json"), JSON.stringify({
+      pid: 4245,
+      hostname: "remote-host",
+      startedAt: oldStart(),
+      token: "66666666-6666-4666-8666-666666666666",
+      expectedOwnerToken: owner.token,
+    }));
+
+    const refused = await cli(indexPath);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain("- reclaim-marker:");
+    expect(refused.stderr).toContain("PID 4245 on remote-host");
+
+    expect(breakIndexLock(indexPath, { force: true }).status).toBe("removed");
+    const lease = acquireIndexLock(indexPath, "recovery");
+    expect(lease.recoveries.map((recovery) => recovery.owner.token)).toEqual([owner.token]);
+    completeLeaseRecovery(lease);
+    expect(releaseIndexLock(lease)).toBe(true);
+  });
+
+  it("resolves a relative index path against the working directory", async () => {
+    const nested = path.join(tempDir, "nested");
+    fs.mkdirSync(nested);
+    const stdout: string[] = [];
+    const exitCode = await runCbiCli(["node", "ocbi", "unlock", "../index", "--json"], nested, {
+      printStdout: (text) => stdout.push(text),
+      printStderr: () => undefined,
+    });
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.join("\n"))).toMatchObject({ status: "no-lock", indexPath: fs.realpathSync(indexPath) });
   });
 
   it("abandons a blocking recovery marker from another machine only with --force", async () => {

@@ -13,6 +13,7 @@ import { resolveDefaultProjectRoot } from "../git/index.js";
 import type { WorkspaceStatusResult } from "../tools/workspace-status.js";
 import type { BranchPruneResult } from "../indexer/branch-prune.js";
 import type { BreakIndexLockResult, IndexLockEntry } from "../indexer/index-lock.js";
+import { FRESH_INDEX_LOCK_MS } from "../indexer/index-lock.js";
 import type { handleIndexCommand } from "./mcp/cli.js";
 import { redactSensitiveText } from "../utils/redact.js";
 import { runHistoryCli } from "./history-cli.js";
@@ -93,7 +94,8 @@ function printCommandUsage(output: TextSink, command: string): void {
     prune: "Usage: ocbi prune [<catalog-key>...] [--apply] [--json] [--project <path>] [--host <mode>] [--config <path>]",
     unlock: "Usage: ocbi unlock [<index-path>] [--force] [--json] [--project <path>] [--host <mode>]\n"
       + "Shows the index lock and clears it when its owner has exited. Never clears a lock whose owner is running on\n"
-      + "this machine. An owner on another machine, or an unreadable lock record, is cleared only with --force.",
+      + "this machine. An owner on another machine, an unreadable lock record, or a lock updated in the last 15 minutes\n"
+      + "is cleared only with --force.",
     index: "Usage: ocbi index [--project <path>] [--host <mode>] [--config <path>] [--force] [--estimate-only] [--dry-run] [--verbose]",
     search: "Usage: ocbi search <query> [--limit <n>] [--project <path>] [--host <mode>] [--config <path>]",
     definition: "Usage: ocbi definition <symbol> [--project <path>] [--host <mode>] [--config <path>]",
@@ -234,7 +236,7 @@ export async function runCbiCli(argv: string[], cwd: string, deps: CbiDeps = {})
   }
 
   try {
-    if (command === "unlock") return await runUnlock(parseCbiCommandArgs(command, argv.slice(3), cwd), deps, stdout, stderr);
+    if (command === "unlock") return await runUnlock(parseCbiCommandArgs(command, argv.slice(3), cwd), cwd, deps, stdout, stderr);
     // Keep the public CLI facade native-free until a code command actually executes.
     const { executeCallGraph, executeImplementationLookup, executeIndexStatus } = await import("../tools/execute-common.js");
     const { formatWorkspaceStatus, getWorkspaceStatus, parseWorkspaceRepoSpecs } = await import("../tools/workspace-status.js");
@@ -354,8 +356,6 @@ export async function runCbiCli(argv: string[], cwd: string, deps: CbiDeps = {})
   }
 }
 
-const FRESH_LOCK_MS = 15 * 60 * 1000;
-
 function formatAge(ageMs: number): string {
   const minutes = Math.floor(ageMs / 60_000);
   if (minutes < 1) return "under a minute";
@@ -375,35 +375,43 @@ function formatLockEntry(entry: IndexLockEntry): string {
   const lines = [`- ${entry.kind}: ${entry.path}`];
   if (entry.owner) {
     const machine = entry.local ? "this machine" : "another machine or a former hostname not recognized here";
-    lines.push(`  owner: PID ${entry.owner.pid} on ${entry.owner.hostname} (${machine}), operation ${entry.owner.operation}, started ${entry.owner.startedAt}`);
+    const operation = entry.owner.operation === undefined ? "" : `, operation ${entry.owner.operation}`;
+    lines.push(`  owner: PID ${entry.owner.pid} on ${entry.owner.hostname} (${machine})${operation}, started ${entry.owner.startedAt}`);
   }
   lines.push(`  state: ${ENTRY_STATE_TEXT[entry.state]}${entry.ageMs === null ? "" : `, last updated ${formatAge(entry.ageMs)} ago`}`);
   lines.push(`  contents: ${entry.contents === null ? "(missing)" : entry.contents.trim()}`);
   return lines.join("\n");
 }
 
+const FORCE_ADVICE = "Rerun with --force only after confirming that no index process using this index is running on any machine that can reach it.";
+
 function formatBreakLockOutcome(result: BreakIndexLockResult): string {
-  if (result.status === "no-lock") return `No index lock found in ${result.indexPath}.`;
-  if (result.status === "removed") {
-    return "Cleared. The next index run recovers any partial writes the previous owner left behind.";
+  switch (result.status) {
+    case "no-lock":
+      return `No index lock found in ${result.indexPath}.`;
+    case "removed":
+      return result.recoverable
+        ? "Cleared. The next index run recovers any partial writes the previous owner left behind."
+        : "Cleared. The removed record was unreadable or from a legacy release, so partial writes its owner may have left cannot be recovered automatically. If results look wrong, rebuild with `ocbi index --force`.";
+    case "refused-alive":
+      return "Refused: the lock owner is still running on this machine. Let it finish or stop it first.";
+    case "refused-busy":
+      return "Refused: another unlock is running on this index. Try again when it finishes.";
+    case "refused-changed":
+      return "Refused: the lock changed while it was being cleared. Run the command again to inspect the new state.";
+    case "refused-fresh":
+      return `Refused: the owner has exited, but the lock was updated less than 15 minutes ago. The next index run on this machine recovers it automatically. ${FORCE_ADVICE}`;
+    case "refused-unverified": {
+      const fresh = result.entries.some((entry) => entry.ageMs !== null && entry.ageMs < FRESH_INDEX_LOCK_MS);
+      const warning = fresh ? " The lock was updated less than 15 minutes ago, so it may still be in use." : "";
+      return `Refused: the lock owner cannot be verified from this machine.${warning} ${FORCE_ADVICE}`;
+    }
   }
-  if (result.status === "refused-alive") {
-    return "Refused: the lock owner is still running on this machine. Let it finish or stop it first.";
-  }
-  if (result.status === "refused-changed") {
-    return "Refused: the lock changed while it was being cleared. Run the command again to inspect the new state.";
-  }
-  const fresh = result.entries.some((entry) => entry.ageMs !== null && entry.ageMs < FRESH_LOCK_MS);
-  return [
-    "Refused: the lock owner cannot be verified from this machine.",
-    "Make sure no index process using this index is running on the host shown above, then rerun with --force.",
-    ...(fresh ? ["Warning: the lock was updated recently, so it may still be in use."] : []),
-  ].join("\n");
 }
 
-function resolveUnlockTarget(args: CbiCommandArgs): string {
+function resolveUnlockTarget(args: CbiCommandArgs, cwd: string): string {
   if (args.positionals.length > 1) throw new Error("unlock accepts at most one index path.");
-  if (args.positionals.length === 1) return path.resolve(args.project, args.positionals[0]);
+  if (args.positionals.length === 1) return path.resolve(cwd, args.positionals[0]);
   const indexPath = resolveProjectIndexPath(args.project, "project", args.host);
   const structuralPath = path.join(indexPath, "structural");
   return !existsSync(path.join(indexPath, "indexing.lock")) && existsSync(path.join(structuralPath, "indexing.lock"))
@@ -411,8 +419,8 @@ function resolveUnlockTarget(args: CbiCommandArgs): string {
     : indexPath;
 }
 
-async function runUnlock(args: CbiCommandArgs, deps: CbiDeps, stdout: TextSink, stderr: TextSink): Promise<number> {
-  const target = resolveUnlockTarget(args);
+async function runUnlock(args: CbiCommandArgs, cwd: string, deps: CbiDeps, stdout: TextSink, stderr: TextSink): Promise<number> {
+  const target = resolveUnlockTarget(args, cwd);
   const breakLock = deps.breakLock ?? (await import("../indexer/index-lock.js")).breakIndexLock;
   const result = breakLock(target, { force: args.force });
   const succeeded = result.status === "removed" || result.status === "no-lock";

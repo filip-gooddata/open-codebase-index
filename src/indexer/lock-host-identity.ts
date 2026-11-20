@@ -18,6 +18,7 @@ export interface LockHostIdentitySources {
 
 const MACHINE_ID_NAMESPACE = "open-codebase-index:index-lock:v1";
 const HOST_NAMES_TTL_MS = 30_000;
+const MISSING_MACHINE_ID_RETRY_MS = 60_000;
 const COMMAND_TIMEOUT_MS = 2_000;
 
 function readTextFile(filePath: string): string | null {
@@ -58,7 +59,7 @@ const defaultSources: LockHostIdentitySources = {
 };
 
 let sources: LockHostIdentitySources = defaultSources;
-let cachedMachineId: string | null | undefined;
+let cachedMachineId: { id: string | null; expiresAt: number } | undefined;
 let cachedHostNames: { names: string[]; expiresAt: number } | undefined;
 
 function hashMachineId(raw: string): string {
@@ -94,24 +95,32 @@ export function resolveLocalMachineId(source: LockHostIdentitySources): string |
 }
 
 export function normalizeLockHostName(name: string): string {
-  return name.trim().toLowerCase().replace(/\.+$/, "").replace(/\.local$/, "");
+  return name.trim().toLowerCase().replace(/\.+$/, "");
 }
 
-/** Every name this machine currently answers to; the OS hostname comes first. */
+/**
+ * Every name this machine currently answers to; the OS hostname comes first. On macOS
+ * that adds the configured HostName and the Bonjour LocalHostName, bare and with
+ * `.local`, which macOS keeps unique on the local network.
+ */
 export function resolveLocalHostNames(source: LockHostIdentitySources): string[] {
   const names = [source.hostname()];
   if (source.platform === "darwin") {
-    for (const key of ["LocalHostName", "HostName"]) {
-      const value = source.run("/usr/sbin/scutil", ["--get", key])?.trim();
-      if (value) names.push(value);
-    }
+    const hostName = source.run("/usr/sbin/scutil", ["--get", "HostName"])?.trim();
+    if (hostName) names.push(hostName);
+    const localHostName = source.run("/usr/sbin/scutil", ["--get", "LocalHostName"])?.trim();
+    if (localHostName) names.push(localHostName, `${localHostName}.local`);
   }
   return [...new Set(names.filter((name) => name.length > 0))];
 }
 
 export function getLocalMachineId(): string | null {
-  if (cachedMachineId === undefined) cachedMachineId = resolveLocalMachineId(sources);
-  return cachedMachineId;
+  const now = Date.now();
+  if (cachedMachineId === undefined || cachedMachineId.expiresAt <= now) {
+    const id = resolveLocalMachineId(sources);
+    cachedMachineId = { id, expiresAt: id === null ? now + MISSING_MACHINE_ID_RETRY_MS : Number.POSITIVE_INFINITY };
+  }
+  return cachedMachineId.id;
 }
 
 function getLocalHostNames(): string[] {
@@ -124,14 +133,12 @@ function getLocalHostNames(): string[] {
 
 /**
  * Whether a lock owner was written on this machine, so its PID can be checked here.
- * A recorded machine id decides on its own when this machine has one too. Otherwise
- * the recorded hostname must match a name this machine currently answers to.
+ * A recorded machine id decides on its own; when this machine cannot produce one,
+ * such an owner stays unverified. An owner without one must name a host this machine
+ * currently answers to.
  */
 export function isLocalLockOwner(owner: LockHostOwner): boolean {
-  if (owner.machineId !== undefined) {
-    const localMachineId = getLocalMachineId();
-    if (localMachineId !== null) return owner.machineId === localMachineId;
-  }
+  if (owner.machineId !== undefined) return owner.machineId === getLocalMachineId();
   if (owner.hostname === sources.hostname()) return true;
   const recorded = normalizeLockHostName(owner.hostname);
   if (recorded.length === 0) return false;

@@ -1,0 +1,19 @@
+scripts/fork-install-check.mjs
+  s_1e90a8dcc7e3da::t_173831805968ba 85-87,98,101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a1f06a300e6fcaeffc42615bcef26090c6353652",
+  "prompts": {},
+  "sessions": {
+    "s_1e90a8dcc7e3da": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f861-cbe6-7a53-8815-b348ee323832",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

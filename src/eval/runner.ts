@@ -19,6 +19,7 @@ import { evaluateBudgetGate } from "./budget.js";
 import { compareSummaries } from "./compare.js";
 import { buildPerQueryResult, computeEvalMetrics } from "./metrics.js";
 import {
+  assertEvalForceRebuildAllowedOnDisk,
   assertEvalReindexAllowed,
   clearIndexRoot,
   ensureLocalEvalProjectConfig,
@@ -287,6 +288,10 @@ export async function runEvaluation(options: EvalRunOptions): Promise<EvalRunRes
   const budgetPath = options.budgetPath ? toAbsolute(options.projectRoot, options.budgetPath) : undefined;
 
   const dataset = loadGoldenDataset(datasetPath);
+
+  if (options.reindex) {
+    assertEvalForceRebuildAllowedOnDisk(options.projectRoot);
+  }
 
   const resolvedEvalConfigPath = options.reindex && !isRoutedEvalCheckout(options.projectRoot)
     ? ensureLocalEvalProjectConfig(options.projectRoot, options.configPath)

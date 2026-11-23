@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`indexing.allowForceRebuild` with a repository config**: The repository config file can set it, and each forced request re-reads that file along with the global and project configs, so a `false` written after the server started still refuses; an unreadable repository config refuses the request. A repository `false` stays in force when a project `indexing` section omits the key, an explicit project value wins, and checkout role overrides cannot set it. Evaluation `--reindex`, which clears the index root, is now refused with `FORCE_REBUILD_DISABLED` when the setting is `false` in the config the evaluation loaded or on disk.
+- **`indexing.allowForceRebuild` with a repository config**: The repository config file can set it, and each forced request re-reads that file along with the global and project configs, so a `false` written after the server started still refuses the request with `FORCE_REBUILD_DISABLED`; a repository config that cannot be read fails the request with a `Cannot confirm indexing.allowForceRebuild` error. A repository `false` stays in force when a project `indexing` section omits the key, an explicit project value wins, and checkout role overrides cannot set it. Evaluation `--reindex`, which clears the index root, now fails with an error starting `FORCE_REBUILD_DISABLED:` when the setting is `false` in the merged config on disk (checked before the evaluation copies a `--config` file into the checkout) or in the config the evaluation runs with.
 
 ### Fixed
 

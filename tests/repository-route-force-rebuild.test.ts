@@ -6,14 +6,15 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { loadMergedConfig } from "../src/config/merger.js";
-import { resolveWritableProjectConfigPath } from "../src/config/paths.js";
+import { resolveGlobalConfigPath, resolveWritableProjectConfigPath } from "../src/config/paths.js";
 import {
   getRepositoryConfigPath,
   resetRepositoryRoutesForTests,
   resolveMatchedRepositoryRoute,
 } from "../src/config/repository-route.js";
 import { parseConfig } from "../src/config/schema.js";
-import { assertEvalReindexAllowed, loadParsedConfig } from "../src/eval/runner-config.js";
+import { assertEvalForceRebuildAllowedOnDisk, assertEvalReindexAllowed, loadParsedConfig } from "../src/eval/runner-config.js";
+import { runEvaluation } from "../src/eval/runner.js";
 import { executeIndexCodebase } from "../src/tools/execute-common.js";
 import { getIndexerForProject, initializeTools } from "../src/tools/operation-runtime.js";
 
@@ -153,27 +154,93 @@ describe("indexing.allowForceRebuild from the repository config", () => {
     const config = loadParsedConfig(mainRoot);
     expect(config.scope).toBe("global");
     expect(() => assertEvalReindexAllowed(mainRoot, config)).toThrow(/^FORCE_REBUILD_DISABLED: refusing evaluation --reindex/);
+    expect(() => assertEvalForceRebuildAllowedOnDisk(mainRoot)).toThrow(/^FORCE_REBUILD_DISABLED/);
 
     const explicitConfigPath = path.join(tempDir, "eval-config.json");
     writeJson(explicitConfigPath, { scope: "global", indexing: { ...BASE_INDEXING, allowForceRebuild: true } });
     const explicitConfig = loadParsedConfig(mainRoot, explicitConfigPath);
     expect(explicitConfig.indexing.allowForceRebuild).toBe(true);
-    expect(() => assertEvalReindexAllowed(mainRoot, explicitConfig)).toThrow(/^FORCE_REBUILD_DISABLED/);
+    expect(() => assertEvalReindexAllowed(mainRoot, explicitConfig)).not.toThrow();
+    expect(() => assertEvalForceRebuildAllowedOnDisk(mainRoot)).toThrow(/^FORCE_REBUILD_DISABLED/);
+
+    fs.writeFileSync(getRepositoryConfigPath(commonDir), "{ not json");
+    expect(() => assertEvalForceRebuildAllowedOnDisk(mainRoot))
+      .toThrow("Cannot confirm indexing.allowForceRebuild before evaluation --reindex");
 
     writeRepoConfig({ allowForceRebuild: true }, { scope: "global" });
     resetRepositoryRoutesForTests();
+    expect(() => assertEvalForceRebuildAllowedOnDisk(mainRoot)).not.toThrow();
     expect(() => assertEvalReindexAllowed(mainRoot, loadParsedConfig(mainRoot))).not.toThrow();
   });
 
-  it("refuses evaluation --reindex outside a repository config when the project config sets false", () => {
-    const projectRoot = path.join(tempDir, "plain");
-    fs.mkdirSync(projectRoot, { recursive: true });
-    const configPath = resolveWritableProjectConfigPath(projectRoot, "opencode");
-    writeJson(configPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: false } });
-    expect(() => assertEvalReindexAllowed(projectRoot, loadParsedConfig(projectRoot, configPath)))
-      .toThrow(/^FORCE_REBUILD_DISABLED/);
+  describe("evaluation --reindex outside a repository config", () => {
+    let projectRoot: string;
+    let checkoutConfigPath: string;
+    let sentinel: string;
+    let datasetPath: string;
+    let globalConfigPath: string;
 
-    writeJson(configPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: true } });
-    expect(() => assertEvalReindexAllowed(projectRoot, loadParsedConfig(projectRoot, configPath))).not.toThrow();
+    beforeEach(() => {
+      projectRoot = path.join(tempDir, "plain");
+      fs.mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, "src", "entry.ts"), "export function plainTarget() { return 1; }\n");
+      checkoutConfigPath = resolveWritableProjectConfigPath(projectRoot, "opencode");
+      sentinel = path.join(projectRoot, ".opencode", "index", "sentinel");
+      writeJson(sentinel, {});
+      datasetPath = path.join(tempDir, "dataset.json");
+      writeJson(datasetPath, {
+        version: "1.0.0",
+        name: "small",
+        queries: [{
+          id: "q1",
+          query: "where is plainTarget",
+          queryType: "definition",
+          retrievalMode: "context",
+          expected: { filePath: "src/entry.ts", symbol: "plainTarget" },
+        }],
+      });
+      globalConfigPath = resolveGlobalConfigPath("opencode");
+    });
+
+    afterEach(() => {
+      fs.rmSync(globalConfigPath, { force: true });
+    });
+
+    async function reindexWith(configPath: string): Promise<string> {
+      return runEvaluation({ projectRoot, datasetPath, configPath, outputRoot: path.join(tempDir, "results"), reindex: true })
+        .then(() => "completed")
+        .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+    }
+
+    it("refuses when the project config sets false and keeps it when --config omits the key", async () => {
+      const checkoutConfig = { indexing: { ...BASE_INDEXING, allowForceRebuild: false } };
+      writeJson(checkoutConfigPath, checkoutConfig);
+      const explicitConfigPath = path.join(tempDir, "eval-config.json");
+      writeJson(explicitConfigPath, { indexing: { ...BASE_INDEXING } });
+
+      expect(await reindexWith(explicitConfigPath)).toMatch(/^FORCE_REBUILD_DISABLED: refusing evaluation --reindex/);
+      expect(JSON.parse(fs.readFileSync(checkoutConfigPath, "utf-8"))).toEqual(checkoutConfig);
+      expect(fs.existsSync(sentinel)).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, "results"))).toBe(false);
+    });
+
+    it("refuses a global false that a --config true would override once copied", async () => {
+      writeJson(globalConfigPath, { indexing: { allowForceRebuild: false } });
+      const explicitConfigPath = path.join(tempDir, "eval-config.json");
+      writeJson(explicitConfigPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: true } });
+
+      expect(await reindexWith(explicitConfigPath)).toMatch(/^FORCE_REBUILD_DISABLED: refusing evaluation --reindex/);
+      expect(fs.existsSync(checkoutConfigPath)).toBe(false);
+      expect(fs.existsSync(sentinel)).toBe(true);
+    });
+
+    it("refuses when the evaluation's own config sets false", () => {
+      writeJson(checkoutConfigPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: false } });
+      expect(() => assertEvalReindexAllowed(projectRoot, loadParsedConfig(projectRoot, checkoutConfigPath)))
+        .toThrow(/^FORCE_REBUILD_DISABLED/);
+      writeJson(checkoutConfigPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: true } });
+      expect(() => assertEvalReindexAllowed(projectRoot, loadParsedConfig(projectRoot, checkoutConfigPath))).not.toThrow();
+      expect(() => assertEvalForceRebuildAllowedOnDisk(projectRoot)).not.toThrow();
+    });
   });
 });

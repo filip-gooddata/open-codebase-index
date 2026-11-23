@@ -8,8 +8,7 @@ import { getGlobalIndexPath, resolveProjectConfigPath, resolveProjectIndexPath }
 import { rebasePathEntries, resolveInheritedKnowledgeBaseEntries } from "../config/rebase.js";
 import { resolveMatchedRepositoryRoute } from "../config/repository-route.js";
 import { parseConfig, type SearchConfig as ConfigSearchConfig } from "../config/schema.js";
-
-const EVAL_FORCE_REBUILD_DISABLED_CODE = "FORCE_REBUILD_DISABLED";
+import { FORCE_REBUILD_DISABLED_CODE, FORCE_REBUILD_OVERRIDE_FLAG } from "../tools/operations.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -198,11 +197,26 @@ export function loadParsedConfig(projectRoot: string, configPath?: string): Retu
 }
 
 /**
- * Evaluation --reindex clears the index root before indexing, so it is a forced rebuild. A routed
- * checkout's project index is the shared repository store, so project scope is refused there.
- * indexing.allowForceRebuild=false refuses it in every scope, whether it comes from the config this
- * evaluation loaded or from the merged config on disk (global, repository and project files), read
- * strictly so an unreadable layer refuses rather than allows.
+ * Evaluation --reindex clears the index root before indexing, so it is a forced rebuild. Call this
+ * before the evaluation writes a local config copy: indexing.allowForceRebuild=false in the merged
+ * config on disk (global, repository and project files, read strictly so an unreadable layer
+ * refuses) refuses it, and a copied --config must not be able to loosen or erase that policy.
+ */
+export function assertEvalForceRebuildAllowedOnDisk(projectRoot: string): void {
+  let allowed: boolean;
+  try {
+    allowed = parseConfig(loadMergedConfig(projectRoot, "opencode", { strict: true })).indexing.allowForceRebuild;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot confirm indexing.allowForceRebuild before evaluation --reindex: ${message}`, { cause: error });
+  }
+  if (!allowed) throw new Error(formatEvalForceRebuildRefusal());
+}
+
+/**
+ * Checks the config the evaluation will run with. A routed checkout's project index is the shared
+ * repository store, so project scope is refused there, and indexing.allowForceRebuild=false in the
+ * evaluation's own config refuses in every scope.
  */
 export function assertEvalReindexAllowed(projectRoot: string, config: ReturnType<typeof parseConfig>): void {
   if (config.scope === "project") {
@@ -214,20 +228,14 @@ export function assertEvalReindexAllowed(projectRoot: string, config: ReturnType
       );
     }
   }
+  if (!config.indexing.allowForceRebuild) throw new Error(formatEvalForceRebuildRefusal());
+}
 
-  let allowedOnDisk: boolean;
-  try {
-    allowedOnDisk = parseConfig(loadMergedConfig(projectRoot, "opencode", { strict: true })).indexing.allowForceRebuild;
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Cannot confirm indexing.allowForceRebuild before evaluation --reindex: ${message}`, { cause: error });
-  }
-  if (!config.indexing.allowForceRebuild || !allowedOnDisk) {
-    throw new Error(
-      `${EVAL_FORCE_REBUILD_DISABLED_CODE}: refusing evaluation --reindex because indexing.allowForceRebuild is false for this project. ` +
-      "Run the evaluation without --reindex, or rebuild the index deliberately with `ocbi index --force --allow-shared-rebuild` first.",
-    );
-  }
+function formatEvalForceRebuildRefusal(): string {
+  return `${FORCE_REBUILD_DISABLED_CODE}: refusing evaluation --reindex because indexing.allowForceRebuild is false for this project. ` +
+    "Run the evaluation without --reindex, or rebuild the index deliberately with " +
+    `\`ocbi index --force ${FORCE_REBUILD_OVERRIDE_FLAG} --host opencode --project <project root>\` first ` +
+    "(add the same --config if the evaluation uses one).";
 }
 
 export function resolveSearchConfig(

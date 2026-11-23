@@ -252,10 +252,44 @@ describe("post-checkout hook", () => {
       expect(fs.existsSync(getCheckoutStatePaths(commonDir, repo).lock)).toBe(false);
     });
 
+    it("does no pass when nothing is queued, and leaves a live worker's lock alone", async () => {
+      const { repo, commonDir } = setUpRepository();
+      const paths = getCheckoutStatePaths(commonDir, repo);
+      const runPass = (): RefreshPassResult => { throw new Error("must not run"); };
+      expect(await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, { env: {}, runPass })).toBe(0);
+      expect(fs.existsSync(paths.lock)).toBe(false);
+
+      expect(tryAcquireRefreshLock(paths.lock, process.pid)).toBe(true);
+      fs.writeFileSync(paths.again, "");
+      expect(await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, { env: {}, runPass, pid: deadPid() })).toBe(0);
+      expect(fs.existsSync(paths.again)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(paths.lock, "utf-8")).pid).toBe(process.pid);
+    });
+
+    it("queues before checking the lock, so a finishing worker picks the request up", async () => {
+      const { repo, commonDir } = setUpRepository();
+      const paths = getCheckoutStatePaths(commonDir, repo);
+      let passes = 0;
+      let queued: ReturnType<typeof runPostCheckoutHook> | null = null;
+      fs.mkdirSync(paths.stateDir, { recursive: true });
+      fs.writeFileSync(paths.again, "");
+      expect(await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, {
+        env: { OCBI_STALE_CHECK: "0" },
+        runPass: () => {
+          passes += 1;
+          if (passes === 1) queued = runPostCheckoutHook(["a", "b", "1"], repo, "codex", {}, { env: {}, spawnWorker: () => { throw new Error("must not spawn"); } });
+          return { exitCode: 0, busy: false };
+        },
+      })).toBe(2);
+      expect(queued).toMatchObject({ kind: "queued" });
+      expect(fs.existsSync(paths.lock)).toBe(false);
+    });
+
     it("logs a busy store and does not retry", async () => {
       const { repo, commonDir } = setUpRepository();
       const paths = getCheckoutStatePaths(commonDir, repo);
-      expect(tryAcquireRefreshLock(paths.lock, process.pid)).toBe(true);
+      fs.mkdirSync(paths.stateDir, { recursive: true });
+      fs.writeFileSync(paths.again, "");
       const passes = await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, {
         env: { OCBI_STALE_CHECK: "0" },
         runPass: () => ({ exitCode: 1, busy: true }),
@@ -273,7 +307,9 @@ describe("post-checkout hook", () => {
       writeRepositoryConfig(commonDir);
       const notifications: string[][] = [];
       let counts = 0;
-      const run = (env: Record<string, string>, now: number) => runRefreshWorker(
+      const { again, stateDir } = getCheckoutStatePaths(commonDir, repo);
+      fs.mkdirSync(stateDir, { recursive: true });
+      const run = (env: Record<string, string>, now: number) => (fs.writeFileSync(again, ""), runRefreshWorker(
         { checkoutRoot: repo, commonDir, host: "codex", staleNotify: "notifier" },
         {
           env,
@@ -282,7 +318,7 @@ describe("post-checkout hook", () => {
           notify: (command, title, message) => { notifications.push([command, title, message]); },
           now: () => now,
         },
-      );
+      ));
 
       await run({ OCBI_STALE_CHECK: "0" }, Date.now());
       expect(counts).toBe(0);

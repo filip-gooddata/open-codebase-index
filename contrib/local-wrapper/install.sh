@@ -282,7 +282,7 @@ EOF
 cat <<EOF
 
 * Git post-checkout refresh, per repository (package gd.8 or later):
-    "$node" "$home/pkg/node_modules/open-codebase-index/dist/cbi.js" hooks install --repo <repo> --host claude --stale-notify "$home/ocbi-notify.sh"
+    "$node" "$home/pkg/node_modules/open-codebase-index/dist/cbi.js" hooks install --repo <repo> --host claude --node "$node" --stale-notify "$home/ocbi-notify.sh"
   Check it with the same command and "hooks status --repo <repo>". Replacing the shell hook of
   earlier versions (hook.ocbi-prewarm, ocbi-post-checkout.sh): follow docs/local-wrapper.md.
 EOF

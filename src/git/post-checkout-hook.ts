@@ -33,8 +33,8 @@ export const GIT_LOCAL_REPOSITORY_ENV_VARS = [
 const STALE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STALE_THRESHOLD = 15;
 const LOG_ROTATE_BYTES = 1024 * 1024;
-/** A steal marker older than this belongs to a hook that died while recovering a lock. */
-const STEAL_MARKER_STALE_MS = 60 * 1000;
+/** A lock file that cannot be parsed for this long is corrupt, not a writer mid-write. */
+const UNREADABLE_LOCK_STALE_MS = 60 * 1000;
 
 export type HookEnv = Record<string, string | undefined>;
 
@@ -118,9 +118,9 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function readLockOwner(lockPath: string): LockOwner | null {
+function parseLockOwner(content: string): LockOwner | null {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(lockPath, "utf-8"));
+    const parsed: unknown = JSON.parse(content);
     if (typeof parsed !== "object" || parsed === null) return null;
     const { pid, hostname, startedAt } = parsed as Record<string, unknown>;
     if (typeof pid !== "number" || typeof hostname !== "string" || typeof startedAt !== "string") return null;
@@ -128,6 +128,19 @@ function readLockOwner(lockPath: string): LockOwner | null {
   } catch {
     return null;
   }
+}
+
+function readLockContent(lockPath: string): string | null {
+  try {
+    return fs.readFileSync(lockPath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function readLockOwner(lockPath: string): LockOwner | null {
+  const content = readLockContent(lockPath);
+  return content === null ? null : parseLockOwner(content);
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -147,15 +160,22 @@ function lockFileAgeMs(lockPath: string): number | null {
   }
 }
 
-/** A lock is live when its owner runs on this host, or was written on another host. */
-function isLockHeld(lockPath: string): boolean {
-  const owner = readLockOwner(lockPath);
-  if (owner) {
-    return owner.hostname !== os.hostname() || isProcessAlive(owner.pid);
-  }
-  // An unreadable lock is a writer mid-write unless it is old.
+/**
+ * Whether lock content names a live owner: one running on this host, or one written on another
+ * host, whose liveness cannot be checked. Content that does not parse is a live writer only while
+ * the file is young; acquisition links a complete file, so it is corrupt after that.
+ */
+function isLockContentLive(content: string, lockPath: string): boolean {
+  const owner = parseLockOwner(content);
+  if (owner) return owner.hostname !== os.hostname() || isProcessAlive(owner.pid);
   const age = lockFileAgeMs(lockPath);
-  return age !== null && age < STEAL_MARKER_STALE_MS;
+  return age !== null && age < UNREADABLE_LOCK_STALE_MS;
+}
+
+/** True when the lock exists and its owner is live. */
+export function isRefreshLockHeld(lockPath: string): boolean {
+  const content = readLockContent(lockPath);
+  return content !== null && isLockContentLive(content, lockPath);
 }
 
 function writeOwnerFile(target: string, pid: number): string {
@@ -178,21 +198,30 @@ function tryLinkLock(lockPath: string, pid: number): boolean {
   }
 }
 
-/** Removes a dead owner's lock, serialized by a steal marker so two hooks never both remove one. */
-function removeStaleLock(lockPath: string): void {
-  const marker = `${lockPath}.steal`;
+/**
+ * Removes the lock whose dead content was read as `staleContent`. The lock is moved aside first
+ * and its content compared, so a lock another process took in the meantime is put back instead of
+ * removed. If a third process linked a new lock before it could go back, that owner keeps the new
+ * lock and the moved one's owner loses its file: at worst two refreshes run, and the store's own
+ * index lock serializes them.
+ */
+function removeStaleLock(lockPath: string, staleContent: string): void {
+  const moved = `${lockPath}.${process.pid}.${randomBytes(4).toString("hex")}.stale`;
   try {
-    fs.mkdirSync(marker);
+    fs.renameSync(lockPath, moved);
   } catch (error: unknown) {
-    if (getErrorCode(error) !== "EEXIST") throw error;
-    const age = lockFileAgeMs(marker);
-    if (age !== null && age >= STEAL_MARKER_STALE_MS) fs.rmSync(marker, { recursive: true, force: true });
-    return;
+    if (getErrorCode(error) === "ENOENT") return;
+    throw error;
   }
   try {
-    if (!isLockHeld(lockPath)) fs.rmSync(lockPath, { force: true });
+    if (readLockContent(moved) === staleContent) return;
+    try {
+      fs.linkSync(moved, lockPath);
+    } catch (error: unknown) {
+      if (getErrorCode(error) !== "EEXIST") throw error;
+    }
   } finally {
-    fs.rmSync(marker, { recursive: true, force: true });
+    fs.rmSync(moved, { force: true });
   }
 }
 
@@ -200,19 +229,28 @@ function removeStaleLock(lockPath: string): void {
 export function tryAcquireRefreshLock(lockPath: string, pid: number = process.pid): boolean {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   if (tryLinkLock(lockPath, pid)) return true;
-  if (isLockHeld(lockPath)) return false;
-  removeStaleLock(lockPath);
+  const content = readLockContent(lockPath);
+  if (content !== null) {
+    if (isLockContentLive(content, lockPath)) return false;
+    removeStaleLock(lockPath, content);
+  }
   return tryLinkLock(lockPath, pid);
-}
-
-/** Atomically names `pid` as the owner of a lock this process holds. */
-export function transferRefreshLock(lockPath: string, pid: number): void {
-  fs.renameSync(writeOwnerFile(lockPath, pid), lockPath);
 }
 
 /** Releases the lock when `pid` still owns it. */
 export function releaseRefreshLock(lockPath: string, pid: number = process.pid): void {
   if (readLockOwner(lockPath)?.pid === pid) fs.rmSync(lockPath, { force: true });
+}
+
+/** Takes a queued refresh request; false when none is queued. */
+function consumeRefreshRequest(againPath: string): boolean {
+  try {
+    fs.unlinkSync(againPath);
+    return true;
+  } catch (error: unknown) {
+    if (getErrorCode(error) === "ENOENT") return false;
+    throw error;
+  }
 }
 
 export interface PostCheckoutTarget {
@@ -321,8 +359,9 @@ function defaultSpawnWorker(entryScript: string, env: HookEnv) {
 }
 
 /**
- * `ocbi hook post-checkout <prev> <new> <flag>`: starts a detached refresh of this checkout and
- * returns at once. One refresh runs per checkout; a checkout during a refresh queues one more pass.
+ * `ocbi hook post-checkout <prev> <new> <flag>`: queues a refresh of this checkout and starts a
+ * detached worker unless one runs. The request is written before the lock is checked, so a worker
+ * that is finishing either sees it or has released the lock for the new worker to take.
  */
 export function runPostCheckoutHook(
   args: readonly string[],
@@ -347,20 +386,16 @@ export function runPostCheckoutHook(
   const { target } = resolution;
   const { paths } = target;
   fs.mkdirSync(paths.stateDir, { recursive: true });
-  if (!tryAcquireRefreshLock(paths.lock)) {
-    fs.writeFileSync(paths.again, "");
-    return { kind: "queued", paths };
-  }
+  fs.writeFileSync(paths.again, "");
+  if (isRefreshLockHeld(paths.lock)) return { kind: "queued", paths };
 
   try {
     rotateLog(paths.log);
     const entryScript = deps.entryScript ?? process.argv[1];
     const spawnWorker = deps.spawnWorker ?? defaultSpawnWorker(entryScript, env);
     const pid = spawnWorker({ checkoutRoot: target.checkoutRoot, commonDir: target.commonDir, host, staleNotify: options.staleNotify }, paths);
-    transferRefreshLock(paths.lock, pid);
     return { kind: "started", pid, paths };
   } catch (error: unknown) {
-    releaseRefreshLock(paths.lock);
     appendHookLog(paths.log, `== ${timestamp()} failed to start a refresh: ${getErrorMessage(error)}`);
     return { kind: "skipped", reason: `worker failed to start: ${getErrorMessage(error)}` };
   }
@@ -483,8 +518,10 @@ function runStaleCheck(options: RefreshWorkerOptions, paths: CheckoutStatePaths,
 }
 
 /**
- * The detached worker: runs index passes while checkouts keep queueing them, then releases the
- * lock. A checkout that queued a pass just as the lock was released is picked up by retaking it.
+ * The detached worker: takes the checkout's lock, or exits when another worker holds it (that one
+ * sees the queued request). Each pass consumes the queued request first, so a request a pass
+ * already covered does not cause another. After releasing the lock it looks once more, so a
+ * request queued just before the release is not lost.
  */
 export async function runRefreshWorker(options: RefreshWorkerOptions, deps: RefreshWorkerDeps = {}): Promise<number> {
   const env = scrubGitRepositoryEnv(deps.env ?? process.env);
@@ -492,6 +529,7 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
   const entryScript = deps.entryScript ?? process.argv[1];
   const paths = getCheckoutStatePaths(options.commonDir, options.checkoutRoot);
   const runPass = deps.runPass ?? defaultRunPass(entryScript, env);
+  if (!tryAcquireRefreshLock(paths.lock, pid)) return 0;
   try {
     os.setPriority(10);
   } catch {
@@ -500,29 +538,32 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
 
   let passes = 0;
   for (;;) {
-    fs.rmSync(paths.again, { force: true });
-    appendHookLog(paths.log, `== ${timestamp()} ${options.checkoutRoot} ${describeHead(options.checkoutRoot, env)}`);
-    let result: RefreshPassResult;
-    try {
-      result = await runPass(options, paths);
-    } catch (error: unknown) {
-      result = { exitCode: null, busy: false };
-      appendHookLog(paths.log, `== pass failed: ${getErrorMessage(error)}`);
+    if (consumeRefreshRequest(paths.again)) {
+      appendHookLog(paths.log, `== ${timestamp()} ${options.checkoutRoot} ${describeHead(options.checkoutRoot, env)}`);
+      let result: RefreshPassResult;
+      try {
+        result = await runPass(options, paths);
+      } catch (error: unknown) {
+        result = { exitCode: null, busy: false };
+        appendHookLog(paths.log, `== pass failed: ${getErrorMessage(error)}`);
+      }
+      passes += 1;
+      appendHookLog(paths.log, result.busy
+        ? `== busy: another index operation holds the store; skipped ${timestamp()}`
+        : `== exit ${result.exitCode ?? "signal"} ${timestamp()}`);
+      if (fs.existsSync(paths.again)) continue;
     }
-    passes += 1;
-    appendHookLog(paths.log, result.busy
-      ? `== busy: another index operation holds the store; skipped ${timestamp()}`
-      : `== exit ${result.exitCode ?? "signal"} ${timestamp()}`);
-    if (fs.existsSync(paths.again)) continue;
     releaseRefreshLock(paths.lock, pid);
     if (fs.existsSync(paths.again) && tryAcquireRefreshLock(paths.lock, pid)) continue;
     break;
   }
 
-  runStaleCheck(options, paths, env, {
-    countPrunable: deps.countPrunable ?? defaultCountPrunable(entryScript, env),
-    notify: deps.notify ?? defaultNotify(env),
-    now: deps.now ?? Date.now,
-  });
+  if (passes > 0) {
+    runStaleCheck(options, paths, env, {
+      countPrunable: deps.countPrunable ?? defaultCountPrunable(entryScript, env),
+      notify: deps.notify ?? defaultNotify(env),
+      now: deps.now ?? Date.now,
+    });
+  }
   return passes;
 }

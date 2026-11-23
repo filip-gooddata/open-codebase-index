@@ -12,11 +12,11 @@ import {
   HOOK_CONFIG_NAME,
   buildHookCommand,
   describeHookCommand,
+  parseHookInvocation,
   getPostCheckoutHookStatus,
   gitSupportsConfigHooks,
   installPostCheckoutHook,
   resolveHookRepository,
-  splitHookCommand,
   uninstallPostCheckoutHook,
   type HookCommandSpec,
 } from "../src/git/hook-install.js";
@@ -83,7 +83,7 @@ afterEach(() => {
 describe("hook command", () => {
   it("round-trips paths with spaces and quotes", () => {
     const command = buildHookCommand(spec({ nodePath: "/opt/my node/bin/node", entryScript: "/x/it's/cbi.js", staleNotify: "/n/notify me" }));
-    expect(splitHookCommand(command)).toEqual([
+    expect(parseHookInvocation(command)).toEqual([
       "/opt/my node/bin/node", "/x/it's/cbi.js", "hook", "post-checkout", "--host", "codex", "--stale-notify", "/n/notify me",
     ]);
   });
@@ -136,6 +136,25 @@ describe.runIf(CONFIG_HOOKS)("config-based install", () => {
     const result = installPostCheckoutHook(repo, { spec: spec() });
     expect(result.warnings.join("\n")).toContain("hook.ocbi-prewarm; remove it with");
     expect(getPostCheckoutHookStatus(repo, CBI, true).legacy).toEqual([{ name: "ocbi-prewarm", command: "/somewhere/ocbi-post-checkout.sh" }]);
+  });
+
+  it("fails open when the node binary it names is gone", () => {
+    const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
+    installPostCheckoutHook(repo, { spec: spec({ nodePath: path.join(tempDir, "removed-node") }) });
+    expect(getPostCheckoutHookStatus(repo, CBI, true).config?.report?.state).toBe("stale");
+    const checkout = spawnSync("git", ["checkout", "-q", "-b", "feature"], { cwd: repo.repo, env: gitEnv, encoding: "utf-8" });
+    expect(checkout.status, checkout.stderr).toBe(0);
+  });
+
+  it("leaves a same-name hook it did not write alone", () => {
+    const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
+    git(repo.repo, "config", "--local", `hook.${HOOK_CONFIG_NAME}.command`, "/usr/local/bin/mine");
+    git(repo.repo, "config", "--local", `hook.${HOOK_CONFIG_NAME}.event`, "post-checkout");
+    expect(() => installPostCheckoutHook(repo, { spec: spec() })).toThrow(/did not write/);
+    expect(() => installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: true })).toThrow(/did not write/);
+    expect(fs.existsSync(path.join(repo.commonDir, "hooks", "post-checkout"))).toBe(false);
+    expect(uninstallPostCheckoutHook(repo).actions.join("\n")).toContain("left hook.ocbi-post-checkout alone");
+    expect(git(repo.repo, "config", "--local", "--get", `hook.${HOOK_CONFIG_NAME}.command`).trim()).toBe("/usr/local/bin/mine");
   });
 
   it("replaces a managed hook file left by an install on an older git", () => {
@@ -194,15 +213,15 @@ describe("hook file install", () => {
     expect(fs.readFileSync(path.join(hooks, "post-checkout"), "utf-8")).toBe("#!/bin/sh\n");
   });
 
-  it("refuses a relative core.hooksPath and uses an absolute one", () => {
+  it("refuses a hook file when core.hooksPath is set, relative or absolute", () => {
     const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
-    git(repo.repo, "config", "--local", "core.hooksPath", ".husky/_");
-    expect(() => installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false })).toThrow(/relative to each worktree/);
     const shared = path.join(tempDir, "shared-hooks");
-    git(repo.repo, "config", "--local", "core.hooksPath", shared);
-    const result = installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false });
-    expect(fs.existsSync(path.join(shared, "post-checkout"))).toBe(true);
-    expect(result.warnings.join("\n")).toContain("is shared by every repository");
+    for (const hooksPath of [".husky/_", shared]) {
+      git(repo.repo, "config", "--local", "core.hooksPath", hooksPath);
+      expect(() => installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false })).toThrow(/other repositories or worktrees may share it/);
+    }
+    expect(fs.existsSync(shared)).toBe(false);
+    expect(uninstallPostCheckoutHook(repo).changed).toBe(false);
   });
 
   it("refuses the config method on a git without config-based hooks", () => {

@@ -121,7 +121,7 @@ else
 fi
 expect_match "install prints the Codex registration with --host codex" "args = \\[\"$H/pkg/node_modules/open-codebase-index/dist/cli.js\", \"--host\", \"codex\"\\]" "$out"
 expect_match "install prints the Codex command as the chosen node" "command = \"$NODE\"" "$out"
-expect_match "install prints the package's hook installer" "\"$H/pkg/node_modules/open-codebase-index/dist/cbi.js\" hooks install --repo <repo> --host claude --stale-notify \"$H/ocbi-notify.sh\"" "$out"
+expect_match "install prints the package's hook installer" "\"$H/pkg/node_modules/open-codebase-index/dist/cbi.js\" hooks install --repo <repo> --host claude --node \"$NODE\" --stale-notify \"$H/ocbi-notify.sh\"" "$out"
 check "install places no shell post-checkout hook" test ! -e "$H/ocbi-post-checkout.sh"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
 expect_match "second install changes nothing" "^0 change\\(s\\)\\." "$out"

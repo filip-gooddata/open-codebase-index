@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import type { HostMode } from "../config/host.js";
@@ -79,10 +78,36 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Shell function both install methods define; it gets git's hook arguments. */
+export const HOOK_FUNCTION_NAME = "ocbi_post_checkout";
+
+/**
+ * The shell function that runs the hook. It fails open: a missing node binary or script (a removed
+ * node version, a moved install) makes it do nothing instead of failing the checkout, and
+ * `ocbi hooks status` reports the command as stale.
+ */
+export function buildHookFunction(spec: HookCommandSpec): string {
+  const node = shellQuote(spec.nodePath);
+  const entry = shellQuote(spec.entryScript);
+  const words = [node, entry, "hook", "post-checkout", "--host", spec.host];
+  if (spec.staleNotify) words.push("--stale-notify", shellQuote(spec.staleNotify));
+  return `${HOOK_FUNCTION_NAME}() { [ -x ${node} ] && [ -f ${entry} ] || return 0; ${words.join(" ")} "$@" || :; }`;
+}
+
+/** The `hook.<name>.command` value: git appends the hook arguments, which reach the function. */
 export function buildHookCommand(spec: HookCommandSpec): string {
-  const parts = [shellQuote(spec.nodePath), shellQuote(spec.entryScript), "hook", "post-checkout", "--host", spec.host];
-  if (spec.staleNotify) parts.push("--stale-notify", shellQuote(spec.staleNotify));
-  return parts.join(" ");
+  return `${buildHookFunction(spec)}; ${HOOK_FUNCTION_NAME}`;
+}
+
+/** The words of the `ocbi` invocation inside a command or script ocbi wrote, else null. */
+export function parseHookInvocation(text: string): string[] | null {
+  const match = /\|\| return 0; (.+) "\$@" \|\| :; \}/.exec(text);
+  if (!match) return null;
+  try {
+    return splitHookCommand(match[1]);
+  } catch {
+    return null;
+  }
 }
 
 /** Splits a command written by `buildHookCommand` (single-quoted words) back into words. */
@@ -124,7 +149,7 @@ export function resolveHookNodePath(execPath: string = process.execPath): string
   return realpathOrResolve(execPath);
 }
 
-export function managedHookScript(command: string): string {
+export function managedHookScript(spec: HookCommandSpec): string {
   return `#!/bin/sh
 ${MANAGED_HOOK_MARKER} (ocbi hooks install).
 # Remove it with: ocbi hooks uninstall. A hook that was here before runs first, from
@@ -135,15 +160,10 @@ if [ -x "$chained" ]; then
   "$chained" "$@"
   status=$?
 fi
-${command} "$@" || :
+${buildHookFunction(spec)}
+${HOOK_FUNCTION_NAME} "$@"
 exit $status
 `;
-}
-
-function expandHome(value: string): string {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
-  return value;
 }
 
 export interface HookFileLocation {
@@ -154,21 +174,21 @@ export interface HookFileLocation {
   error: string | null;
 }
 
-/** The `post-checkout` file git runs for the repository, honouring `core.hooksPath`. */
+/**
+ * The `post-checkout` file git runs for the repository. With `core.hooksPath` set, git runs hooks
+ * only from there, a directory other repositories (or each worktree, when relative) may share, so
+ * installing or removing a file there could change their hooks: that case is refused.
+ */
 export function resolveHookFileLocation(repository: HookRepository): HookFileLocation {
   const configured = git(repository.repo, ["config", "--get", "core.hooksPath"]);
   const hooksPath = configured.status === 0 ? configured.stdout.trim() : "";
   if (hooksPath) {
-    const expanded = expandHome(hooksPath);
-    if (!path.isAbsolute(expanded)) {
-      return {
-        dir: "",
-        file: "",
-        hooksPath,
-        error: `core.hooksPath is ${hooksPath}, relative to each worktree; a hook file there would not cover every worktree. Use a git with config-based hooks, or chain \`ocbi hook post-checkout "$@"\` from that hook yourself.`,
-      };
-    }
-    return { dir: expanded, file: path.join(expanded, "post-checkout"), hooksPath, error: null };
+    return {
+      dir: "",
+      file: "",
+      hooksPath,
+      error: `core.hooksPath is ${hooksPath}; git runs hooks only from there, and other repositories or worktrees may share it. Use a git with config-based hooks, or call \`ocbi hook post-checkout "$@"\` from that hook yourself.`,
+    };
   }
   const dir = path.join(repository.commonDir, "hooks");
   return { dir, file: path.join(dir, "post-checkout"), hooksPath: null, error: null };
@@ -188,9 +208,16 @@ function readConfigHook(repository: HookRepository): ConfigHookEntry {
   return { command: read("command")[0] ?? null, events: read("event", true), enabled: read("enabled")[0] ?? null };
 }
 
+function isForeignCommand(command: string | null): boolean {
+  return command !== null && parseHookInvocation(command) === null;
+}
+
 function removeConfigHook(repository: HookRepository): boolean {
   const entry = readConfigHook(repository);
   if (entry.command === null && entry.events.length === 0 && entry.enabled === null) return false;
+  if (isForeignCommand(entry.command)) {
+    throw new Error(`hook.${HOOK_CONFIG_NAME}.command is set to a command ocbi did not write (${entry.command}); remove or rename that hook first.`);
+  }
   gitOk(repository.repo, ["config", "--local", "--remove-section", `hook.${HOOK_CONFIG_NAME}`]);
   return true;
 }
@@ -258,9 +285,11 @@ function installConfigHook(repository: HookRepository, command: string): HookIns
   const entry = readConfigHook(repository);
   const current = entry.command === command && entry.events.length === 1 && entry.events[0] === "post-checkout" && entry.enabled === null;
   if (!current) {
+    // Throws on a same-name hook ocbi did not write, before anything changes.
     if (entry.command !== null || entry.events.length > 0 || entry.enabled !== null) removeConfigHook(repository);
-    gitOk(repository.repo, ["config", "--local", `hook.${HOOK_CONFIG_NAME}.event`, "post-checkout"]);
+    // git refuses to run any hook while an event has no command, so the command goes first.
     gitOk(repository.repo, ["config", "--local", `hook.${HOOK_CONFIG_NAME}.command`, command]);
+    gitOk(repository.repo, ["config", "--local", `hook.${HOOK_CONFIG_NAME}.event`, "post-checkout"]);
     actions.push(`${entry.command === null ? "set" : "updated"} hook.${HOOK_CONFIG_NAME}.command and .event in ${path.join(repository.commonDir, "config")}`);
   }
   // A managed file from an install on an older git would run the hook a second time.
@@ -268,37 +297,53 @@ function installConfigHook(repository: HookRepository, command: string): HookIns
   return { method: "config", changed: actions.length > 0, actions, warnings: [] };
 }
 
-function installHookFile(repository: HookRepository, command: string): HookInstallResult {
+function readFileOrNull(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes the managed script through a temporary file. An existing unmanaged hook moves aside only
+ * once that file is ready, and moves back if the managed script cannot take its place.
+ */
+function installHookFile(repository: HookRepository, spec: HookCommandSpec): HookInstallResult {
   const location = resolveHookFileLocation(repository);
   if (location.error) throw new Error(location.error);
   const actions: string[] = [];
-  const script = managedHookScript(command);
+  const script = managedHookScript(spec);
   fs.mkdirSync(location.dir, { recursive: true });
-  if (fs.existsSync(location.file) && !isManagedHookFile(location.file)) {
-    const chained = path.join(location.dir, CHAINED_HOOK_NAME);
-    if (fs.existsSync(chained)) {
-      throw new Error(`${location.file} is not managed by ocbi and ${chained} already exists; move one of them before installing.`);
+  const existing = readFileOrNull(location.file);
+  const foreign = fs.existsSync(location.file) && !isManagedHookFile(location.file);
+  const chained = path.join(location.dir, CHAINED_HOOK_NAME);
+  if (foreign && fs.existsSync(chained)) {
+    throw new Error(`${location.file} is not managed by ocbi and ${chained} already exists; move one of them before installing.`);
+  }
+  if (foreign || existing !== script) {
+    const temp = `${location.file}.ocbi-${process.pid}.tmp`;
+    fs.writeFileSync(temp, script, { mode: 0o755 });
+    fs.chmodSync(temp, 0o755);
+    try {
+      if (foreign) fs.renameSync(location.file, chained);
+      try {
+        fs.renameSync(temp, location.file);
+      } catch (error: unknown) {
+        if (foreign) fs.renameSync(chained, location.file);
+        throw error;
+      }
+    } finally {
+      fs.rmSync(temp, { force: true });
     }
-    fs.renameSync(location.file, chained);
-    actions.push(`moved the existing hook to ${chained}; the managed hook runs it first`);
-  }
-  let existing: string | null;
-  try {
-    existing = fs.readFileSync(location.file, "utf-8");
-  } catch {
-    existing = null;
-  }
-  if (existing !== script) {
-    fs.writeFileSync(location.file, script, { mode: 0o755 });
-    actions.push(`${existing === null ? "wrote" : "updated"} managed hook ${location.file}`);
-  }
-  if ((fs.statSync(location.file).mode & 0o111) === 0) {
+    if (foreign) actions.push(`moved the existing hook to ${chained}; the managed hook runs it first`);
+    actions.push(`${existing === null || foreign ? "wrote" : "updated"} managed hook ${location.file}`);
+  } else if ((fs.statSync(location.file).mode & 0o111) === 0) {
     fs.chmodSync(location.file, 0o755);
     actions.push(`made ${location.file} executable`);
   }
   if (removeConfigHook(repository)) actions.push(`removed hook.${HOOK_CONFIG_NAME} from the git config`);
-  const warnings = location.hooksPath ? [`core.hooksPath ${location.hooksPath} is shared by every repository that uses it`] : [];
-  return { method: "file", changed: actions.length > 0, actions, warnings };
+  return { method: "file", changed: actions.length > 0, actions, warnings: [] };
 }
 
 export function installPostCheckoutHook(repository: HookRepository, options: HookInstallOptions): HookInstallResult {
@@ -307,15 +352,25 @@ export function installPostCheckoutHook(repository: HookRepository, options: Hoo
   if (method === "config" && !supported) {
     throw new Error("This git has no config-based hooks (hook.<name>.event); use --method file.");
   }
-  const command = buildHookCommand(options.spec);
-  const result = method === "config" ? installConfigHook(repository, command) : installHookFile(repository, command);
+  const configured = readConfigHook(repository).command;
+  if (isForeignCommand(configured)) {
+    throw new Error(`hook.${HOOK_CONFIG_NAME}.command is set to a command ocbi did not write (${configured}); remove or rename that hook first.`);
+  }
+  const result = method === "config"
+    ? installConfigHook(repository, buildHookCommand(options.spec))
+    : installHookFile(repository, options.spec);
   result.warnings.push(...legacyWarnings(repository));
   return result;
 }
 
 export function uninstallPostCheckoutHook(repository: HookRepository): { changed: boolean; actions: string[] } {
   const actions: string[] = [];
-  if (removeConfigHook(repository)) actions.push(`removed hook.${HOOK_CONFIG_NAME} from ${path.join(repository.commonDir, "config")}`);
+  const configured = readConfigHook(repository).command;
+  if (isForeignCommand(configured)) {
+    actions.push(`left hook.${HOOK_CONFIG_NAME} alone: ocbi did not write its command (${configured})`);
+  } else if (removeConfigHook(repository)) {
+    actions.push(`removed hook.${HOOK_CONFIG_NAME} from ${path.join(repository.commonDir, "config")}`);
+  }
   actions.push(...removeManagedHookFile(resolveHookFileLocation(repository)));
   return { changed: actions.length > 0, actions };
 }
@@ -331,14 +386,8 @@ export interface HookCommandReport {
 
 /** Compares an installed hook command with the running package's entry script. */
 export function describeHookCommand(command: string, currentEntryScript: string): HookCommandReport {
-  let words: string[];
-  try {
-    words = splitHookCommand(command);
-  } catch {
-    words = [];
-  }
-  const hookIndex = words.indexOf("hook");
-  if (hookIndex !== 2 || words[3] !== "post-checkout") {
+  const words = parseHookInvocation(command) ?? [];
+  if (words[2] !== "hook" || words[3] !== "post-checkout") {
     return { command, state: "unparsed", detail: "not a command written by ocbi hooks install", host: null };
   }
   const [nodePath, entryScript] = words;
@@ -346,7 +395,7 @@ export function describeHookCommand(command: string, currentEntryScript: string)
   const host = hostIndex >= 0 ? words[hostIndex + 1] ?? null : null;
   const missing = [nodePath, entryScript].filter((file) => !fs.existsSync(file));
   if (missing.length > 0) {
-    return { command, state: "stale", detail: `${missing.join(" and ")} no longer exist${missing.length === 1 ? "s" : ""}; rerun ocbi hooks install`, host };
+    return { command, state: "stale", detail: `${missing.join(" and ")} no longer exist${missing.length === 1 ? "s" : ""}, so the hook does nothing; rerun ocbi hooks install`, host };
   }
   if (realpathOrResolve(entryScript) !== realpathOrResolve(currentEntryScript)) {
     return { command, state: "other-install", detail: `runs ${entryScript}, not this package (${currentEntryScript}); rerun ocbi hooks install to switch`, host };
@@ -369,9 +418,8 @@ export interface HookStatus {
 }
 
 function commandFromManagedFile(file: string): string | null {
-  const lines = fs.readFileSync(file, "utf-8").split("\n");
-  const line = lines.find((entry) => entry.endsWith(` "$@" || :`));
-  return line ? line.slice(0, -` "$@" || :`.length) : null;
+  const line = fs.readFileSync(file, "utf-8").split("\n").find((entry) => entry.startsWith(`${HOOK_FUNCTION_NAME}() {`));
+  return line ?? null;
 }
 
 export function getPostCheckoutHookStatus(

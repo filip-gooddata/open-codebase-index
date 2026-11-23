@@ -1,0 +1,21 @@
+contrib/local-wrapper/rebuild/ocbi-schedule
+  s_b2b2c96e28bdb1::t_67d5c3ef20f98e 128-135,137-144
+contrib/local-wrapper/test/run-tests.sh
+  s_b2b2c96e28bdb1::t_faa4f1748ecf6b 528-529,616-619,621-637,639-641,671,675
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aafc3cf2ddf4b14639fada85b9676dcbcf53f031",
+  "prompts": {},
+  "sessions": {
+    "s_b2b2c96e28bdb1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "439576b6-509a-4dad-a119-8b4a422db60d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

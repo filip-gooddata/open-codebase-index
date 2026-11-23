@@ -1,0 +1,55 @@
+CHANGELOG.md
+  s_2bf4d6dcfc1c17::t_3b8de9e7ee5e17 10-18
+contrib/local-wrapper/README.md
+  s_a6fa35d36b9667::t_06bc0f7592e5e0 7-8,38,43,51,62-63,66-68,85-86
+contrib/local-wrapper/install.sh
+  s_51a13a26c4017c::t_2c1ea8ab43bf06 5,17,24,34,91-95,221,226,282,284-287
+contrib/local-wrapper/test/run-tests.sh
+  s_89a834aa16c3e0::t_100046e3336b0b 52,80-82,90,103,124-125,128,130,139-140,185-186,189-190,192-193,203-204
+docs/configuration.md
+  s_a6fa35d36b9667::t_10f6936b1a90cd 87-111
+docs/installation.md
+  s_89a834aa16c3e0::t_e7a4dec96b13d1 253-254
+docs/local-wrapper.md
+  s_a6fa35d36b9667::t_a7fca1eef1cbc3 41,44,50-58,87-88,91-92,95-115,182-183,211-213,217-218
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3c3cb67bef2557b2078abfc22155d9fe17ad8db2",
+  "prompts": {},
+  "sessions": {
+    "s_2bf4d6dcfc1c17": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a20808-ebe9-7720-87de-b5daa32567cf",
+        "model": "gpt-6.2-sol"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_51a13a26c4017c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a2080d-75bb-7181-aefb-6f96ab3ba3d9",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_89a834aa16c3e0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0b58b6e5-6a74-4afa-9ec4-85f389470f4a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_a6fa35d36b9667": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a2080e-d2b6-76a1-94f8-64cbe14b5386",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

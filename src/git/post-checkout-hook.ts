@@ -1,10 +1,10 @@
+import type { HostMode } from "../config/host.js";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { HostMode } from "../config/host.js";
 import { loadMergedConfig } from "../config/merger.js";
 import { REPOSITORY_CONFIG_DIRNAME, resolveMatchedRepositoryRoute } from "../config/repository-route.js";
 import { parseConfig } from "../config/schema.js";
@@ -185,10 +185,11 @@ function writeOwnerFile(target: string, pid: number): string {
   return temp;
 }
 
-function tryLinkLock(lockPath: string, pid: number): boolean {
-  const temp = writeOwnerFile(lockPath, pid);
+/** Atomically creates `target` naming `pid` as its owner; false when it exists. */
+function tryLinkOwnerFile(target: string, pid: number): boolean {
+  const temp = writeOwnerFile(target, pid);
   try {
-    fs.linkSync(temp, lockPath);
+    fs.linkSync(temp, target);
     return true;
   } catch (error: unknown) {
     if (getErrorCode(error) === "EEXIST") return false;
@@ -199,45 +200,88 @@ function tryLinkLock(lockPath: string, pid: number): boolean {
 }
 
 /**
- * Removes the lock whose dead content was read as `staleContent`. The lock is moved aside first
- * and its content compared, so a lock another process took in the meantime is put back instead of
- * removed. If a third process linked a new lock before it could go back, that owner keeps the new
- * lock and the moved one's owner loses its file: at worst two refreshes run, and the store's own
- * index lock serializes them.
+ * Removes a guard whose dead content was read as `staleContent`. It is moved aside and compared
+ * first, so a guard another process took in the meantime goes back instead.
  */
-function removeStaleLock(lockPath: string, staleContent: string): void {
-  const moved = `${lockPath}.${process.pid}.${randomBytes(4).toString("hex")}.stale`;
+function removeStaleGuard(guardPath: string, staleContent: string): void {
+  const moved = `${guardPath}.${process.pid}.${randomBytes(4).toString("hex")}.stale`;
   try {
-    fs.renameSync(lockPath, moved);
+    fs.renameSync(guardPath, moved);
   } catch (error: unknown) {
     if (getErrorCode(error) === "ENOENT") return;
     throw error;
   }
   try {
-    if (readLockContent(moved) === staleContent) return;
-    try {
-      fs.linkSync(moved, lockPath);
-    } catch (error: unknown) {
-      if (getErrorCode(error) !== "EEXIST") throw error;
+    if (readLockContent(moved) !== staleContent) {
+      try {
+        fs.linkSync(moved, guardPath);
+      } catch (error: unknown) {
+        if (getErrorCode(error) !== "EEXIST") throw error;
+      }
     }
   } finally {
     fs.rmSync(moved, { force: true });
   }
 }
 
-/** Takes the checkout's refresh lock for `pid`; recovers a lock whose owner is gone. */
-export function tryAcquireRefreshLock(lockPath: string, pid: number = process.pid): boolean {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  if (tryLinkLock(lockPath, pid)) return true;
-  const content = readLockContent(lockPath);
-  if (content !== null) {
-    if (isLockContentLive(content, lockPath)) return false;
-    removeStaleLock(lockPath, content);
-  }
-  return tryLinkLock(lockPath, pid);
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Releases the lock when `pid` still owns it. */
+const GUARD_WAIT_MS = 2000;
+
+/**
+ * Runs `action` while holding `<lock>.guard`, the short-lived mutex every acquisition and every
+ * stale-lock reclaim takes, so a delayed reclaimer can never remove a lock another worker has
+ * just taken. Returns null when the guard stays held past `waitMs`. A guard left by a process that
+ * died inside these few file operations is reclaimed by owner liveness; two such reclaims racing a
+ * third acquirer is the remaining window, and needs a crash inside the critical section.
+ */
+function withLockGuard<T>(lockPath: string, pid: number, waitMs: number, action: () => T): T | null {
+  const guardPath = `${lockPath}.guard`;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    if (tryLinkOwnerFile(guardPath, pid)) break;
+    const content = readLockContent(guardPath);
+    if (content !== null && !isLockContentLive(content, guardPath)) {
+      removeStaleGuard(guardPath, content);
+      continue;
+    }
+    if (Date.now() >= deadline) return null;
+    sleepSync(10);
+  }
+  try {
+    return action();
+  } finally {
+    if (readLockOwner(guardPath)?.pid === pid) fs.rmSync(guardPath, { force: true });
+  }
+}
+
+export interface AcquireRefreshLockOptions {
+  /** How long to wait for another process's guard. */
+  guardWaitMs?: number;
+  /** Test seam: runs inside the guard, after a dead owner was found and before its lock goes. */
+  beforeReclaim?: () => void;
+}
+
+/**
+ * Takes the checkout's refresh lock for `pid`; recovers a lock whose owner is gone. Returns false
+ * when a live owner holds it, or when another process holds the guard past the wait.
+ */
+export function tryAcquireRefreshLock(lockPath: string, pid: number = process.pid, options: AcquireRefreshLockOptions = {}): boolean {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  return withLockGuard(lockPath, pid, options.guardWaitMs ?? GUARD_WAIT_MS, () => {
+    if (tryLinkOwnerFile(lockPath, pid)) return true;
+    const content = readLockContent(lockPath);
+    if (content !== null && isLockContentLive(content, lockPath)) return false;
+    options.beforeReclaim?.();
+    // Under the guard nobody else acquires or reclaims, and a dead owner releases nothing.
+    fs.rmSync(lockPath, { force: true });
+    return tryLinkOwnerFile(lockPath, pid);
+  }) ?? false;
+}
+
+/** Releases the lock when `pid` still owns it. Only a live owner releases, and reclaims need a dead one. */
 export function releaseRefreshLock(lockPath: string, pid: number = process.pid): void {
   if (readLockOwner(lockPath)?.pid === pid) fs.rmSync(lockPath, { force: true });
 }
@@ -491,7 +535,13 @@ function repositoryName(commonDir: string): string {
  * At most once a day per repository, counts the catalogs `ocbi prune` would remove, logs the
  * count and, from OCBI_STALE_THRESHOLD (15) on, runs the configured notifier.
  */
-function runStaleCheck(options: RefreshWorkerOptions, paths: CheckoutStatePaths, env: HookEnv, deps: Required<Pick<RefreshWorkerDeps, "countPrunable" | "notify" | "now">>): void {
+function runStaleCheck(
+  options: RefreshWorkerOptions,
+  paths: CheckoutStatePaths,
+  env: HookEnv,
+  entryScript: string,
+  deps: Required<Pick<RefreshWorkerDeps, "countPrunable" | "notify" | "now">>,
+): void {
   if (env.OCBI_STALE_CHECK === "0") return;
   const stamp = path.join(paths.stateDir, "stale-check.stamp");
   try {
@@ -507,7 +557,8 @@ function runStaleCheck(options: RefreshWorkerOptions, paths: CheckoutStatePaths,
   fs.writeFileSync(stamp, `${new Date(deps.now()).toISOString()} ${count}\n`);
   const parsedThreshold = Number.parseInt(env.OCBI_STALE_THRESHOLD ?? "", 10);
   const threshold = Number.isInteger(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_STALE_THRESHOLD;
-  const command = ["ocbi", "prune", "--apply", "--host", options.host, "--project", options.checkoutRoot].map(shellQuote).join(" ");
+  // The worker's own node and script: the CLI may not be on PATH (a private install, say).
+  const command = [process.execPath, entryScript, "prune", "--apply", "--host", options.host, "--project", options.checkoutRoot].map(shellQuote).join(" ");
   appendHookLog(paths.log, `== stale check: ${count} catalogs of deleted branches or worktrees${count > 0 ? `; remove them with: ${command}` : ""}`);
   if (count < threshold || !options.staleNotify) return;
   try {
@@ -559,7 +610,7 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
   }
 
   if (passes > 0) {
-    runStaleCheck(options, paths, env, {
+    runStaleCheck(options, paths, env, entryScript, {
       countPrunable: deps.countPrunable ?? defaultCountPrunable(entryScript, env),
       notify: deps.notify ?? defaultNotify(env),
       now: deps.now ?? Date.now,

@@ -1,7 +1,7 @@
+import type { HostMode } from "../config/host.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { HostMode } from "../config/host.js";
 import { parseHostMode } from "../config/host.js";
 import {
   formatPostCheckoutHookStatus,

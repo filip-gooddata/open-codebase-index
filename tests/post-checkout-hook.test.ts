@@ -171,6 +171,38 @@ describe("post-checkout hook", () => {
       expect(JSON.parse(fs.readFileSync(lock, "utf-8")).pid).toBe(process.pid);
     });
 
+    it("lets only one of three contenders take a stale lock", () => {
+      const lock = path.join(tempDir, "state", "x.lock");
+      fs.mkdirSync(path.dirname(lock), { recursive: true });
+      fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
+      const holders = new Set<number>();
+      const [first, second, third] = [process.pid, process.ppid, 1];
+      const acquired = tryAcquireRefreshLock(lock, first, {
+        beforeReclaim: () => {
+          // Two more workers arrive while the first is between reading the dead owner and replacing it.
+          for (const pid of [second, third]) {
+            if (tryAcquireRefreshLock(lock, pid, { guardWaitMs: 50 })) holders.add(pid);
+          }
+        },
+      });
+      if (acquired) holders.add(first);
+      expect([...holders]).toEqual([first]);
+      expect(JSON.parse(fs.readFileSync(lock, "utf-8")).pid).toBe(first);
+      expect(fs.existsSync(`${lock}.guard`)).toBe(false);
+    });
+
+    it("waits out a live guard and reclaims a dead one", () => {
+      const lock = path.join(tempDir, "state", "x.lock");
+      fs.mkdirSync(path.dirname(lock), { recursive: true });
+      fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
+      fs.writeFileSync(`${lock}.guard`, JSON.stringify({ pid: process.ppid, hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
+      expect(tryAcquireRefreshLock(lock, process.pid, { guardWaitMs: 50 })).toBe(false);
+      expect(JSON.parse(fs.readFileSync(lock, "utf-8")).pid).not.toBe(process.pid);
+      fs.writeFileSync(`${lock}.guard`, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
+      expect(tryAcquireRefreshLock(lock, process.pid, { guardWaitMs: 50 })).toBe(true);
+      expect(fs.existsSync(`${lock}.guard`)).toBe(false);
+    });
+
     it("keeps a lock whose owner runs", () => {
       const lock = path.join(tempDir, "state", "x.lock");
       expect(tryAcquireRefreshLock(lock, process.pid)).toBe(true);
@@ -327,14 +359,15 @@ describe("post-checkout hook", () => {
       expect(notifications).toHaveLength(1);
       expect(notifications[0][0]).toBe("notifier");
       expect(notifications[0][1]).toBe("Worth a cleanup: stale");
-      expect(notifications[0][2]).toContain("20 catalogs of deleted branches or worktrees. Run: ocbi prune --apply --host codex --project");
+      expect(notifications[0][2]).toContain(`20 catalogs of deleted branches or worktrees. Run: ${process.execPath} `);
+      expect(notifications[0][2]).toContain(" prune --apply --host codex --project");
       await run({}, Date.now());
       expect(counts).toBe(1);
       await run({ OCBI_STALE_THRESHOLD: "50" }, Date.now() + 25 * 60 * 60 * 1000);
       expect(counts).toBe(2);
       expect(notifications).toHaveLength(1);
       const log = fs.readFileSync(getCheckoutStatePaths(commonDir, repo).log, "utf-8");
-      expect(log).toMatch(/^== stale check: 20 catalogs of deleted branches or worktrees; remove them with: ocbi prune --apply/m);
+      expect(log).toMatch(/^== stale check: 20 catalogs of deleted branches or worktrees; remove them with: \S+ \S+ prune --apply/m);
     });
   });
 });

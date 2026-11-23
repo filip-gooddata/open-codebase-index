@@ -213,15 +213,43 @@ describe("hook file install", () => {
     expect(fs.readFileSync(path.join(hooks, "post-checkout"), "utf-8")).toBe("#!/bin/sh\n");
   });
 
-  it("refuses a hook file when core.hooksPath is set, relative or absolute", () => {
+  it("uses a repository-private core.hooksPath and refuses a shared one", () => {
     const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
+    git(repo.repo, "config", "--local", "core.hooksPath", ".repo-hooks");
+    const privateHooks = path.join(repo.repo, ".repo-hooks");
+    fs.mkdirSync(privateHooks);
+    fs.writeFileSync(path.join(privateHooks, "post-checkout"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false });
+    expect(result.actions.join("\n")).toContain(`moved the existing hook to ${path.join(privateHooks, CHAINED_HOOK_NAME)}`);
+    expect(result.warnings.join("\n")).toContain("is inside the working tree");
+    expect(getPostCheckoutHookStatus(repo, CBI, false)).toMatchObject({ installed: true, file: { path: path.join(privateHooks, "post-checkout") } });
+    uninstallPostCheckoutHook(repo);
+    expect(fs.readFileSync(path.join(privateHooks, "post-checkout"), "utf-8")).toBe("#!/bin/sh\nexit 0\n");
+
+    const inGitDir = path.join(repo.commonDir, "custom-hooks");
+    git(repo.repo, "config", "--local", "core.hooksPath", inGitDir);
+    expect(installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false }).warnings).toEqual([]);
+    expect(fs.existsSync(path.join(inGitDir, "post-checkout"))).toBe(true);
+    uninstallPostCheckoutHook(repo);
+
     const shared = path.join(tempDir, "shared-hooks");
-    for (const hooksPath of [".husky/_", shared]) {
-      git(repo.repo, "config", "--local", "core.hooksPath", hooksPath);
-      expect(() => installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false })).toThrow(/other repositories or worktrees may share it/);
-    }
+    git(repo.repo, "config", "--local", "core.hooksPath", shared);
+    expect(() => installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false })).toThrow(/outside this repository/);
     expect(fs.existsSync(shared)).toBe(false);
     expect(uninstallPostCheckoutHook(repo).changed).toBe(false);
+  });
+
+  it("parks and restores a hook symlink whose target is missing", () => {
+    const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
+    const hooks = path.join(repo.commonDir, "hooks");
+    fs.mkdirSync(hooks, { recursive: true });
+    const target = path.join(tempDir, "elsewhere", "post-checkout");
+    fs.symlinkSync(target, path.join(hooks, "post-checkout"));
+    const result = installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false });
+    expect(result.actions.join("\n")).toContain("moved the existing hook");
+    expect(fs.readlinkSync(path.join(hooks, CHAINED_HOOK_NAME))).toBe(target);
+    uninstallPostCheckoutHook(repo);
+    expect(fs.readlinkSync(path.join(hooks, "post-checkout"))).toBe(target);
   });
 
   it("refuses the config method on a git without config-based hooks", () => {
@@ -262,6 +290,7 @@ describe("ocbi hooks CLI", () => {
 describe("post-checkout through git", () => {
   let server: Server;
   let baseUrl: string;
+  let held: Array<() => void> | null = null;
 
   beforeAll(async () => {
     if (!fs.existsSync(CBI)) throw new Error("dist/cbi.js is missing; run npm run build:ts first");
@@ -276,8 +305,12 @@ describe("post-checkout through git", () => {
           index,
           embedding: Array.from({ length: 8 }, (_, dimension) => ((input.length + dimension * 17) % 97) / 97),
         }));
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ data, usage: { total_tokens: inputs.length } }));
+        const respond = () => {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ data, usage: { total_tokens: inputs.length } }));
+        };
+        if (held) held.push(respond);
+        else respond();
       });
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -321,9 +354,18 @@ describe("post-checkout through git", () => {
       writeRepositoryConfig(commonDir);
       install(repo, method);
 
-      const started = Date.now();
-      git(repo, "checkout", "-q", "-b", "feature");
-      expect(Date.now() - started).toBeLessThan(10_000);
+      const { lock } = getCheckoutStatePaths(commonDir, repo);
+      held = [];
+      const pending = held;
+      try {
+        git(repo, "checkout", "-q", "-b", "feature");
+        // git is back while the refresh still waits for its embeddings.
+        await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0), { timeout: 30_000, interval: 50 });
+        expect(fs.existsSync(lock)).toBe(true);
+      } finally {
+        held = null;
+        for (const respond of pending.splice(0)) respond();
+      }
       const log = await waitForRefresh(commonDir, repo);
       expect(log).toMatch(new RegExp(`^== \\S+ ${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} feature [0-9a-f]+$`, "m"));
       expect(log).toMatch(/^== exit 0 /m);

@@ -1,8 +1,8 @@
+import type { HostMode } from "../config/host.js";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { HostMode } from "../config/host.js";
 import { getRepositoryConfigPath } from "../config/repository-route.js";
 import { getPostCheckoutStateDir, scrubGitRepositoryEnv } from "./post-checkout-hook.js";
 
@@ -169,29 +169,47 @@ exit $status
 export interface HookFileLocation {
   dir: string;
   file: string;
-  /** Set when `core.hooksPath` points git elsewhere; a relative one is per worktree. */
+  /** `core.hooksPath` when set. */
   hooksPath: string | null;
   error: string | null;
+  warnings: string[];
+}
+
+/** True for a directory entry, including a symbolic link whose target is missing. */
+function entryExists(file: string): boolean {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isInside(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 /**
- * The `post-checkout` file git runs for the repository. With `core.hooksPath` set, git runs hooks
- * only from there, a directory other repositories (or each worktree, when relative) may share, so
- * installing or removing a file there could change their hooks: that case is refused.
+ * The `post-checkout` file git runs for the repository: `git rev-parse --git-path hooks`, which
+ * honours `core.hooksPath`. A hooks path outside the repository's git dir and working tree may be
+ * shared by other repositories, so installing or removing a file there is refused.
  */
 export function resolveHookFileLocation(repository: HookRepository): HookFileLocation {
   const configured = git(repository.repo, ["config", "--get", "core.hooksPath"]);
-  const hooksPath = configured.status === 0 ? configured.stdout.trim() : "";
-  if (hooksPath) {
-    return {
-      dir: "",
-      file: "",
-      hooksPath,
-      error: `core.hooksPath is ${hooksPath}; git runs hooks only from there, and other repositories or worktrees may share it. Use a git with config-based hooks, or call \`ocbi hook post-checkout "$@"\` from that hook yourself.`,
-    };
+  const hooksPath = configured.status === 0 ? configured.stdout.trim() || null : null;
+  const dir = realpathOrResolve(gitOk(repository.repo, ["rev-parse", "--path-format=absolute", "--git-path", "hooks"]).trim());
+  const location: HookFileLocation = { dir, file: path.join(dir, "post-checkout"), hooksPath, error: null, warnings: [] };
+  if (hooksPath === null) return location;
+
+  const topLevel = repository.bare ? null : realpathOrResolve(gitOk(repository.repo, ["rev-parse", "--show-toplevel"]).trim());
+  if (isInside(dir, repository.commonDir)) return location;
+  if (!(topLevel !== null && isInside(dir, topLevel))) {
+    location.error = `core.hooksPath is ${hooksPath} (${dir}), outside this repository, so other repositories may share it. Use a git with config-based hooks, or call \`ocbi hook post-checkout "$@"\` from that hook yourself.`;
+    return location;
   }
-  const dir = path.join(repository.commonDir, "hooks");
-  return { dir, file: path.join(dir, "post-checkout"), hooksPath: null, error: null };
+  location.warnings.push(`core.hooksPath ${hooksPath} is inside the working tree ${topLevel}: other worktrees use their own copy of it, and the managed hook shows up there as a working-tree change.`);
+  return location;
 }
 
 interface ConfigHookEntry {
@@ -236,7 +254,7 @@ function removeManagedHookFile(location: HookFileLocation): string[] {
   const actions = [`removed managed hook ${location.file}`];
   const chained = path.join(location.dir, CHAINED_HOOK_NAME);
   fs.rmSync(location.file, { force: true });
-  if (fs.existsSync(chained)) {
+  if (entryExists(chained)) {
     fs.renameSync(chained, location.file);
     actions.push(`restored the earlier hook from ${chained}`);
   }
@@ -316,9 +334,9 @@ function installHookFile(repository: HookRepository, spec: HookCommandSpec): Hoo
   const script = managedHookScript(spec);
   fs.mkdirSync(location.dir, { recursive: true });
   const existing = readFileOrNull(location.file);
-  const foreign = fs.existsSync(location.file) && !isManagedHookFile(location.file);
+  const foreign = entryExists(location.file) && !isManagedHookFile(location.file);
   const chained = path.join(location.dir, CHAINED_HOOK_NAME);
-  if (foreign && fs.existsSync(chained)) {
+  if (foreign && entryExists(chained)) {
     throw new Error(`${location.file} is not managed by ocbi and ${chained} already exists; move one of them before installing.`);
   }
   if (foreign || existing !== script) {
@@ -343,7 +361,7 @@ function installHookFile(repository: HookRepository, spec: HookCommandSpec): Hoo
     actions.push(`made ${location.file} executable`);
   }
   if (removeConfigHook(repository)) actions.push(`removed hook.${HOOK_CONFIG_NAME} from the git config`);
-  return { method: "file", changed: actions.length > 0, actions, warnings: [] };
+  return { method: "file", changed: actions.length > 0, actions, warnings: [...location.warnings] };
 }
 
 export function installPostCheckoutHook(repository: HookRepository, options: HookInstallOptions): HookInstallResult {
@@ -433,14 +451,14 @@ export function getPostCheckoutHookStatus(
     : { ...entry, report: entry.command === null ? null : describeHookCommand(entry.command, currentEntryScript) };
   const location = resolveHookFileLocation(repository);
   let file: HookStatus["file"] = null;
-  if (!location.error && fs.existsSync(location.file)) {
+  if (!location.error && entryExists(location.file)) {
     const managed = isManagedHookFile(location.file);
     const chained = path.join(location.dir, CHAINED_HOOK_NAME);
     const command = managed ? commandFromManagedFile(location.file) : null;
     file = {
       path: location.file,
       managed,
-      chained: fs.existsSync(chained) ? chained : null,
+      chained: entryExists(chained) ? chained : null,
       report: command === null ? null : describeHookCommand(command, currentEntryScript),
     };
   }

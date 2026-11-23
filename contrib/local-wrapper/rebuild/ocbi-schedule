@@ -137,6 +137,10 @@ uninstall_jobs() {
     # systemctl enable links the timer in the persistent user configuration directory, which is not
     # --systemd-dir when the units live elsewhere on the user unit path.
     for f in "$systemd_dir" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; do
+      # A directory on the way that cannot be searched hides the link from [ -L ].
+      for d in "$f" "$f/timers.target.wants"; do
+        [ ! -e "$d" ] || [ -x "$d" ] || die "cannot search $d for the timer's enablement link; kept the units, rerun uninstall"
+      done
       f="$f/timers.target.wants/ocbi-check.timer"
       [ -L "$f" ] || continue
       rm -f "$f" 2>/dev/null && [ ! -L "$f" ] || die "cannot remove $f; kept the units, rerun uninstall"

@@ -14,7 +14,7 @@ trap 'rm -rf "$T"' EXIT
 
 export HOME="$T/home"
 mkdir -p "$HOME"
-unset OCBI_HOME XDG_DATA_HOME GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+unset OCBI_HOME XDG_DATA_HOME XDG_CONFIG_HOME GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$T/gitconfig"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
@@ -631,6 +631,10 @@ if [ "$(id -u)" != 0 ]; then
   XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
   expect_eq "schedule uninstall keeps the units when an enablement link cannot be removed" "1 present present" \
     "$? $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent)"
+  chmod 000 "$XC/systemd/user/timers.target.wants"
+  XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
+  expect_eq "schedule uninstall keeps the units when it cannot search for an enablement link" "1 present" \
+    "$? $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent)"
   chmod 755 "$XC/systemd/user/timers.target.wants"
 else
   skip "schedule uninstall keeps the units when an enablement link cannot be removed" "root ignores directory permissions"

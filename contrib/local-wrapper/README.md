@@ -41,7 +41,9 @@ contrib/local-wrapper/install.sh --pieces hook,rebuild           # a subset
 
 `OCBI_HOME` defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/ocbi`; `--home`, `--bin-dir`,
 `--marketplace-dir`, `--launch-agents-dir`, `--label` and `--node` override the destinations and
-the Node.js the pieces run. Reruns are idempotent. The installer never writes a repository config,
+the Node.js the pieces run. The package is installed first, and the hook, plugin and rebuild are
+placed only next to a package with the repository config (gd.7) and `--allow-shared-rebuild`
+(gd.6). Reruns are idempotent. The installer never writes a repository config,
 and never registers anything with Claude Code, Codex, git or launchd: it prints those commands for
 you to run. It removes only the plugin's session-hint hook of earlier versions; their other files
 in `$OCBI_HOME` stay until you remove them as the migration describes. `install.sh --help` lists

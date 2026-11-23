@@ -12,8 +12,9 @@
 # the background, so its branch catalog in the shared store is warm before agent sessions query
 # it. File checkouts ($3 = 0) and rebases are skipped. One refresh per worktree at a time; a
 # checkout during a running refresh queues exactly one more pass.
-# Without a repository config the hook does nothing but log that, so it never builds a
-# checkout-local index. After a refresh, at most once a day per repository, it counts the branch
+# Without a repository config, or when the package does not report the repository's store for
+# this checkout (a global scope, say), the hook does nothing but log that, so it never builds a
+# checkout-local or global index. After a refresh, at most once a day per repository, it counts the branch
 # catalogs `ocbi prune` would remove and, from OCBI_STALE_THRESHOLD (15) on, notifies through
 # $OCBI_HOME/ocbi-notify.sh when that is installed (OCBI_STALE_CHECK=0 turns this off).
 # The CLI runs with --host $OCBI_HOST (default claude). Logs:
@@ -71,16 +72,17 @@ stale_check() {
   local stamp repo stale
   stamp=$state/$(key "$common").stale-check
   [ -n "$(find "$stamp" -mmin -1440 2>/dev/null)" ] && return 0
-  touch "$stamp"
   repo=$(basename "$common")
   [ "$repo" = .git ] && repo=$(basename "$(dirname "$common")")
   stale=$("$node" "$cbi" prune --json --host "$host" --project "$root" 2>/dev/null |
     "$node" -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
       try { const n = JSON.parse(s).catalogs.length; if (Number.isInteger(n)) console.log(n); } catch {} });') || return 0
+  [ -n "$stale" ] || return 0
+  touch "$stamp"
   [ -n "$stale" ] && [ "$stale" -ge "${OCBI_STALE_THRESHOLD:-15}" ] || return 0
   echo "== $stale catalogs of deleted branches or worktrees"
   "$home/ocbi-notify.sh" "Worth a cleanup: $repo" \
-    "$stale catalogs of deleted branches or worktrees. Run ocbi prune --apply from $root." >/dev/null 2>&1
+    "$stale catalogs of deleted branches or worktrees. Run: $node $cbi prune --apply --project $root" >/dev/null 2>&1
 }
 
 (
@@ -89,6 +91,11 @@ stale_check() {
   while :; do
     rm -f "$again"
     echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $(git rev-parse --abbrev-ref HEAD 2>/dev/null) $(git rev-parse --short HEAD 2>/dev/null)"
+    store=$("$node" "$cbi" status --host "$host" --project "$root" 2>/dev/null | grep -E '^Store: ')
+    if ! printf '%s\n' "$store" | grep -qE '^Store: .* \((repository config |repository default store\))'; then
+      echo "== skipped: not the repository's shared store (${store:-no status})"
+      exit 0
+    fi
     nice -n 10 "$node" "$cbi" index --host "$host" --project "$root"
     echo "== exit $? $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ -e "$again" ] || break

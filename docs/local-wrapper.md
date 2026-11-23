@@ -43,9 +43,16 @@ What remains has a job the package does not do:
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
 The hook, the rebuild and the plugin run the Node.js that `install.sh` found (or `--node`), with
-`dist/cbi.js` or `dist/cli.js` from `$OCBI_HOME/pkg`. The hook and the rebuild do nothing in a
-repository without a repository config, so they never build a checkout-local index. They run the
-CLI with `--host claude`; set `OCBI_HOST` to change that.
+`dist/cbi.js` or `dist/cli.js` from `$OCBI_HOME/pkg`. `install.sh` installs the package first and
+refuses to place these pieces next to a package without the repository config (gd.7) or
+`--allow-shared-rebuild` (gd.6). Pick a stable Node.js path: a per-shell path such as fnm's
+`fnm_multishells` disappears with the shell, and the installer never picks one itself.
+
+The hook and the rebuild do nothing in a repository without a repository config. Before indexing
+they also ask the package (`ocbi status`) which store the checkout uses, and skip it unless that is
+the repository's store, so a `global` scope from some config layer never sends them to the global
+index. The rebuild forces only in a checkout the package reports as primary. They run the CLI with
+`--host claude`; set `OCBI_HOST` to change that.
 
 ## Host registration
 
@@ -95,19 +102,22 @@ profile. For each line `name|<git common dir>` of `$OCBI_HOME/projects.conf`:
    - `"storage": { "indexPath": "<OCBI_HOME>/<name>/claude-index" }`, so the existing store is
      reused and nothing is re-embedded;
    - `"checkouts"` with the role overrides from `repository-config.example.json`, which replace
-     `profiles.conf`;
-   - for a bare clone, `"checkouts": { "primary": { "path": "<primary checkout>" } }`, the checkout
-     its `profiles.conf` line named.
+     `profiles.conf`; for a bare clone, also `"path": "<primary checkout>"` in
+     `checkouts.primary`, the checkout its `profiles.conf` line named.
 
    Servers older than gd.7 ignore this file, so it can be written while they run.
-2. Upgrade the package and the pieces: `install.sh --package <gd.7 or later spec>`. This repoints
+2. Note the time, then upgrade the package and the pieces:
+   `install.sh --package <gd.7 or later spec>`. This repoints
    the Claude Code plugin at `dist/cli.js` and removes its session-hint hook. If Claude Code keeps
    starting `ocbi-mcp.sh`, update the `ocbi-local` marketplace and the plugin from `/plugin`.
 3. Point the Codex registration at `dist/cli.js --host codex`, as `install.sh` prints it.
 4. Restart the agent sessions, so every server comes from the new package.
-5. Check from a few worktrees: `<node> <OCBI_HOME>/pkg/node_modules/open-codebase-index/dist/cbi.js status --host claude`
-   prints `Store: <OCBI_HOME>/<name>/claude-index (repository config ...)` and the checkout's role,
-   with no `Warning:` line.
+5. Check the primary and a few other worktrees, with `--host claude` and `--host codex`:
+   `<node> <OCBI_HOME>/pkg/node_modules/open-codebase-index/dist/cbi.js status --host <host>`
+   prints `Store: <OCBI_HOME>/<name>/claude-index (repository config ...)` and the expected
+   checkout role, with no `Warning:` line. The two hosts read different global configs
+   (`~/.claude/codebase-index.json` and `~/.config/codebase-index/config.json`); move any setting
+   Codex relied on from the former into the repository config.
 
 Leave the old files alone until no pre-gd.7 process remains: the `.claude/index` and
 `.claude/codebase-index.json` links in every worktree, `$OCBI_HOME/ocbi-mcp.sh`, `projects.conf`,
@@ -126,16 +136,19 @@ Leave the old files alone until no pre-gd.7 process remains: the `.claude/index`
 
 The links can go once no server or CLI process started from a pre-gd.7 package remains on the
 machine. Every such process started before the upgrade, so compare
-`ps -eo pid,lstart,command | grep -E 'open-codebase-index/dist/(cli|cbi)\.js'` with the time of
-step 2 (the modification time of `$OCBI_HOME/pkg/node_modules/open-codebase-index/package.json`).
-Restarting every agent session after step 2 gets there. Then:
+`ps -eo pid,lstart,command | grep -E 'open-codebase-index/dist/(cli|cbi)\.js'` with the time noted
+in step 2. Restarting every agent session after step 2 gets there. Then:
 
 - in every worktree, remove `.claude/index` and `.claude/codebase-index.json` where they are
   symlinks into `$OCBI_HOME` (`find <worktree>/.claude -maxdepth 1 -type l -lname "<OCBI_HOME>/*"`),
   and optionally their lines in `<git common dir>/info/exclude`;
-- remove `$OCBI_HOME/ocbi-mcp.sh`, `projects.conf`, `profiles.conf`, the `*.example` files, and in
-  each `$OCBI_HOME/<name>/` the `codebase-index.json`, `profiles/`, `parked/` and
-  `stale-check.stamp`. Keep `claude-index/`: the repository config points at it.
+- once no session uses an old registration either, remove `$OCBI_HOME/ocbi-mcp.sh`,
+  `projects.conf`, `profiles.conf`, the `*.example` files, and in each `$OCBI_HOME/<name>/` the
+  `codebase-index.json`, `profiles/` and `stale-check.stamp`. Keep `claude-index/`: the
+  repository config points at it.
+- `$OCBI_HOME/<name>/parked/` holds files the launcher moved out of the way of a link. Each
+  `parked/<stamp>/origin` names where its file came from; restore or keep what you still need
+  before deleting anything there.
 
 ## Settings that matter
 
@@ -171,8 +184,9 @@ Restarting every agent session after step 2 gets there. Then:
   version until its session restarts.
 - A store with hundreds of branch catalogs grows to gigabytes. `ocbi prune` (a dry run unless
   `--apply`) removes catalogs of branches with no worktree; see
-  [Human CLI](installation.md#human-cli). The hook's daily check notifies past
-  `OCBI_STALE_THRESHOLD` (15) when the `notify` piece is installed.
+  [Human CLI](installation.md#human-cli); with the bundle's install, run it as
+  `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js prune`. The hook's daily
+  check notifies past `OCBI_STALE_THRESHOLD` (15) when the `notify` piece is installed.
 - git exports `GIT_DIR` and related variables to hooks. The hook clears them before it runs the
   CLI, which would otherwise describe the hook's repository view instead of the checkout.
 

@@ -16,7 +16,8 @@
 #   --launch-agents-dir D  default: $HOME/Library/LaunchAgents (macOS only)
 #   --label LABEL        launchd label (default: io.github.open-codebase-index.rebuild)
 #   --node PATH          Node.js >= 22 the plugin, hook and rebuild run (default: $OCBI_NODE, else
-#                        the first node >= 22 on PATH or in the usual install locations)
+#                        the first node >= 22 of the fnm default alias, Homebrew, /usr/local,
+#                        /usr/bin and PATH; a per-shell fnm path is never chosen, it goes away)
 #   --package SPEC       npm spec for the pkg piece: a release tarball URL, a local .tgz, or a
 #                        registry name such as open-codebase-index@<version>. Adds pkg to --pieces.
 #   --dry-run            print what would change, change nothing
@@ -66,9 +67,10 @@ nl='
 '
 node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null; }
 if [ -z "$node" ]; then
-  for candidate in "$(command -v node 2>/dev/null)" "$HOME/.local/share/fnm/aliases/default/bin/node" \
-    /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-    [ -n "$candidate" ] && [ -x "$candidate" ] && [ "$(node_major "$candidate" || echo 0)" -ge 22 ] && { node="$candidate"; break; }
+  for candidate in "$HOME/.local/share/fnm/aliases/default/bin/node" /opt/homebrew/bin/node \
+    /usr/local/bin/node /usr/bin/node "$(command -v node 2>/dev/null)"; do
+    case "$candidate" in "" | */fnm_multishells/*) continue ;; esac
+    [ -x "$candidate" ] && [ "$(node_major "$candidate" || echo 0)" -ge 22 ] && { node="$candidate"; break; }
   done
   [ -n "$node" ] || die "no Node.js >= 22 found; pass --node PATH"
 else
@@ -217,12 +219,28 @@ install_pkg() {
   done
 }
 
+# The hook, plugin and rebuild need a package with the repository config (gd.7) and the shared
+# rebuild override (gd.6). Checked before any of them is placed; a package that is not installed
+# yet only gets the reminder at the end.
+check_pkg() {
+  local dist="$home/pkg/node_modules/open-codebase-index/dist"
+  has_piece hook || has_piece plugin || has_piece rebuild || return 0
+  [ -f "$dist/cbi.js" ] || return 0
+  grep -qs -- --allow-shared-rebuild "$dist/cbi.js" && grep -rqs --include='*.js' 'checkouts.primary.path' "$dist" ||
+    die "the package in $home/pkg predates the repository config (gd.7) or --allow-shared-rebuild (gd.6); rerun with --package <gd.7 or later spec>; nothing else was installed"
+}
+
 install_selected() {
+  if [ "$preflight" = 1 ]; then
+    if has_piece pkg; then install_pkg; else check_pkg; fi
+  else
+    has_piece pkg && install_pkg
+    [ "$dry_run" = 1 ] || check_pkg
+  fi
   has_piece hook && install_hook
   has_piece plugin && install_plugin
   has_piece rebuild && install_rebuild
   has_piece notify && install_notify
-  has_piece pkg && install_pkg
   return 0
 }
 

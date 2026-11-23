@@ -46,6 +46,7 @@ node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 
 [ "$node_major" -ge 22 ] || { echo "Bail out! node >= 22 is required (found ${node_major})"; exit 1; }
 
 NODE="$(command -v node)"
+export OCBI_NODE="$NODE"
 
 # --- static checks -------------------------------------------------------------------------------
 scripts=("$here/install.sh" "$here/hook/ocbi-post-checkout.sh"
@@ -140,11 +141,13 @@ expect_eq "install refuses a directory at a destination and writes nothing" "2 a
 # it is a prune,
 #   CBI <args> cwd=<cwd> git_dir=<GIT_DIR or unset>
 # then runs JS, which sees argv (the arguments), calls (the calls file so far) and sleep(ms). It
-# answers `prune --json` with HOME/prune-count catalogs.
+# answers `prune --json` with HOME/prune-count catalogs and `status --project P` with
+# HOME/status-<basename P>, else HOME/status (default: a primary on the repository store). It carries the markers install.sh probes for.
 stub_cbi() {
   local d="$1/pkg/node_modules/open-codebase-index/dist"
   mkdir -p "$d"
   cat >"$d/cbi.js" <<EOF
+// --allow-shared-rebuild checkouts.primary.path
 const fs = require("fs"), path = require("path");
 const home = path.resolve(__dirname, "../../../..");
 const argv = process.argv.slice(2);
@@ -158,9 +161,28 @@ if (argv[0] === "prune") {
   try { n = Number(fs.readFileSync(path.join(home, "prune-count"), "utf8")); } catch {}
   console.log(JSON.stringify({ applied: false, catalogs: Array.from({ length: n }, (_, i) => ({ key: "gone" + i })) }));
 }
+if (argv[0] === "status") {
+  let st = "Store: /shared (repository config /c/codebase-index/config.json)\\nCheckout role: primary - test";
+  const project = argv[argv.indexOf("--project") + 1] ?? "";
+  for (const f of ["status-" + path.basename(project), "status"]) {
+    try { st = fs.readFileSync(path.join(home, f), "utf8"); break; } catch {}
+  }
+  console.log(st);
+}
 ${2:-}
 EOF
 }
+
+# install.sh probes an installed package before placing the pieces that call it.
+OP="$T/oldpkg"
+mkdir -p "$OP/pkg/node_modules/open-codebase-index/dist"
+printf 'process.exit(0);\n' >"$OP/pkg/node_modules/open-codebase-index/dist/cbi.js"
+bash "$here/install.sh" --pieces hook,rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
+expect_eq "install refuses a pre-gd.7 package and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-post-checkout.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
+expect_match "install names the package upgrade" "predates the repository config" "$(cat "$T/oldpkg.out")"
+stub_cbi "$OP"
+bash "$here/install.sh" --pieces hook --home "$OP" >/dev/null 2>&1
+expect_eq "install accepts a package with both markers" "0 present" "$? $([ -x "$OP/ocbi-post-checkout.sh" ] && echo present || echo absent)"
 
 # --- repositories --------------------------------------------------------------------------------
 R="$T/src/demo"
@@ -220,6 +242,13 @@ wait_unlocked
 (cd "$W" && OCBI_HOST=codex bash "$S/ocbi-post-checkout.sh" old new 1)
 if wait_for "$log" '^CBI index --host codex'; then ok "hook honours OCBI_HOST"; else not_ok "hook honours OCBI_HOST" "$(cat "$log")"; fi
 wait_unlocked
+printf 'Store: /g/global-index (global scope)\n' >"$S/status"
+before="$(grep -c '^CBI index' "$log")"
+(cd "$W" && bash "$S/ocbi-post-checkout.sh" old new 1)
+wait_unlocked
+expect_eq "hook indexes nothing when the package reports another store" "$before" "$(grep -c '^CBI index' "$log")"
+expect_match "hook logs why it skipped" "skipped: not the repository's shared store \\(Store: .* \\(global scope\\)\\)" "$(cat "$log")"
+rm -f "$S/status"
 # The stale-catalog check: notifies at the threshold, at most once a day per repository.
 printf '#!/usr/bin/env bash\nprintf "%%s|" "$@" >>"%s/notified"\n' "$T" >"$S/ocbi-notify.sh"
 chmod +x "$S/ocbi-notify.sh"
@@ -227,7 +256,7 @@ printf '2\n' >"$S/prune-count"
 (cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
 wait_unlocked
 expect_match "stale check runs a dry-run prune of the checkout" "^CBI prune --json --host claude --project $W " "$(cat "$S/calls")"
-expect_match "stale check notifies at the threshold" "^Worth a cleanup: demo\\|2 catalogs of deleted branches or worktrees\\. Run ocbi prune --apply from $W\\.\\|$" "$(cat "$T/notified" 2>/dev/null)"
+expect_match "stale check notifies at the threshold" "^Worth a cleanup: demo\\|2 catalogs of deleted branches or worktrees\\. Run: $NODE $S/pkg/node_modules/open-codebase-index/dist/cbi.js prune --apply --project $W\\|$" "$(cat "$T/notified" 2>/dev/null)"
 rm -f "$T/notified"
 (cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
 wait_unlocked
@@ -303,7 +332,7 @@ RB="$T/rebuildhome"
 mkdir -p "$RB"
 cp "$H/ocbi-rebuild.sh" "$RB/"
 stub_cbi "$RB"
-calls() { grep '^CBI' "$RB/calls" 2>/dev/null; }
+calls() { grep '^CBI index' "$RB/calls" 2>/dev/null; }
 OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" "$W"
 expect_eq "rebuild exits 0" 0 "$?"
 expect_eq "rebuild forces the primary (the main worktree), then indexes each other worktree" \
@@ -345,6 +374,34 @@ stub_cbi "$RB" 'if (!argv.includes("--force")) process.exit(1);'
 : >"$RB/calls"
 OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=0 bash "$RB/ocbi-rebuild.sh" "$R"
 expect_eq "rebuild retries a failing worktree once and fails" "1 2" "$? $(calls | grep -c "cwd=$W ")"
+# The route is checked before forcing: a secondary or a global scope forces nothing.
+stub_cbi "$RB"
+printf 'Store: /shared (repository default store)\nCheckout role: secondary - configured primary is /elsewhere\n' >"$RB/status"
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=30 bash "$RB/ocbi-rebuild.sh" "$R"
+expect_eq "rebuild of a primary the package calls secondary indexes nothing" "1 0" "$? $(calls | grep -c .)"
+printf 'Store: /g (global scope)\n' >"$RB/status"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=30 bash "$RB/ocbi-rebuild.sh" "$R"
+expect_eq "rebuild under a global scope indexes nothing" "1 0" "$? $(calls | grep -c .)"
+# shellcheck disable=SC2012 # names are rebuild-<timestamp>.log
+expect_match "rebuild names the wrong store" "does not use the repository's shared store \\(Store: /g \\(global scope\\)\\)" "$(cat "$(ls -1t "$RB"/logs/rebuild-*.log | head -n 1)")"
+# A worktree that reports another store than the primary is skipped and reported, not indexed.
+rm -f "$RB/status"
+printf 'Store: /other (repository default store)\nCheckout role: secondary - test\n' >"$RB/status-demo-feature"
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=0 bash "$RB/ocbi-rebuild.sh" "$R"
+expect_eq "rebuild skips a worktree on another store and fails" "1 1 0" "$? $(calls | grep -c -- '--force') $(calls | grep -c "cwd=$W ")"
+rm -f "$RB/status-demo-feature"
+# The configured primary must be a checkout root of this repository.
+printf '{ "checkouts": { "primary": { "path": "%s" } } }\n' "$NR" >"$R/.git/codebase-index/config.json"
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" "$R" 2>/dev/null
+expect_eq "rebuild refuses a primary from another repository" "64 0" "$? $(calls | grep -c .)"
+mkdir -p "$R/sub"
+printf '{ "checkouts": { "primary": { "path": "%s/sub" } } }\n' "$R" >"$R/.git/codebase-index/config.json"
+OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" "$R" 2>/dev/null
+expect_eq "rebuild refuses a primary that is not a checkout root" "64 0" "$? $(calls | grep -c .)"
+printf '{}\n' >"$R/.git/codebase-index/config.json"
 # Bare-base layout: the primary comes from checkouts.primary.path, relative to the common dir.
 stub_cbi "$RB"
 B="$T/src/bare.git"

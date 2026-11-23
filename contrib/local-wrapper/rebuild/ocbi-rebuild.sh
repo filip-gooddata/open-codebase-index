@@ -51,13 +51,20 @@ MAIN_WORKTREE="$(cd "$COMMON_DIR" && "$NODE" -e '
   console.log(path.resolve(p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p));' -- "$CONFIG" 2>/dev/null)" ||
   { echo "cannot read $CONFIG" >&2; exit 64; }
 if [ -z "$MAIN_WORKTREE" ]; then
-  if [ "$(basename "$COMMON_DIR")" != .git ]; then
+  if [ "$(basename "$COMMON_DIR")" != .git ] || [ "$(git --git-dir="$COMMON_DIR" config --bool core.bare 2>/dev/null)" = true ]; then
     echo "$COMMON_DIR is a bare-base layout; set checkouts.primary.path in $CONFIG to name its primary checkout" >&2
     exit 64
   fi
   MAIN_WORKTREE="$(dirname "$COMMON_DIR")"
 fi
 [ -d "$MAIN_WORKTREE" ] || { echo "the primary checkout $MAIN_WORKTREE does not exist" >&2; exit 64; }
+# The primary must be the root of a checkout of this same repository.
+MAIN_WORKTREE="$(cd "$MAIN_WORKTREE" && pwd -P)" || exit 64
+if [ "$(git -C "$MAIN_WORKTREE" rev-parse --show-toplevel 2>/dev/null)" != "$MAIN_WORKTREE" ] ||
+  [ "$(cd "$(git -C "$MAIN_WORKTREE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" != "$COMMON_DIR" ]; then
+  echo "the primary checkout $MAIN_WORKTREE is not the root of a checkout of $COMMON_DIR" >&2
+  exit 64
+fi
 NAME="$(basename "$MAIN_WORKTREE")"
 
 mkdir -p "$LOG_DIR"
@@ -91,11 +98,22 @@ cbi() {
   return "${PIPESTATUS[0]}"
 }
 
+# route WORKTREE: the Store and Checkout role lines the package reports for WORKTREE. A store that
+# is not the repository's (global scope, or no repository config) prints another Store line.
+route() {
+  (cd "$1" && "$NODE" "$CBI_JS" status --host "$HOST" --project "$1" 2>/dev/null) | grep -E '^(Store|Checkout role): '
+}
+repo_store() { printf '%s\n' "$1" | grep -E '^Store: .* \((repository config |repository default store\))'; }
+
 # The forced index drops every catalog, so agents in open sessions call index_codebase and their
 # MCP workers take the index lock for minutes at a time. Wait for them instead of skipping the
 # worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, any other failure once.
 index_worktree() {
   local worktree="$1" deadline=$(($(date +%s) + BUSY_WAIT_SECONDS)) retried=0
+  if [ "$(repo_store "$(route "$worktree")")" != "$STORE" ]; then
+    log "skipped $worktree: it does not report the store $STORE"
+    return 1
+  fi
   until cbi "$worktree" index; do
     if grep -q '^INDEX_BUSY: another index operation is already in progress' "$CBI_OUT"; then
       [ "$(date +%s)" -lt "$deadline" ] || return 1
@@ -141,6 +159,14 @@ fi
 started=$(date +%s)
 notify "Rebuild of $NAME started" "Search in agent sessions may wait or ask to retry until it ends."
 log "forced rebuild of $MAIN_WORKTREE"
+
+# Check the route right before forcing: the repository's store, project scope, primary role.
+main_route="$(route "$MAIN_WORKTREE")"
+STORE="$(repo_store "$main_route")"
+[ -n "$STORE" ] || fail "Nothing was rebuilt: $MAIN_WORKTREE does not use the repository's shared store (${main_route:-no status})."
+printf '%s\n' "$main_route" | grep -q '^Checkout role: primary - ' ||
+  fail "Nothing was rebuilt: the package does not treat $MAIN_WORKTREE as the primary checkout ($(printf '%s' "$main_route" | grep '^Checkout role: ' || echo 'no role'))."
+log "$STORE"
 
 # A session's auto-index can hold the index lock; give it a few chances to finish.
 rebuilt=0

@@ -138,7 +138,8 @@ place() {
     [ ! -d "$dest" ] || [ -L "$dest" ] || die "$dest is a directory; nothing was installed"
     local parent
     parent="$(dirname "$dest")"
-    while [ ! -e "$parent" ] && [ "$parent" != / ]; do parent="$(dirname "$parent")"; done
+    # Stop at the nearest path that exists or is a symlink; a dangling link blocks like a file.
+    while [ ! -e "$parent" ] && [ ! -L "$parent" ] && [ "$parent" != / ]; do parent="$(dirname "$parent")"; done
     [ -d "$parent" ] || die "$parent is not a directory, so $dest cannot be installed; nothing was installed"
     return 0
   fi
@@ -188,13 +189,13 @@ mcp_shim_marker='# ocbi-mcp of the package in '
 # is_own_mcp_shim DEST: DEST is a shim this installer rendered for this OCBI_HOME's package, also
 # when it was rendered with another spelling of the same directory (a symlink alias).
 is_own_mcp_shim() {
-  local target shim_home a b
+  local target shim_home
   [ -f "$1" ] && [ ! -L "$1" ] && grep -qF -- "$mcp_shim_marker" "$1" || return 1
   target="$(sed -n 's/^exec "[^"]*" "\(.*\)" "\$@"$/\1/p' "$1")"
   shim_home="${target%/pkg/node_modules/open-codebase-index/dist/cli.js}"
   [ -n "$target" ] && [ "$shim_home" != "$target" ] || return 1
-  [ "$shim_home" = "$home" ] && return 0
-  a="$(cd "$shim_home" 2>/dev/null && pwd -P)" && b="$(cd "$home" 2>/dev/null && pwd -P)" && [ "$a" = "$b" ]
+  # -ef compares the directories the kernel resolves (device and inode), not logical spellings.
+  [ "$shim_home" = "$home" ] || [ "$shim_home" -ef "$home" ]
 }
 install_mcp() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist" dest="$bin_dir/ocbi-mcp"

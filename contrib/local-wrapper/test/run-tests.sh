@@ -232,6 +232,24 @@ fake_pkg "$SH/a"
 out="$(bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SH/not-a-dir/bin" 2>&1)"
 expect_eq "a file blocking the bin dir is refused before any write" "2 absent" "$? $([ -e "$SH/a/ocbi-post-checkout.sh" ] && echo present || echo absent)"
 expect_match "the refusal names the blocking file" "$SH/not-a-dir is not a directory" "$out"
+# A home spelled through symlink/.. is the directory the kernel resolves, not the logical parent.
+mkdir -p "$SH/hb/x"; ln -sfn "$SH/hb/x" "$SH/a/lb"
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+fake_pkg "$SH/hb" nocli
+bash "$here/install.sh" --pieces mcp --home "$SH/a/lb/.." --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a refused install for another home spelled through symlink/.. keeps this home's shim" "2 present" "$? $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+# A dangling symlink among a destination's parents blocks like a file.
+ln -sfn "$SH/nowhere" "$SH/dangling"
+fake_pkg "$SH/a" nocli
+bash "$here/install.sh" --pieces mcp,rebuild --home "$SH/a" --bin-dir "$SB" --launch-agents-dir "$SH/dangling/la" >/dev/null 2>&1
+rc=$?
+if [ "$(uname -s)" = Darwin ]; then
+  expect_eq "a dangling link above the plist stops the install before the shim is retired" "2 present" "$rc $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+fi
+fake_pkg "$SH/a"; rm -f "$SH/a/ocbi-post-checkout.sh"
+out="$(bash "$here/install.sh" --pieces hook,mcp --home "$SH/a" --bin-dir "$SH/dangling/bin" 2>&1)"
+expect_eq "a dangling link above the bin dir is refused before the hook is written" "2 absent" "$? $([ -e "$SH/a/ocbi-post-checkout.sh" ] && echo present || echo absent)"
+expect_match "the refusal names the dangling link" "$SH/dangling is not a directory" "$out"
 # The destination is checked before anything is written, even when --package would make the shim eligible.
 mkdir -p "$T/dir-bin/ocbi-mcp"
 out="$(bash "$here/install.sh" --pieces mcp --package ./x.tgz --home "$T/dir-home" --bin-dir "$T/dir-bin" 2>&1)"

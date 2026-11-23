@@ -24,7 +24,7 @@ const current = getPackageVersion();
 
 describe("plugin version skew", () => {
   afterEach(() => {
-    for (const host of ["claude", "codex"] as const) {
+    for (const host of ["claude", "codex", "pi"] as const) {
       fs.rmSync(getPluginLaunchRecordPath(host), { force: true });
     }
   });
@@ -63,8 +63,12 @@ describe("plugin version skew", () => {
     expect(formatPluginVersionSkew("codex", {}, "1.0.0")).toContain(
       "the codebase-index plugin last started a codex server at 2026-01-02T03:04:05.000Z pinning 9.9.9-gd.99",
     );
-    // Hosts keep separate records, and the environment wins over the record.
+    // Hosts keep separate records, also where they share a config directory, and the
+    // environment wins over the record.
     expect(resolvePluginVersionPin("claude", {})).toBeNull();
+    expect(path.dirname(getPluginLaunchRecordPath("pi"))).toBe(path.dirname(getPluginLaunchRecordPath("codex")));
+    expect(resolvePluginVersionPin("pi", {})).toBeNull();
+    expect(formatPluginVersionSkew("pi", {}, "1.0.0")).toBeNull();
     expect(resolvePluginVersionPin("codex", { [PLUGIN_VERSION_ENV]: "1.0.0" })?.source).toBe("environment");
   });
 
@@ -73,6 +77,9 @@ describe("plugin version skew", () => {
     fs.mkdirSync(path.dirname(recordPath), { recursive: true });
     fs.writeFileSync(recordPath, "{not json");
     expect(formatPluginVersionSkew("claude", {})).toBeNull();
+    // A record that names another host is not this host's pin.
+    fs.writeFileSync(recordPath, JSON.stringify({ host: "codex", pluginVersion: "9.9.9-gd.99" }));
+    expect(resolvePluginVersionPin("claude", {})).toBeNull();
   });
 });
 

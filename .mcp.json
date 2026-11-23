@@ -4,7 +4,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "if command -v open-codebase-index-mcp >/dev/null 2>&1; then exec open-codebase-index-mcp \"$@\"; fi; exec npx -y --package 'https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.7/open-codebase-index-0.38.2-gd.7.tgz' open-codebase-index-mcp \"$@\"",
+        "if [ \"$OS\" = Windows_NT ]; then echo \"codebase-index: this plugin's launcher does not support Windows; register open-codebase-index-mcp directly in the host's MCP settings (docs/installation.md)\" >&2; exit 1; fi; if command -v open-codebase-index-mcp >/dev/null 2>&1; then exec open-codebase-index-mcp \"$@\"; fi; exec npx -y --package 'https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.7/open-codebase-index-0.38.2-gd.7.tgz' open-codebase-index-mcp \"$@\"",
         "open-codebase-index-mcp",
         "--host",
         "codex"

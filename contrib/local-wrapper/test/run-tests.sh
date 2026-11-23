@@ -51,7 +51,7 @@ export OCBI_NODE="$NODE"
 # --- static checks -------------------------------------------------------------------------------
 scripts=("$here/install.sh" "$here/hook/ocbi-post-checkout.sh"
   "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/notify/ocbi-notify.sh"
-  "$here/notify/notifier/build.sh" "$here/test/run-tests.sh")
+  "$here/notify/notifier/build.sh" "$here/mcp/open-codebase-index-mcp" "$here/test/run-tests.sh")
 for s in "${scripts[@]}"; do
   check "bash -n ${s#"$here"/}" bash -n "$s"
 done
@@ -104,8 +104,8 @@ for f in ocbi-post-checkout.sh ocbi-rebuild.sh ocbi-notify.sh; do
   check "installed executable $f" test -x "$H/$f"
 done
 check "installed ocbi-rebuild into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild"
-check "installed open-codebase-index-mcp into the bin dir" test -x "$HOME/.local/bin/open-codebase-index-mcp"
-check "open-codebase-index-mcp runs the package with the chosen node" grep -qF "exec \"$NODE\" \"$H/pkg/node_modules/open-codebase-index/dist/cli.js\" \"\$@\"" "$HOME/.local/bin/open-codebase-index-mcp"
+check "install places no open-codebase-index-mcp without a package" test ! -e "$HOME/.local/bin/open-codebase-index-mcp"
+expect_match "install says why it skipped the mcp piece" "skipped: no package in $H/pkg" "$out"
 expect_eq "install leaves an earlier version's launcher and projects.conf alone" "#!/bin/sh # mine" "$(cat "$H/ocbi-mcp.sh") $(cat "$H/projects.conf")"
 rm -f "$H/ocbi-mcp.sh" "$H/projects.conf"
 if grep -rq '@[A-Z_]*@' "$HOME/.local/bin" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$HOME/.local/bin" "$H")"; else ok "no template placeholders left"; fi
@@ -131,8 +131,18 @@ mkdir -p "$BO" && cp -R "$here" "$BO/local-wrapper"
 bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --launch-agents-dir "$BO/la" >/dev/null 2>&1
 expect_eq "install works from the bundle alone" 0 "$?"
 check "bundle-only install has the hook" test -x "$BO/home/ocbi-post-checkout.sh"
-mkdir -p "$BO/home/pkg/node_modules/open-codebase-index/dist"
-printf 'console.log(process.argv.slice(2).join(" "));\n' >"$BO/home/pkg/node_modules/open-codebase-index/dist/cli.js"
+# The mcp piece goes only in front of a package that runs and reports plugin version skew.
+BD="$BO/home/pkg/node_modules/open-codebase-index/dist"
+mkdir -p "$BD"
+printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$BD/cbi.js"
+printf '// checkouts.primary.path\nconsole.log(process.argv.slice(2).join(" "));\n' >"$BD/cli.js"
+printf '#!/bin/sh\necho mine\n' >"$BO/bin/open-codebase-index-mcp" && chmod 755 "$BO/bin/open-codebase-index-mcp"
+out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
+expect_match "install skips the mcp piece for a package without plugin version checks" "predates plugin version checks" "$out"
+expect_eq "a skipped mcp piece leaves the existing executable alone" "mine" "$("$BO/bin/open-codebase-index-mcp")"
+printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log(process.argv.slice(2).join(" "));\n' >"$BD/cli.js"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+check "open-codebase-index-mcp runs the package with the chosen node" grep -qF "exec \"$NODE\" \"$BD/cli.js\" \"\$@\"" "$BO/bin/open-codebase-index-mcp"
 expect_eq "open-codebase-index-mcp passes its arguments to the package's cli.js" "--host claude" "$(env PATH=/usr/bin:/bin "$BO/bin/open-codebase-index-mcp" --host claude)"
 bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
 expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"

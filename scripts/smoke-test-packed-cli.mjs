@@ -175,6 +175,17 @@ async function smokePluginLaunch(stageRoot, tarballPath, projectConfig, installe
         const skew = pluginVersion !== manifest.version;
         assert.equal(statusText.includes(`Warning: Version skew:`), skew, `${host} ${mode} status skew warning:\n${statusText}`);
         launches.push({ host, mode, initializeMs, server: client.getServerVersion(), tools: listed.tools.length, skewWarning: skew });
+        if (skew) {
+          // The server recorded the plugin's pin; a terminal `ocbi status` for the host reports it.
+          const terminal = spawnSync(path.join(installedBinDir, "ocbi"), ["status", "--host", host, "--project", projectRoot], {
+            cwd: projectRoot, encoding: "utf8",
+            env: { ...process.env, PATH: `${path.dirname(process.execPath)}:${systemPath}`, HOME: path.join(scratchRoot, `plugin-home-${host}`),
+              OCBI_PLUGIN_VERSION: "", NODE_PATH: "", NODE_OPTIONS: "" },
+          });
+          assert.equal(terminal.status, 0, `ocbi status --host ${host} failed:\n${terminal.stdout}\n${terminal.stderr}`);
+          assert.ok(terminal.stdout.includes(`Warning: Version skew: the codebase-index plugin last started a ${host} server`),
+            `ocbi status --host ${host} lacks the skew warning:\n${terminal.stdout}`);
+        }
       } catch (error) {
         throw new Error(`${host} ${mode} launch failed: ${error instanceof Error ? error.message : String(error)}\n${stderr}`);
       } finally {

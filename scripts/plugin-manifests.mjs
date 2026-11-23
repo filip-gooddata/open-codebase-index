@@ -30,7 +30,9 @@ export const PLUGIN_VERSION_ENV = "OCBI_PLUGIN_VERSION";
 /**
  * POSIX sh program the plugins run: the `open-codebase-index-mcp` on PATH when one is installed
  * (instant, offline), else this release's tarball through npx. npx needs `--package <spec> <bin>`
- * because the tarball declares several bins. Hosts without `sh` (Windows) fail to spawn it.
+ * because the tarball declares several bins. On Windows, where `sh` is usually missing and the
+ * release ships no native module, a POSIX shell such as Git for Windows' stops at the `$OS` check
+ * with directions instead. `$OS` stays unbraced: Claude Code expands `${...}` in server args.
  *
  * @param {{ product: { future: { mcpBinary: string } } }} catalog
  * @param {string} packageSpec
@@ -39,7 +41,9 @@ export const PLUGIN_VERSION_ENV = "OCBI_PLUGIN_VERSION";
 export function pluginLauncherScript(catalog, packageSpec) {
   const bin = catalog.product.future.mcpBinary;
   const quoted = `'${packageSpec.replace(/'/g, "'\\''")}'`;
-  return `if command -v ${bin} >/dev/null 2>&1; then exec ${bin} "$@"; fi; `
+  return `if [ "$OS" = Windows_NT ]; then echo "codebase-index: this plugin's launcher does not support Windows; `
+    + `register ${bin} directly in the host's MCP settings (docs/installation.md)" >&2; exit 1; fi; `
+    + `if command -v ${bin} >/dev/null 2>&1; then exec ${bin} "$@"; fi; `
     + `exec npx -y --package ${quoted} ${bin} "$@"`;
 }
 

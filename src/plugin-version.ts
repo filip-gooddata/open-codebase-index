@@ -13,7 +13,6 @@ import { getPackageVersion } from "./package-metadata.js";
  */
 export const PLUGIN_VERSION_ENV = "OCBI_PLUGIN_VERSION";
 
-const RECORD_FILE_NAME = "codebase-index-plugin-launch.json";
 
 export interface PluginLaunchRecord {
   host: HostMode;
@@ -28,9 +27,12 @@ export interface PluginVersionPin {
   recordedAt?: string;
 }
 
-/** Next to the host's global config, so `ocbi status` in a terminal finds what the plugin pinned. */
+/**
+ * Next to the host's global config, so `ocbi status` in a terminal finds what the plugin pinned.
+ * One file per host mode: Codex, Pi and Jcode share their global config directory.
+ */
 export function getPluginLaunchRecordPath(host: HostMode): string {
-  return path.join(path.dirname(getGlobalConfigPath(host)), RECORD_FILE_NAME);
+  return path.join(path.dirname(getGlobalConfigPath(host)), `codebase-index-plugin-launch.${host}.json`);
 }
 
 export function releaseTarballUrl(version: string): string {
@@ -74,6 +76,7 @@ function readLaunchRecord(host: HostMode): PluginLaunchRecord | null {
   if (!existsSync(recordPath)) return null;
   try {
     const parsed = JSON.parse(readFileSync(recordPath, "utf-8")) as Partial<PluginLaunchRecord>;
+    if (parsed.host !== host) return null;
     if (typeof parsed.pluginVersion !== "string" || parsed.pluginVersion.trim() === "") return null;
     return {
       host,

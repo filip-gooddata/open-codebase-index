@@ -182,13 +182,16 @@ describe.skipIf(process.platform === "win32")("plugin launcher", () => {
     fs.chmodSync(file, 0o755);
   }
 
-  function launch(host: "claude" | "codex"): { status: number | null; lines: string[]; stderr: string } {
+  function launch(
+    host: "claude" | "codex",
+    extraEnv: Record<string, string> = {},
+  ): { status: number | null; lines: string[]; stderr: string } {
     const entry = pluginServerEntry(IDENTITY_CATALOG, "1.2.3", host, url) as { command: string; args: string[] };
     // Only the stub directory and the system shell utilities, so no real install on the
     // developer's PATH takes part.
     const result = spawnSync(entry.command, entry.args, {
       encoding: "utf-8",
-      env: { PATH: `${binDir}:/usr/bin:/bin` },
+      env: { PATH: `${binDir}:/usr/bin:/bin`, ...extraEnv },
     });
     return { status: result.status, lines: result.stdout.trim().split("\n"), stderr: result.stderr };
   }
@@ -206,6 +209,16 @@ describe.skipIf(process.platform === "win32")("plugin launcher", () => {
       status: 0,
       lines: ["npx", "-y", "--package", url, "open-codebase-index-mcp", "--host", "codex"],
     });
+  });
+
+  it("stops with directions on Windows, even where a POSIX sh exists", () => {
+    stub("open-codebase-index-mcp");
+    stub("npx");
+    const result = launch("claude", { OS: "Windows_NT" });
+    expect(result.status).toBe(1);
+    expect(result.lines).toEqual([""]);
+    expect(result.stderr).toContain("this plugin's launcher does not support Windows");
+    expect(result.stderr).toContain("register open-codebase-index-mcp directly");
   });
 
   it("fails with the shell's not-found error when neither is available", () => {

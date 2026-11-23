@@ -175,8 +175,24 @@ install_hook() {
   place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh" render
 }
 
+# The plugins prefer an open-codebase-index-mcp on PATH to their pinned npx fallback, so place one
+# only in front of a package that can run and that reports a plugin version skew (it reads
+# OCBI_PLUGIN_VERSION). Otherwise leave the destination as it is.
 install_mcp() {
+  local dist="$home/pkg/node_modules/open-codebase-index/dist"
   say "mcp -> $bin_dir"
+  if [ "$preflight" = 0 ] && [ "$dry_run" = 1 ] && has_piece pkg; then
+    say "  would place  $bin_dir/open-codebase-index-mcp if $package reports plugin version skew"
+    return 0
+  fi
+  if [ ! -f "$dist/cli.js" ]; then
+    say "  skipped: no package in $home/pkg; the plugins fall back to npx until you rerun with --package"
+    return 0
+  fi
+  if ! grep -rqs --include='*.js' OCBI_PLUGIN_VERSION "$dist"; then
+    say "  skipped: the package in $home/pkg predates plugin version checks; rerun with --package <gd.9 or later spec>"
+    return 0
+  fi
   place 755 "$here/mcp/open-codebase-index-mcp" "$bin_dir/open-codebase-index-mcp" render
 }
 

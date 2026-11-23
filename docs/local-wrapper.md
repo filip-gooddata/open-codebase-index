@@ -33,15 +33,17 @@ Everything that linked worktrees to a store under `$OCBI_HOME` and picked their 
 `projects.conf`, `profiles.conf`, primary confirmation, the bare-clone pin, profile generation and
 its lock, `ocbi-mcp.sh` with `--link-only` and `--cbi`, and running Codex with `--host claude`.
 What remains has a job the package does not do. The Claude Code and Codex plugin is not part of
-the bundle: install it from the repository's marketplace, which starts the release tarball of the
-plugin's version through `npx` ([Installation and host setup](installation.md#claude-code)).
+the bundle. Install the server first, here with `install.sh --package <release tarball>` and the
+`mcp` piece below, then the plugin from the repository's marketplace. The plugin starts the
+`open-codebase-index-mcp` on `PATH` and falls back to `npx` of its release tarball only when there
+is none ([the plugin server](installation.md#server-for-the-claude-code-and-codex-plugins)).
 
 | Piece | Why it is still here |
 |---|---|
 | `hook` | A git `post-checkout` hook that indexes a new branch or worktree in the background, so a secondary checkout (which skips the startup index) is warm before an agent asks. Once a day per repository it also counts the catalogs `ocbi prune` would remove and notifies past a threshold. |
 | `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. |
 | `notify` | Desktop notifications for the hook and the rebuild. |
-| `mcp` | `open-codebase-index-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the Node.js `install.sh` found. The Claude Code and Codex plugins start the first `open-codebase-index-mcp` on `PATH`, so this gives them the pinned package, with no `npx` download and no network. |
+| `mcp` | `open-codebase-index-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the Node.js `install.sh` found. The Claude Code and Codex plugins start the first `open-codebase-index-mcp` on `PATH`, so this gives them the pinned package, with no `npx` download and no network. It is placed only in front of an installed package that reports plugin version skew (0.38.2-gd.9 or later); otherwise the installer says why it skipped it and leaves the bin dir alone. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
 The hook, `open-codebase-index-mcp` and the rebuild run the Node.js that `install.sh` found (or `--node`), with
@@ -58,7 +60,8 @@ index. The rebuild forces only in a checkout the package reports as primary. The
 
 ## Host registration
 
-**Claude Code.** Install the plugin from the repository marketplace:
+**Claude Code.** With the package and the `mcp` piece installed, install the plugin from the
+repository marketplace:
 
 ```bash
 claude plugin marketplace add filip-gooddata/open-codebase-index

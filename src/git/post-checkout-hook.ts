@@ -176,36 +176,65 @@ function highestLockGeneration(lockPrefix: string): number {
   return generations.length === 0 ? 0 : generations[generations.length - 1];
 }
 
-function readGenerationOwner(lockPrefix: string, generation: number): LockOwner | null {
+type GenerationState =
+  | { kind: "gone" }
+  | { kind: "unknown" }
+  | { kind: "owner"; owner: LockOwner | null };
+
+function readGeneration(lockPrefix: string, generation: number): GenerationState {
+  let content: string;
   try {
-    return parseLockOwner(fs.readFileSync(lockGenerationPath(lockPrefix, generation), "utf-8"));
-  } catch {
-    return null;
+    content = fs.readFileSync(lockGenerationPath(lockPrefix, generation), "utf-8");
+  } catch (error: unknown) {
+    return getErrorCode(error) === "ENOENT" ? { kind: "gone" } : { kind: "unknown" };
   }
+  return { kind: "owner", owner: parseLockOwner(content) };
+}
+
+function readGenerationOwner(lockPrefix: string, generation: number): LockOwner | null {
+  const state = readGeneration(lockPrefix, generation);
+  return state.kind === "owner" ? state.owner : null;
 }
 
 /**
- * A generation is held while its owner has not released it and runs on this host, or was written
- * on another host, whose processes cannot be checked. A generation that vanished or does not parse
- * is not held: it is created complete by link(2) and replaced whole by rename(2).
+ * Whether a generation is held: its owner has not released it and runs on this host, or was
+ * written on another host, whose processes cannot be checked. A file that cannot be read (a
+ * permission error, say) is held, since its owner may be live. Content that does not parse is
+ * free: link(2) creates generations complete and rename(2) replaces them whole, so it is
+ * corruption, not a writer mid-write. `gone` means the generation vanished since it was listed.
  */
-function isGenerationHeld(lockPrefix: string, generation: number): boolean {
-  const owner = readGenerationOwner(lockPrefix, generation);
-  if (!owner || owner.released) return false;
-  return owner.hostname !== os.hostname() || isProcessAlive(owner.pid);
+function inspectGeneration(lockPrefix: string, generation: number): "held" | "free" | "gone" {
+  const state = readGeneration(lockPrefix, generation);
+  if (state.kind === "gone") return "gone";
+  if (state.kind === "unknown") return "held";
+  const { owner } = state;
+  if (!owner || owner.released) return "free";
+  return owner.hostname !== os.hostname() || isProcessAlive(owner.pid) ? "held" : "free";
+}
+
+const ACQUIRE_ATTEMPTS = 8;
+
+/** The highest generation and whether it is held, rescanning when it vanishes while read. */
+function inspectLock(lockPrefix: string): { highest: number; held: boolean } {
+  for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
+    const highest = highestLockGeneration(lockPrefix);
+    if (highest === 0) return { highest, held: false };
+    const state = inspectGeneration(lockPrefix, highest);
+    if (state !== "gone") return { highest, held: state === "held" };
+  }
+  // The highest kept vanishing: other processes are taking the lock right now.
+  return { highest: highestLockGeneration(lockPrefix), held: true };
 }
 
 /** True when the checkout's refresh lock has a live holder. */
 export function isRefreshLockHeld(lockPrefix: string): boolean {
-  const highest = highestLockGeneration(lockPrefix);
-  return highest > 0 && isGenerationHeld(lockPrefix, highest);
+  return inspectLock(lockPrefix).held;
 }
 
-/** The live holder of the checkout's refresh lock, or null. */
+/** The live, readable holder of the checkout's refresh lock, or null. */
 export function readRefreshLockOwner(lockPrefix: string): LockOwner | null {
-  const highest = highestLockGeneration(lockPrefix);
-  if (highest === 0 || !isGenerationHeld(lockPrefix, highest)) return null;
-  return readGenerationOwner(lockPrefix, highest);
+  const { highest, held } = inspectLock(lockPrefix);
+  return held ? readGenerationOwner(lockPrefix, highest) : null;
 }
 
 function writeOwnerFile(target: string, owner: LockOwner): string {
@@ -237,8 +266,6 @@ export interface AcquireRefreshLockOptions {
   beforeLink?: (generation: number) => void;
 }
 
-const ACQUIRE_ATTEMPTS = 8;
-
 /**
  * Takes the checkout's refresh lock for `pid`, recovering one whose holder is gone. Returns false
  * when a live holder has it.
@@ -246,8 +273,8 @@ const ACQUIRE_ATTEMPTS = 8;
 export function tryAcquireRefreshLock(lockPrefix: string, pid: number = process.pid, options: AcquireRefreshLockOptions = {}): boolean {
   fs.mkdirSync(path.dirname(lockPrefix), { recursive: true });
   for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
-    const highest = highestLockGeneration(lockPrefix);
-    if (highest > 0 && isGenerationHeld(lockPrefix, highest)) return false;
+    const { highest, held } = inspectLock(lockPrefix);
+    if (held) return false;
     const next = highest + 1;
     options.beforeLink?.(next);
     if (!tryLinkOwnerFile(lockGenerationPath(lockPrefix, next), pid)) continue;

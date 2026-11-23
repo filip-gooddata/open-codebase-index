@@ -228,7 +228,19 @@ describe("post-checkout hook", () => {
       expect(readRefreshLockOwner(lock)?.pid).toBe(1);
     });
 
-    it("treats an unreadable generation as free", () => {
+    it.skipIf(process.getuid?.() === 0)("never displaces a live holder whose generation cannot be read", () => {
+      fs.writeFileSync(`${lock}.1`, owner(process.ppid));
+      fs.chmodSync(`${lock}.1`, 0o000);
+      try {
+        expect(isRefreshLockHeld(lock)).toBe(true);
+        expect(tryAcquireRefreshLock(lock, process.pid)).toBe(false);
+        expect(generations()).toEqual(["x.lock.1"]);
+      } finally {
+        fs.chmodSync(`${lock}.1`, 0o644);
+      }
+    });
+
+    it("treats a generation whose content does not parse as free", () => {
       fs.writeFileSync(`${lock}.4`, "");
       expect(tryAcquireRefreshLock(lock, process.pid)).toBe(true);
       expect(generations()).toEqual(["x.lock.5"]);

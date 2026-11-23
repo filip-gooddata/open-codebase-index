@@ -2,8 +2,7 @@
 # Installs the local-wrapper pieces. See README.md next to this script.
 #
 # Usage: install.sh [options]
-#   --pieces LIST        comma-separated pieces to install (default: launcher,hook,plugin,rebuild,notify)
-#                        launcher  ocbi-mcp.sh and config examples into OCBI_HOME
+#   --pieces LIST        comma-separated pieces to install (default: hook,plugin,rebuild,notify)
 #                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
 #                        plugin    Claude Code / Codex local marketplace into --marketplace-dir
 #                        rebuild   ocbi-rebuild.sh into OCBI_HOME, ocbi-rebuild into --bin-dir and,
@@ -16,25 +15,29 @@
 #   --marketplace-dir D  default: $HOME/.claude/local-marketplaces/ocbi-local
 #   --launch-agents-dir D  default: $HOME/Library/LaunchAgents (macOS only)
 #   --label LABEL        launchd label (default: io.github.open-codebase-index.rebuild)
+#   --node PATH          Node.js >= 22 the plugin, hook and rebuild run (default: $OCBI_NODE, else
+#                        the first node >= 22 on PATH or in the usual install locations)
 #   --package SPEC       npm spec for the pkg piece: a release tarball URL, a local .tgz, or a
 #                        registry name such as open-codebase-index@<version>. Adds pkg to --pieces.
 #   --dry-run            print what would change, change nothing
 #   -h, --help
-# Every run is idempotent: unchanged files are left alone, and projects.conf, profiles.conf and
-# project store configs are never written (only *.example files are). Host registration (Claude
-# Code, Codex, git hooks, launchd) is printed, never applied.
+# Every run is idempotent: unchanged files are left alone, and repository configs are never
+# written. Host registration (Claude Code, Codex, git hooks, launchd) is printed, never applied.
+# Files of earlier wrapper versions in OCBI_HOME (ocbi-mcp.sh, projects.conf, profiles.conf, store
+# directories) are left alone; docs/local-wrapper.md says when to remove them.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 
-pieces="launcher,hook,plugin,rebuild,notify"
+pieces="hook,plugin,rebuild,notify"
 home="${OCBI_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ocbi}"
 bin_dir="$HOME/.local/bin"
 marketplace_dir="$HOME/.claude/local-marketplaces/ocbi-local"
 agents_dir="$HOME/Library/LaunchAgents"
 label="io.github.open-codebase-index.rebuild"
 package=""
+node="${OCBI_NODE:-}"
 dry_run=0
 
 usage() { sed -n '2,/^set -u/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; }
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --launch-agents-dir) need_arg "$@"; agents_dir="$2"; shift 2 ;;
     --label) need_arg "$@"; label="$2"; shift 2 ;;
     --package) need_arg "$@"; package="$2"; shift 2 ;;
+    --node) need_arg "$@"; node="$2"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
@@ -60,7 +64,18 @@ done
 # replacements, so they must be absolute and free of characters any of those would interpret.
 nl='
 '
-for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir"; do
+node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null; }
+if [ -z "$node" ]; then
+  for candidate in "$(command -v node 2>/dev/null)" "$HOME/.local/share/fnm/aliases/default/bin/node" \
+    /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] && [ "$(node_major "$candidate" || echo 0)" -ge 22 ] && { node="$candidate"; break; }
+  done
+  [ -n "$node" ] || die "no Node.js >= 22 found; pass --node PATH"
+else
+  [ -x "$node" ] && [ "$(node_major "$node" || echo 0)" -ge 22 ] || die "--node $node is not a Node.js >= 22"
+fi
+
+for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir" "$node"; do
   case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
   case "$path" in
     *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
@@ -71,7 +86,7 @@ done
 
 has_piece() { case ",$pieces," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 for p in $(printf '%s' "$pieces" | tr ',' ' '); do
-  case "$p" in launcher | hook | plugin | rebuild | notify | pkg) ;; *) die "unknown piece $p" ;; esac
+  case "$p" in hook | plugin | rebuild | notify | pkg) ;; *) die "unknown piece $p" ;; esac
 done
 if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package SPEC"; fi
 
@@ -91,7 +106,8 @@ run() {
   fi
 }
 
-# render SRC: SRC with @OCBI_HOME@, @VERSION@, @LABEL@, @BIN_DIR@ and @PATH@ replaced, on stdout.
+# render SRC: SRC with @OCBI_HOME@, @VERSION@, @LABEL@, @BIN_DIR@, @NODE@ and @PATH@ replaced, on
+# stdout.
 render() {
   local line path_value="${OCBI_INSTALL_PATH_VALUE:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
   while IFS= read -r line || [ -n "$line" ]; do
@@ -99,6 +115,7 @@ render() {
     line="${line//@VERSION@/$version}"
     line="${line//@LABEL@/$label}"
     line="${line//@BIN_DIR@/$bin_dir}"
+    line="${line//@NODE@/$node}"
     line="${line//@PATH@/$path_value}"
     printf '%s\n' "$line"
   done <"$1"
@@ -136,17 +153,19 @@ place() {
   say "  installed  $dest"
 }
 
-install_launcher() {
-  say "launcher -> $home"
-  place 755 "$here/launcher/ocbi-mcp.sh" "$home/ocbi-mcp.sh"
-  place 644 "$here/launcher/projects.conf.example" "$home/projects.conf.example"
-  place 644 "$here/launcher/profiles.conf.example" "$home/profiles.conf.example"
-  place 644 "$here/launcher/codebase-index.example.json" "$home/codebase-index.example.json"
+# retire DEST: remove a file an earlier version of this installer placed and nothing uses now.
+retire() {
+  [ "$preflight" = 1 ] && return 0
+  { [ -f "$1" ] || [ -L "$1" ]; } || return 0
+  changes=$((changes + 1))
+  if [ "$dry_run" = 1 ]; then say "  would remove  $1"; return 0; fi
+  rm -f "$1" || die "cannot remove $1"
+  say "  removed  $1"
 }
 
 install_hook() {
   say "hook -> $home"
-  place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh"
+  place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh" render
 }
 
 install_plugin() {
@@ -156,7 +175,8 @@ install_plugin() {
   place 644 "$p/.agents/plugins/marketplace.json" "$m/.agents/plugins/marketplace.json"
   place 644 "$p/plugins/codebase-index/.claude-plugin/plugin.json" "$m/plugins/codebase-index/.claude-plugin/plugin.json" render
   place 644 "$p/plugins/codebase-index/.codex-plugin/plugin.json" "$m/plugins/codebase-index/.codex-plugin/plugin.json" render
-  place 644 "$p/plugins/codebase-index/hooks/hooks.json" "$m/plugins/codebase-index/hooks/hooks.json" render
+  # The session hint of earlier versions; the server's own MCP instructions carry that guidance.
+  retire "$m/plugins/codebase-index/hooks/hooks.json"
   for name in call-graph definition find index peek pr-impact search status; do
     place 644 "$p/plugins/codebase-index/commands/$name.md" "$m/plugins/codebase-index/commands/$name.md"
   done
@@ -165,7 +185,7 @@ install_plugin() {
 
 install_rebuild() {
   say "rebuild -> $home, $bin_dir"
-  place 755 "$here/rebuild/ocbi-rebuild.sh" "$home/ocbi-rebuild.sh"
+  place 755 "$here/rebuild/ocbi-rebuild.sh" "$home/ocbi-rebuild.sh" render
   place 755 "$here/rebuild/ocbi-rebuild" "$bin_dir/ocbi-rebuild" render
   if [ "$is_macos" = 1 ]; then
     place 644 "$here/rebuild/rebuild.plist.template" "$agents_dir/$label.plist" render
@@ -193,12 +213,11 @@ install_pkg() {
   local js
   for js in cli.js cbi.js; do
     [ -f "$home/pkg/node_modules/open-codebase-index/dist/$js" ] ||
-      die "$package did not install open-codebase-index with dist/$js; the launcher needs both cli.js and cbi.js"
+      die "$package did not install open-codebase-index with dist/$js; the servers run cli.js, the hook and rebuild cbi.js"
   done
 }
 
 install_selected() {
-  has_piece launcher && install_launcher
   has_piece hook && install_hook
   has_piece plugin && install_plugin
   has_piece rebuild && install_rebuild
@@ -218,15 +237,13 @@ say ""
 say "$changes change(s)$([ "$dry_run" = 1 ] && printf ' planned')."
 say ""
 say "Next steps (printed only, nothing below was applied):"
-if has_piece launcher; then
-  cat <<EOF
+cat <<EOF
 
-* Shared stores: list projects in $home/projects.conf (see projects.conf.example), create
-  $home/<name>/codebase-index.json from codebase-index.example.json, and add
-  .claude/index and .claude/codebase-index.json to <git common dir>/info/exclude.
-  Optionally name each primary checkout in $home/profiles.conf.
+* Repository config, per repository whose worktrees share one index: write
+  <git common dir>/codebase-index/config.json, starting from
+  $here/repository-config.example.json.
+  Coming from projects.conf: follow the migration in docs/local-wrapper.md first.
 EOF
-fi
 if has_piece plugin; then
   cat <<EOF
 
@@ -239,8 +256,8 @@ cat <<EOF
 
 * Codex (~/.codex/config.toml): tool_timeout_sec must exceed indexing.autoIndexWaitMs.
     [mcp_servers.codebase-index]
-    command = "/bin/bash"
-    args = ["$home/ocbi-mcp.sh"]
+    command = "$node"
+    args = ["$home/pkg/node_modules/open-codebase-index/dist/cli.js", "--host", "codex"]
     startup_timeout_sec = 30.0
     tool_timeout_sec = 420.0
 EOF
@@ -259,7 +276,7 @@ if has_piece rebuild && [ "$is_macos" = 1 ]; then
 
 * Rebuild job (macOS launchd, on demand only):
     launchctl bootstrap gui/\$(id -u) "$agents_dir/$label.plist"
-  Make sure $bin_dir is on PATH, then: ocbi-rebuild <project>
+  Make sure $bin_dir is on PATH, then, from any checkout of the repository: ocbi-rebuild
 EOF
 fi
 if has_piece notify && [ "$is_macos" = 1 ]; then

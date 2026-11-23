@@ -10,7 +10,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codebase Index (local)",
-    "shortDescription": "Semantic search and call-graph tools over the local shared index",
+    "shortDescription": "Semantic search and call-graph tools over the local index",
     "developerName": "local",
     "category": "Productivity",
     "capabilities": [

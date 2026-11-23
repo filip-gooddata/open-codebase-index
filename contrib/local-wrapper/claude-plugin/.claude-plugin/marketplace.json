@@ -1,13 +1,13 @@
 {
   "name": "ocbi-local",
   "owner": { "name": "local" },
-  "description": "Machine-local open-codebase-index plugin: the MCP server behind a launcher that can share one index across the worktrees of a repository.",
+  "description": "Machine-local open-codebase-index plugin: the MCP server from a pinned local install of the package.",
   "plugins": [
     {
       "name": "codebase-index",
       "source": "./plugins/codebase-index",
       "version": "@VERSION@",
-      "description": "Semantic code search and call-graph tools from open-codebase-index, started by the local launcher"
+      "description": "Semantic code search and call-graph tools from the locally installed open-codebase-index"
     }
   ]
 }

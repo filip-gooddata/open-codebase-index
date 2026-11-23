@@ -1,0 +1,31 @@
+CHANGELOG.md
+  s_daca32480d7852::t_48102f60f176b5 16-19
+docs/configuration.md
+  s_daca32480d7852::t_6c7da1c7c1b2d0 363
+src/config/merger.ts
+  s_daca32480d7852::t_24607b5ca93e04 13,205,332-345
+src/config/repository-route.ts
+  s_daca32480d7852::t_91526c8f3c824c 141
+src/eval/runner-config.ts
+  s_daca32480d7852::t_d343f4175bf42e 12-13,201-205,207-230
+src/eval/runner.ts
+  s_daca32480d7852::t_9fbeb311213a1d 299
+tests/repository-route-force-rebuild.test.ts
+  s_daca32480d7852::t_eb8ceaf5003367 1-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5c23867650c2f96f824c57b3af835bd29e56af8b",
+  "prompts": {},
+  "sessions": {
+    "s_daca32480d7852": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74c12c6e-c1b5-4c7a-bd6b-a37883e411d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

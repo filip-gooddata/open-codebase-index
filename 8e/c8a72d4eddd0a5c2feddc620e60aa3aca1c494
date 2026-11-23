@@ -1,0 +1,45 @@
+docs/configuration.md
+  s_89a834aa16c3e0::t_fef6cde98de695 97
+src/adapters/hooks-cli.ts
+  s_89a834aa16c3e0::t_0b2bbbbfe2ec41 1
+src/git/hook-install.ts
+  s_e0ce1d77a0d56f::t_11379e03c85b2d 1,172,175-190,194-196,200-209,211-212,257,337,339,364,454,461
+src/git/post-checkout-hook.ts
+  s_89a834aa16c3e0::t_727dff302bd868 1,188-190,192,203-204,206-207,209,215-220,227-256,260-284,538-544,560-561,613
+tests/hooks-install.test.ts
+  s_fd279c95a9cf6d::t_64417b72bcb707 216,218-234,236-237,242-254,293,308-313,357-368
+tests/post-checkout-hook.test.ts
+  s_fd279c95a9cf6d::t_ddf8942208dc0e 174-205,362-363,370
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8ec8a72d4eddd0a5c2feddc620e60aa3aca1c494",
+  "prompts": {},
+  "sessions": {
+    "s_89a834aa16c3e0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0b58b6e5-6a74-4afa-9ec4-85f389470f4a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_e0ce1d77a0d56f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a2083a-48c4-7c01-9b3f-24514936f132",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_fd279c95a9cf6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "737fef82-3951-4ffd-b1fe-d8760e7208e9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

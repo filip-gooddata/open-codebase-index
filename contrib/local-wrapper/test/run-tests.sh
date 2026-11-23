@@ -531,7 +531,10 @@ check "the rebuild unit runs the installed ocbi-rebuild.sh and has no [Install]"
 if grep -rq '@[A-Z_]*@' "$LX"; then not_ok "Linux install leaves no placeholders" "$(grep -rl '@[A-Z_]*@' "$LX")"; else ok "Linux install leaves no placeholders"; fi
 expect_match "Linux install prints ocbi-schedule install" "ocbi-schedule install <checkout>" "$(cat "$T/lx.out")"
 if command -v systemd-analyze >/dev/null 2>&1; then
-  if out="$(cd "$LX/units" && systemd-analyze --user verify ocbi-rebuild.service ocbi-check.service ocbi-check.timer 2>&1)"; then
+  # --user needs a runtime directory, which CI runners and containers may not have.
+  mkdir -p "$T/xdg-runtime" && chmod 700 "$T/xdg-runtime"
+  if out="$(cd "$LX/units" && XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$T/xdg-runtime}" \
+    systemd-analyze --user verify ocbi-rebuild.service ocbi-check.service ocbi-check.timer 2>&1)"; then
     ok "systemd-analyze verify accepts the units"
   else
     not_ok "systemd-analyze verify accepts the units" "$out"

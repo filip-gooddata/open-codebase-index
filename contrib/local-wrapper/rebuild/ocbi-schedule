@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Usage: ocbi-schedule install [CHECKOUT...] | uninstall | status
+# Registers, removes or reports the jobs install.sh placed for the rebuild piece:
+#   macOS  launchd agents @LABEL@ (on-demand rebuild) and @CHECK_LABEL@ (daily check), from
+#          @LAUNCH_AGENTS_DIR@
+#   Linux  systemd user units ocbi-rebuild.service (on-demand rebuild), ocbi-check.service and
+#          ocbi-check.timer (daily check), from @SYSTEMD_USER_DIR@
+# install adds each CHECKOUT (the root of a checkout of a repository with a repository config) to
+# $OCBI_HOME/check.conf, the list the daily check reads, then loads the jobs; rerunning it is
+# harmless. uninstall unloads the jobs and removes their files (rerun install.sh to place them
+# again); it keeps check.conf, and refuses while a rebuild runs. status prints the registration,
+# the checked checkouts and the last lines of the check log.
+set -u
+OCBI_HOME="${OCBI_HOME:-@OCBI_HOME@}"
+label="${OCBI_REBUILD_LABEL:-@LABEL@}"
+check_label="${OCBI_CHECK_LABEL:-@CHECK_LABEL@}"
+agents_dir="${OCBI_LAUNCH_AGENTS_DIR:-@LAUNCH_AGENTS_DIR@}"
+systemd_dir="${OCBI_SYSTEMD_USER_DIR:-@SYSTEMD_USER_DIR@}"
+units="ocbi-rebuild.service ocbi-check.service ocbi-check.timer"
+os="${OCBI_UNAME:-$(uname -s)}"
+conf="$OCBI_HOME/check.conf"
+usage="usage: ocbi-schedule install [CHECKOUT...] | uninstall | status"
+die() { printf 'ocbi-schedule: %s\n' "$*" >&2; exit "${2:-1}"; }
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+
+case "$os" in
+  Darwin) gui="gui/$(id -u)" ;;
+  Linux)
+    command -v systemctl >/dev/null 2>&1 || die "systemctl not found; the jobs need systemd user units" 69
+    ;;
+  *) die "unsupported system $os; run ocbi-check.sh from cron and ocbi-rebuild by hand" 69 ;;
+esac
+
+rebuild_running() {
+  [ -f "$OCBI_HOME/rebuild.flock" ] &&
+    ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$OCBI_HOME/rebuild.flock"
+}
+
+# add_checkout PATH: append the checkout root of PATH to check.conf unless it is listed.
+add_checkout() {
+  local root common
+  root="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || die "$1 is not inside a git checkout" 64
+  root="$(cd "$root" && pwd -P)" || exit 64
+  common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)" || exit 64
+  [ -f "$common/codebase-index/config.json" ] ||
+    die "$root has no repository config $common/codebase-index/config.json" 64
+  mkdir -p "$OCBI_HOME" || exit 1
+  if [ -f "$conf" ] && grep -qxF -- "$root" "$conf"; then
+    echo "already checked: $root"
+  else
+    printf '%s\n' "$root" >>"$conf" || exit 1
+    echo "checked daily: $root"
+  fi
+}
+
+install_jobs() {
+  local f
+  if [ "$os" = Darwin ]; then
+    for f in "$label" "$check_label"; do
+      [ -f "$agents_dir/$f.plist" ] || die "$agents_dir/$f.plist is missing; run install.sh first"
+    done
+    for f in "$label" "$check_label"; do
+      # bootstrap fails on a loaded job; reload it so a changed plist takes effect.
+      launchctl bootout "$gui/$f" >/dev/null 2>&1
+      launchctl bootstrap "$gui" "$agents_dir/$f.plist" || die "launchctl bootstrap $agents_dir/$f.plist failed"
+      echo "loaded $f"
+    done
+  else
+    for f in $units; do
+      [ -f "$systemd_dir/$f" ] || die "$systemd_dir/$f is missing; run install.sh first"
+    done
+    systemctl --user daemon-reload || die "systemctl --user daemon-reload failed (no user session bus?)"
+    systemctl --user enable --now ocbi-check.timer || die "systemctl --user enable --now ocbi-check.timer failed"
+    echo "enabled ocbi-check.timer; ocbi-rebuild.service starts on demand"
+    if command -v loginctl >/dev/null 2>&1 && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = no ]; then
+      echo "note: user units run only while you are logged in; loginctl enable-linger keeps them running"
+    fi
+  fi
+}
+
+uninstall_jobs() {
+  local f
+  rebuild_running && die "a rebuild is running; uninstall stops it, so wait for it to finish" 75
+  if [ "$os" = Darwin ]; then
+    for f in "$check_label" "$label"; do
+      launchctl bootout "$gui/$f" >/dev/null 2>&1 && echo "unloaded $f"
+      if [ -f "$agents_dir/$f.plist" ]; then rm -f "$agents_dir/$f.plist" && echo "removed $agents_dir/$f.plist"; fi
+    done
+  else
+    systemctl --user disable --now ocbi-check.timer >/dev/null 2>&1 && echo "disabled ocbi-check.timer"
+    for f in $units; do
+      if [ -f "$systemd_dir/$f" ]; then rm -f "$systemd_dir/$f" && echo "removed $systemd_dir/$f"; fi
+    done
+    systemctl --user daemon-reload >/dev/null 2>&1
+  fi
+  echo "kept $conf"
+}
+
+status_jobs() {
+  local f state
+  if [ "$os" = Darwin ]; then
+    for f in "$label" "$check_label"; do
+      if launchctl print "$gui/$f" >/dev/null 2>&1; then state=loaded
+      elif [ -f "$agents_dir/$f.plist" ]; then state="not loaded (run ocbi-schedule install)"
+      else state="not installed (run install.sh)"; fi
+      echo "$f: $state"
+    done
+  else
+    for f in $units; do
+      if [ ! -f "$systemd_dir/$f" ]; then echo "$f: not installed (run install.sh)"; continue; fi
+      echo "$f: $(systemctl --user is-enabled "$f" 2>/dev/null || true), $(systemctl --user is-active "$f" 2>/dev/null || true)"
+    done
+    systemctl --user list-timers ocbi-check.timer --no-pager 2>/dev/null | sed -n '1,2p'
+  fi
+  rebuild_running && echo "a rebuild is running"
+  if [ -s "$conf" ]; then
+    echo "checked daily ($conf):"
+    sed 's/^/  /' "$conf"
+  else
+    echo "no checkouts in $conf; add them with ocbi-schedule install CHECKOUT"
+  fi
+  if [ -f "$OCBI_HOME/logs/check.log" ]; then
+    echo "last check log lines:"
+    tail -n 5 "$OCBI_HOME/logs/check.log" | sed 's/^/  /'
+  fi
+}
+
+case "${1:-}" in
+  install)
+    shift
+    for c in "$@"; do add_checkout "$c"; done
+    install_jobs
+    ;;
+  uninstall) [ $# -eq 1 ] || die "$usage" 64; uninstall_jobs ;;
+  status) [ $# -eq 1 ] || die "$usage" 64; status_jobs ;;
+  -h | --help) sed -n '2,/^set -u/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//' ;;
+  *) die "$usage" 64 ;;
+esac

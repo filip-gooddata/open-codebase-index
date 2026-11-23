@@ -38,8 +38,8 @@ What remains has a job the package does not do:
 |---|---|
 | `plugin` | A Claude Code plugin that runs the server from `$OCBI_HOME/pkg` with `--host claude`, instead of the repository plugin's `npx` of the registry package. Its `/index` and `/status` commands never request `force` and point at `ocbi-rebuild`. The session-hint hook is gone: the server's MCP instructions carry the same guidance. |
 | `hook` | A git `post-checkout` hook that indexes a new branch or worktree in the background, so a secondary checkout (which skips the startup index) is warm before an agent asks. Once a day per repository it also counts the catalogs `ocbi prune` would remove and notifies past a threshold. |
-| `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. |
-| `notify` | Desktop notifications for the hook and the rebuild. |
+| `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job or systemd user unit that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. A daily check (`ocbi-check.sh`) notifies when the store needs a full rebuild or a prune; see [Scheduled check](#scheduled-check). |
+| `notify` | Desktop notifications for the hook, the check and the rebuild, on macOS and Linux. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
 The hook, the rebuild and the plugin run the Node.js that `install.sh` found (or `--node`), with
@@ -171,8 +171,8 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
 ## Pitfalls
 
 - Never force a rebuild from an agent session on a shared store: it drops every worktree's
-  catalog, and re-embedding a large repository can take hours. Use `ocbi-rebuild` (macOS today;
-  Linux support is planned) from any checkout. It forces the index in the primary checkout
+  catalog, and re-embedding a large repository can take hours. Use `ocbi-rebuild` from any
+  checkout. It forces the index in the primary checkout
   (`checkouts.primary.path`, else the main worktree of a normal clone) and fails at once when the
   package refuses that checkout as secondary. Other failures, such as `INDEX_BUSY`, are retried.
 - One process indexes a store at a time (`indexing.lock`). The CLI returns `INDEX_BUSY`; MCP
@@ -190,9 +190,43 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
 - git exports `GIT_DIR` and related variables to hooks. The hook clears them before it runs the
   CLI, which would otherwise describe the hook's repository view instead of the checkout.
 
+## Scheduled check
+
+`ocbi-check.sh` runs once a day (10:00, or at the next wake or boot after a missed run) for each
+checkout listed in `$OCBI_HOME/check.conf`, one repository at a time:
+
+- When `ocbi status --json` reports the store incompatible with the configured embedding provider
+  or model, it notifies "Rebuild needed" with a Rebuild action that runs `ocbi-rebuild <checkout>`.
+- Otherwise, when `ocbi prune --json` would remove `OCBI_STALE_THRESHOLD` (15) or more catalogs, it
+  notifies "Worth a cleanup" with a Prune action that runs `ocbi prune --apply` for that checkout
+  and logs to `$OCBI_HOME/logs/prune.log`.
+
+It never rebuilds or prunes by itself, and checks nothing while a rebuild runs. Its log is
+`$OCBI_HOME/logs/check.log`. Load the jobs and name the checkouts once:
+
+```bash
+ocbi-schedule install ~/src/my-repo     # adds the checkout to check.conf, loads the jobs
+ocbi-schedule status                     # jobs, checked checkouts, last check log lines
+ocbi-schedule uninstall                  # unloads the jobs and removes their files; keeps check.conf
+```
+
+| | macOS | Linux |
+|---|---|---|
+| Rebuild job | launchd agent `io.github.open-codebase-index.rebuild`, on demand | `ocbi-rebuild.service`, on demand (no `[Install]`) |
+| Daily check | launchd agent `io.github.open-codebase-index.check` | `ocbi-check.service` started by `ocbi-check.timer` |
+| Job files | `~/Library/LaunchAgents/<label>.plist` | `~/.config/systemd/user/` |
+| Notifications | `Codebase Index.app` (build with `notify/notifier/build.sh`) with an action button; `osascript` without one when the app is missing | `notify-send` over the session D-Bus; an action button when the server reports the `actions` capability and notify-send has `--action` (libnotify 0.7.10 or later) |
+
+On Linux, user units run while you are logged in unless lingering is on (`loginctl
+enable-linger`). A clicked action runs in a detached waiter (its own transient unit when the
+notification comes from a systemd unit). Without `notify-send`, a session bus or a notification
+server, as on a headless machine or over SSH, the notification and its command are printed to
+stderr, which the journal or `launchd.log` keeps. Every notification is also appended to
+`$OCBI_HOME/logs/notify.log`.
+
 ## Platforms
 
-The hook, plugin and installer run on macOS (bash 3.2, BSD tools) and Linux (bash 5, GNU tools);
-`contrib/local-wrapper/test/run-tests.sh` runs on both. The `rebuild` and `notify` pieces are
-macOS-only for now: the rebuild uses a launchd job, and notifications with an action button use a
-small Swift app built from source. Linux support for both is planned.
+The hook, plugin, installer, rebuild, check and notifications run on macOS (bash 3.2, BSD tools)
+and Linux (bash 5, GNU tools); `contrib/local-wrapper/test/run-tests.sh` runs on both and covers
+the other system's job and notification paths with stand-ins for `launchctl`, `systemctl` and
+`notify-send`. On Linux it also runs `systemd-analyze verify` on the units when that is available.

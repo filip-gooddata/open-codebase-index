@@ -1,0 +1,12 @@
+# Runs ocbi-check.service daily; a run missed while the machine was off or asleep happens at the
+# next boot or wake. `ocbi-schedule install` enables it.
+[Unit]
+Description=Codebase index: daily check for rebuilds and cleanups worth doing
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

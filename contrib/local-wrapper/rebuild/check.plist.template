@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily check (ocbi-check.sh) for rebuilds and cleanups worth doing; it only notifies. install.sh
+     fills in @CHECK_LABEL@, @OCBI_HOME@ and @PATH@ and writes it to
+     ~/Library/LaunchAgents/@CHECK_LABEL@.plist; `ocbi-schedule install` loads it. A run missed
+     while the Mac sleeps happens on wake. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@CHECK_LABEL@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@OCBI_HOME@/ocbi-check.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>@OCBI_HOME@/logs/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>@OCBI_HOME@/logs/launchd.log</string>
+</dict>
+</plist>

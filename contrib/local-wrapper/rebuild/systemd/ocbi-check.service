@@ -1,0 +1,11 @@
+# Daily check (ocbi-check.sh) for rebuilds and cleanups worth doing; it only notifies. Started by
+# ocbi-check.timer. install.sh fills in @OCBI_HOME@ and @PATH@.
+[Unit]
+Description=Codebase index: check for rebuilds and cleanups worth doing
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash @OCBI_HOME@/ocbi-check.sh
+Environment=PATH=@PATH@
+Nice=10
+IOSchedulingClass=idle

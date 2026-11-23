@@ -50,7 +50,8 @@ export OCBI_NODE="$NODE"
 
 # --- static checks -------------------------------------------------------------------------------
 scripts=("$here/install.sh" "$here/hook/ocbi-post-checkout.sh"
-  "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/notify/ocbi-notify.sh"
+  "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/rebuild/ocbi-check.sh"
+  "$here/rebuild/ocbi-schedule" "$here/notify/ocbi-notify.sh"
   "$here/notify/notifier/build.sh" "$here/test/run-tests.sh")
 for s in "${scripts[@]}"; do
   check "bash -n ${s#"$here"/}" bash -n "$s"
@@ -97,24 +98,27 @@ printf '#!/bin/sh\n' >"$H/ocbi-mcp.sh"
 printf '# mine\n' >"$H/projects.conf"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
 expect_eq "install exits 0" 0 "$?"
-for f in ocbi-post-checkout.sh ocbi-rebuild.sh ocbi-notify.sh; do
+for f in ocbi-post-checkout.sh ocbi-rebuild.sh ocbi-check.sh ocbi-notify.sh; do
   check "installed executable $f" test -x "$H/$f"
 done
-check "installed ocbi-rebuild into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild"
+check "installed ocbi-rebuild and ocbi-schedule into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild" -a -x "$HOME/.local/bin/ocbi-schedule"
 check "install removes the retired session-hint hook" test ! -e "$M/plugins/codebase-index/hooks/hooks.json"
 expect_eq "install leaves an earlier version's launcher and projects.conf alone" "#!/bin/sh # mine" "$(cat "$H/ocbi-mcp.sh") $(cat "$H/projects.conf")"
 rm -f "$H/ocbi-mcp.sh" "$H/projects.conf"
 check "installed the plugin commands and skill" test -f "$M/plugins/codebase-index/commands/search.md" -a -f "$M/plugins/codebase-index/skills/codebase-search/SKILL.md"
 check "plugin index.md is the shared-store override" grep -q 'force is never set' "$M/plugins/codebase-index/commands/index.md"
-if grep -rq '@[A-Z_]*@' "$M" "$HOME/.local/bin/ocbi-rebuild" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$M" "$HOME/.local/bin/ocbi-rebuild" "$H")"; else ok "no template placeholders left"; fi
+if grep -rq '@[A-Z_]*@' "$M" "$HOME/.local/bin" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$M" "$HOME/.local/bin" "$H")"; else ok "no template placeholders left"; fi
 got="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).mcpServers["codebase-index"];process.stdout.write([s.command,...s.args].join(" "))' "$M/plugins/codebase-index/.claude-plugin/plugin.json")"
 expect_eq "plugin.json starts the installed package directly with --host claude" "$NODE $H/pkg/node_modules/open-codebase-index/dist/cli.js --host claude" "$got"
 if [ "$(uname -s)" = Darwin ]; then
   plist="$HOME/Library/LaunchAgents/io.github.open-codebase-index.rebuild.plist"
   check "installed the launchd plist" grep -q "<string>$H/ocbi-rebuild.sh</string>" "$plist"
+  check "installed the daily check plist" grep -q "<string>$H/ocbi-check.sh</string>" "$HOME/Library/LaunchAgents/io.github.open-codebase-index.check.plist"
+  check "no systemd units on macOS" test ! -e "$HOME/.config/systemd"
   if command -v plutil >/dev/null 2>&1; then check "plist is valid" plutil -lint -s "$plist"; fi
 else
   check "no launchd plist off macOS" test ! -e "$HOME/Library/LaunchAgents"
+  check "installed the systemd user units" test -f "$HOME/.config/systemd/user/ocbi-check.timer" -a -f "$HOME/.config/systemd/user/ocbi-check.service" -a -f "$HOME/.config/systemd/user/ocbi-rebuild.service"
 fi
 expect_match "install prints the Codex registration with --host codex" "args = \\[\"$H/pkg/node_modules/open-codebase-index/dist/cli.js\", \"--host\", \"codex\"\\]" "$out"
 expect_match "install prints the Codex command as the chosen node" "command = \"$NODE\"" "$out"
@@ -138,11 +142,12 @@ expect_eq "install refuses a directory at a destination and writes nothing" "2 a
 
 # --- stub CLI ------------------------------------------------------------------------------------
 # stub_cbi HOME [JS]: a dist/cbi.js under HOME/pkg that appends to HOME/calls, and prints unless
-# it is a prune,
+# it is a prune or a status --json,
 #   CBI <args> cwd=<cwd> git_dir=<GIT_DIR or unset>
 # then runs JS, which sees argv (the arguments), calls (the calls file so far) and sleep(ms). It
 # answers `prune --json` with HOME/prune-count catalogs and `status --project P` with
-# HOME/status-<basename P>, else HOME/status (default: a primary on the repository store). It carries the markers install.sh probes for.
+# HOME/status-<basename P>, else HOME/status (default: a primary on the repository store);
+# `status --json` with HOME/status-json (default: {}). It carries the markers install.sh probes for.
 stub_cbi() {
   local d="$1/pkg/node_modules/open-codebase-index/dist"
   mkdir -p "$d"
@@ -153,7 +158,8 @@ const home = path.resolve(__dirname, "../../../..");
 const argv = process.argv.slice(2);
 const line = "CBI " + argv.join(" ") + " cwd=" + process.cwd() + " git_dir=" + (process.env.GIT_DIR ?? "unset") + "\\n";
 fs.appendFileSync(path.join(home, "calls"), line);
-if (argv[0] !== "prune") process.stdout.write(line);
+const json = argv[0] === "status" && argv.includes("--json");
+if (argv[0] !== "prune" && !json) process.stdout.write(line);
 const calls = fs.readFileSync(path.join(home, "calls"), "utf8");
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 if (argv[0] === "prune") {
@@ -161,7 +167,11 @@ if (argv[0] === "prune") {
   try { n = Number(fs.readFileSync(path.join(home, "prune-count"), "utf8")); } catch {}
   console.log(JSON.stringify({ applied: false, catalogs: Array.from({ length: n }, (_, i) => ({ key: "gone" + i })) }));
 }
-if (argv[0] === "status") {
+if (json) {
+  let st = "{}";
+  try { st = fs.readFileSync(path.join(home, "status-json"), "utf8"); } catch {}
+  console.log(st);
+} else if (argv[0] === "status") {
   let st = "Store: /shared (repository config /c/codebase-index/config.json)\\nCheckout role: primary - test";
   const project = argv[argv.indexOf("--project") + 1] ?? "";
   for (const f of ["status-" + path.basename(project), "status"]) {
@@ -439,6 +449,209 @@ OCBI_REBUILD_PREFLIGHT_URL='' bash "$RB/ocbi-rebuild.sh" "$T/src/bare-wt"
 expect_eq "rebuild of a bare-base layout forces the configured primary and skips the bare dir" \
   "0 CBI index --force --allow-shared-rebuild --host claude --project $T/src/bare-main cwd=$T/src/bare-main git_dir=unset
 CBI index --host claude --project $T/src/bare-wt cwd=$T/src/bare-wt git_dir=unset" "$? $(calls)"
+
+# fake DIR NAME BODY: an executable DIR/NAME running the bash BODY.
+fake() {
+  mkdir -p "$1"
+  printf '#!/usr/bin/env bash\n%s\n' "$3" >"$1/$2"
+  chmod +x "$1/$2"
+}
+
+# --- daily check ---------------------------------------------------------------------------------
+CK="$T/checkhome"
+mkdir -p "$CK"
+cp "$H/ocbi-check.sh" "$CK/"
+stub_cbi "$CK"
+fake "$CK" ocbi-notify.sh "printf '%s|' \"\$@\" >>'$T/ck-notified'; printf '\\n' >>'$T/ck-notified'"
+ck_calls() { grep -c "^CBI $1" "$CK/calls" 2>/dev/null; }
+ck_run() { : >"$CK/calls"; rm -f "$T/ck-notified"; OCBI_REBUILD_CMD="$T/bin/ocbi-rebuild" bash "$CK/ocbi-check.sh" "$@"; }
+ck_run
+expect_eq "check without checkouts exits 0 and calls nothing" "0 0" "$? $(ck_calls '')"
+expect_match "check without checkouts says how to add them" "no checkouts to check" "$(cat "$CK/logs/check.log")"
+printf '# comment\n\n  %s  \n%s\n' "$R" "$W" >"$CK/check.conf"
+printf '3' >"$CK/prune-count"
+ck_run
+expect_eq "check below the threshold exits 0, checks the repository once and notifies nothing" "0 1 1 absent" \
+  "$? $(ck_calls 'status --json') $(ck_calls 'prune --json') $([ -e "$T/ck-notified" ] && echo present || echo absent)"
+expect_match "check logs the stale count" "demo: 3 catalogs of deleted branches or worktrees" "$(cat "$CK/logs/check.log")"
+printf '20' >"$CK/prune-count"
+ck_run
+expect_eq "check past the threshold exits 0 and notifies once" "0 1" "$? $(grep -c . "$T/ck-notified")"
+expect_match "check offers a Prune action for the stale catalogs" "^Worth a cleanup: demo\\|20 catalogs of deleted branches or worktrees\\.\\|Prune\\|cd '$R' && .* prune --apply --host 'claude' --project '$R' >>'$CK/logs/prune.log' 2>&1\\|$" "$(cat "$T/ck-notified")"
+cmd="$(cut -d '|' -f 4 "$T/ck-notified")"
+: >"$CK/calls"
+bash -c "$cmd"
+expect_eq "the Prune action applies the prune for that checkout" "1" "$(grep -c "^CBI prune --apply --host claude --project $R cwd=$R " "$CK/calls")"
+printf '{ "compatibility": { "compatible": false, "reason": "Embedding model changed." } }' >"$CK/status-json"
+ck_run
+expect_eq "check of an incompatible store notifies once and skips the prune dry run" "0 1 0" "$? $(grep -c . "$T/ck-notified") $(ck_calls 'prune')"
+expect_eq "check offers a Rebuild action that runs ocbi-rebuild for the checkout" \
+  "Rebuild needed: demo|Embedding model changed. A full rebuild re-embeds every file with the configured model.|Rebuild|'$T/bin/ocbi-rebuild' '$R'|" \
+  "$(cat "$T/ck-notified")"
+printf '{ "compatibility": { "compatible": true } }' >"$CK/status-json"
+printf '0' >"$CK/prune-count"
+ck_run
+expect_eq "check of a compatible store goes on to the prune dry run" "0 1 absent" "$? $(ck_calls 'prune --json') $([ -e "$T/ck-notified" ] && echo present || echo absent)"
+printf '%s\n%s\n%s\n' "$T/nowhere" "$NR" "$R" >"$CK/check.conf"
+ck_run
+expect_eq "check skips a missing path and a repository without config, checks the rest, exits 1" "1 1" "$? $(ck_calls 'prune --json')"
+expect_match "check logs the repository without config" "skipped $NR: no repository config" "$(cat "$CK/logs/check.log")"
+ck_run "$W"
+expect_eq "check takes checkouts as arguments" "0 1" "$? $(ck_calls 'prune --json')"
+perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; open(my $m, ">", $ARGV[1]); print $m "held\n"; close $m; sleep 3' \
+  "$CK/rebuild.flock" "$T/ck-held" &
+holder=$!
+wait_for "$T/ck-held" held
+ck_run "$R"
+expect_eq "check does nothing while a rebuild runs" "0 0" "$? $(ck_calls '')"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+check "the check never indexes" test "$(grep -c '^CBI index' "$CK/calls")" = 0
+rm -f "$CK/status-json" "$CK/prune-count"
+
+# --- ocbi-rebuild through systemd ----------------------------------------------------------------
+FS="$T/fake-systemd"
+fake "$FS" systemctl "printf '%s\\n' \"\$*\" >>'$T/systemctl.calls'; [ \"\$2\" != cat ] || [ -e '$FS/unit-present' ]"
+: >"$T/systemctl.calls"
+touch "$FS/unit-present"
+rm -f "$H/rebuild.request"
+out="$(PATH="$FS:$PATH" OCBI_UNAME=Linux bash "$HOME/.local/bin/ocbi-rebuild" "$W" 2>&1)"
+expect_eq "ocbi-rebuild on Linux starts the systemd unit for the checkout" \
+  "0 --user cat ocbi-rebuild.service
+--user start --no-block ocbi-rebuild.service $W" "$? $(cat "$T/systemctl.calls") $(cat "$H/rebuild.request")"
+expect_match "ocbi-rebuild reports the background start" "Rebuild of $W started in the background" "$out"
+
+# --- install, Linux and macOS layouts ------------------------------------------------------------
+LX="$T/linux-install"
+OCBI_UNAME=Linux bash "$here/install.sh" --pieces rebuild,notify --home "$LX/home" --bin-dir "$LX/bin" \
+  --systemd-dir "$LX/units" --launch-agents-dir "$LX/agents" >"$T/lx.out" 2>&1
+expect_eq "Linux install exits 0" 0 "$?"
+check "Linux install places the three units and no plist" test -f "$LX/units/ocbi-rebuild.service" -a -f "$LX/units/ocbi-check.service" -a -f "$LX/units/ocbi-check.timer" -a ! -e "$LX/agents"
+check "the check unit runs the installed ocbi-check.sh" grep -qx "ExecStart=/bin/bash $LX/home/ocbi-check.sh" "$LX/units/ocbi-check.service"
+check "the rebuild unit runs the installed ocbi-rebuild.sh and has no [Install]" eval "grep -qx 'ExecStart=/bin/bash $LX/home/ocbi-rebuild.sh' '$LX/units/ocbi-rebuild.service' && ! grep -q '^\\[Install\\]' '$LX/units/ocbi-rebuild.service'"
+if grep -rq '@[A-Z_]*@' "$LX"; then not_ok "Linux install leaves no placeholders" "$(grep -rl '@[A-Z_]*@' "$LX")"; else ok "Linux install leaves no placeholders"; fi
+expect_match "Linux install prints ocbi-schedule install" "ocbi-schedule install <checkout>" "$(cat "$T/lx.out")"
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if out="$(cd "$LX/units" && systemd-analyze --user verify ocbi-rebuild.service ocbi-check.service ocbi-check.timer 2>&1)"; then
+    ok "systemd-analyze verify accepts the units"
+  else
+    not_ok "systemd-analyze verify accepts the units" "$out"
+  fi
+else
+  skip "systemd-analyze verify accepts the units" "systemd-analyze not found"
+fi
+MX="$T/mac-install"
+OCBI_UNAME=Darwin bash "$here/install.sh" --pieces rebuild --home "$MX/home" --bin-dir "$MX/bin" \
+  --systemd-dir "$MX/units" --launch-agents-dir "$MX/agents" --label org.example.ocbi.rebuild >/dev/null 2>&1
+expect_eq "macOS install exits 0" 0 "$?"
+check "macOS install places both plists, the check labelled .check, and no units" \
+  test -f "$MX/agents/org.example.ocbi.rebuild.plist" -a -f "$MX/agents/org.example.ocbi.check.plist" -a ! -e "$MX/units"
+check "the check plist carries its label and a daily calendar interval" eval "grep -q '<string>org.example.ocbi.check</string>' '$MX/agents/org.example.ocbi.check.plist' && grep -q StartCalendarInterval '$MX/agents/org.example.ocbi.check.plist'"
+if command -v plutil >/dev/null 2>&1; then check "check plist is valid" plutil -lint -s "$MX/agents/org.example.ocbi.check.plist"; fi
+
+# --- ocbi-schedule -------------------------------------------------------------------------------
+: >"$T/systemctl.calls"
+sched() { PATH="$FS:$PATH" OCBI_UNAME=Linux bash "$LX/bin/ocbi-schedule" "$@"; }
+sched install "$NR" >/dev/null 2>&1
+expect_eq "schedule install refuses a repository without config and loads nothing" "64 0" "$? $(grep -c . "$T/systemctl.calls")"
+out="$(sched install "$W" 2>&1)"
+expect_eq "schedule install on Linux records the checkout and enables the timer" "0 $W --user daemon-reload
+--user enable --now ocbi-check.timer" "$? $(cat "$LX/home/check.conf") $(cat "$T/systemctl.calls")"
+sched install "$W" >/dev/null 2>&1
+expect_eq "a second schedule install lists the checkout once" "0 1" "$? $(grep -c . "$LX/home/check.conf")"
+out="$(sched status 2>&1)"
+expect_match "schedule status lists the units and the checked checkouts" "ocbi-check.timer: .*checked daily .*$W" "$(printf '%s' "$out" | tr '\n' ' ')"
+perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; open(my $m, ">", $ARGV[1]); print $m "held\n"; close $m; sleep 3' \
+  "$LX/home/rebuild.flock" "$T/sched-held" &
+holder=$!
+wait_for "$T/sched-held" held
+sched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall refuses while a rebuild runs and keeps the units" "75 present" "$? $([ -f "$LX/units/ocbi-check.timer" ] && echo present || echo absent)"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+: >"$T/systemctl.calls"
+sched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall disables the timer, removes the units and keeps check.conf" "0 absent $W" \
+  "$? $([ -e "$LX/units/ocbi-check.timer" ] || [ -e "$LX/units/ocbi-rebuild.service" ] && echo present || echo absent) $(cat "$LX/home/check.conf")"
+check "schedule uninstall called systemctl disable --now on the timer" grep -qx -- '--user disable --now ocbi-check.timer' "$T/systemctl.calls"
+sched install >/dev/null 2>&1
+expect_eq "schedule install without units fails and names install.sh" 1 "$?"
+fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'"
+: >"$T/launchctl.calls"
+msched() { PATH="$FS:$PATH" OCBI_UNAME=Darwin bash "$MX/bin/ocbi-schedule" "$@"; }
+msched install "$R" >/dev/null 2>&1
+uid="$(id -u)"
+expect_eq "schedule install on macOS reloads both agents" "0 bootout gui/$uid/org.example.ocbi.rebuild
+bootstrap gui/$uid $MX/agents/org.example.ocbi.rebuild.plist
+bootout gui/$uid/org.example.ocbi.check
+bootstrap gui/$uid $MX/agents/org.example.ocbi.check.plist" "$? $(cat "$T/launchctl.calls")"
+msched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall on macOS boots both agents out and removes the plists" "0 absent" \
+  "$? $([ -e "$MX/agents/org.example.ocbi.check.plist" ] || [ -e "$MX/agents/org.example.ocbi.rebuild.plist" ] && echo present || echo absent)"
+OCBI_UNAME=SunOS bash "$MX/bin/ocbi-schedule" status >/dev/null 2>&1
+expect_eq "schedule refuses an unsupported system" 69 "$?"
+
+# --- notifications -------------------------------------------------------------------------------
+NH="$T/notifyhome"
+mkdir -p "$NH"
+cp "$H/ocbi-notify.sh" "$NH/"
+FN="$T/fake-notify"
+# notify-send records its arguments, answers --help with or without --action, fails when
+# FN/fail exists and prints "run" for --wait (the button was clicked).
+fake "$FN" notify-send "if [ \"\$1\" = --help ]; then [ -e '$FN/old' ] && echo '-u, --urgency' || echo '-A, --action=[NAME=]Text'; exit 0; fi
+printf '%s|' \"\$@\" >>'$T/notify-send.calls'; printf '\\n' >>'$T/notify-send.calls'
+[ ! -e '$FN/fail' ] || exit 1
+case \" \$* \" in *' --wait '*) echo run ;; esac"
+fake "$FN" gdbus "[ -e '$FN/caps' ] || exit 1; cat '$FN/caps'"
+fake "$FN" systemd-run "printf '%s|' \"\$@\" >'$T/systemd-run.calls'"
+nrun() {
+  rm -f "$T/notify-send.calls" "$T/systemd-run.calls"
+  env -u INVOCATION_ID PATH="$FN:$PATH" OCBI_UNAME=Linux "$@"
+}
+# A headless machine: no session bus. notify-send is never called; the command is printed.
+err="$(nrun env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$T/no-runtime" bash "$NH/ocbi-notify.sh" "Worth a cleanup: demo" "20 catalogs." Prune "touch '$T/pruned'" 2>&1 >/dev/null)"
+expect_eq "notify without a session bus exits 0 and calls nothing" "0 absent" "$? $([ -e "$T/notify-send.calls" ] && echo present || echo absent)"
+expect_eq "notify without a session bus prints the notification and the command" "[ocbi-notify] Worth a cleanup: demo: 20 catalogs. Run: touch '$T/pruned'" "$err"
+expect_match "notify logs every notification" "Worth a cleanup: demo: 20 catalogs\\. Run: touch '$T/pruned'$" "$(cat "$NH/logs/notify.log")"
+# A session bus with no notification server: the capability query and notify-send fail.
+touch "$FN/fail"
+err="$(nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo hi" 2>&1 >/dev/null)"
+expect_eq "notify without a notification server falls back to stderr" "0 [ocbi-notify] T: B Run: echo hi" "$? $err"
+rm -f "$FN/fail"
+# A server without actions: a plain notification whose body carries the command.
+printf "(['body', 'body-markup'],)\n" >"$FN/caps"
+err="$(nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo hi" 2>&1)"
+expect_eq "notify on a server without actions sends the command in the body" "0 --app-name=Codebase index|T|B Run: echo hi|" "$? $err$(cat "$T/notify-send.calls")"
+# A server with actions: a detached waiter shows the button and runs the command on a click.
+printf "(['actions', 'body'],)\n" >"$FN/caps"
+rm -f "$T/clicked"
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo clicked >'$T/clicked'"
+expect_eq "notify on a server with actions exits 0" 0 "$?"
+if wait_for "$T/clicked" clicked; then ok "the action button runs the command"; else not_ok "the action button runs the command"; fi
+expect_eq "the waiter offers the button and waits" "--app-name=Codebase index|--wait|--action=run=Rebuild|T|B|" "$(cat "$T/notify-send.calls")"
+touch "$FN/old"
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo hi"
+expect_eq "notify-send without --action gets a plain notification" "--app-name=Codebase index|T|B Run: echo hi|" "$(cat "$T/notify-send.calls")"
+rm -f "$FN/old"
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B"
+expect_eq "notify without an action sends a plain notification" "--app-name=Codebase index|T|B|" "$(cat "$T/notify-send.calls")"
+# Inside a systemd unit the waiter gets a transient unit of its own.
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x INVOCATION_ID=test bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo hi"
+expect_match "notify inside a systemd unit starts the waiter with systemd-run" \
+  "^--user\\|--quiet\\|--collect\\|--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/x\\|--setenv=OCBI_HOME=$NH\\|--setenv=PATH=.*\\|--\\|bash\\|$NH/ocbi-notify.sh\\|--wait-action\\|T\\|B\\|Rebuild\\|echo hi\\|$" \
+  "$(cat "$T/systemd-run.calls" 2>/dev/null)"
+if command -v notify-send >/dev/null 2>&1; then
+  skip "notify without notify-send prints the notification" "notify-send is installed here"
+else
+  err="$(env -u INVOCATION_ID OCBI_UNAME=Linux DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B" 2>&1)"
+  expect_eq "notify without notify-send prints the notification" "0 [ocbi-notify] T: B" "$? $err"
+fi
+# macOS: the notifier app with its button, else osascript.
+fake "$FN" open "printf '%s|' \"\$@\" >'$T/open.calls'"
+fake "$FN" osascript "printf '%s|' \"\$@\" >'$T/osascript.calls'"
+mkdir -p "$T/Notifier.app"
+PATH="$FN:$PATH" OCBI_UNAME=Darwin OCBI_NOTIFIER_APP="$T/Notifier.app" bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo hi"
+expect_eq "notify on macOS opens the notifier app with the action" "-g|-n|$T/Notifier.app|--args|--title|T|--body|B|--action-label|Rebuild|--action-command|echo hi|" "$(cat "$T/open.calls")"
+PATH="$FN:$PATH" OCBI_UNAME=Darwin OCBI_NOTIFIER_APP="$T/none.app" bash "$NH/ocbi-notify.sh" "T" "B"
+check "notify on macOS without the app uses osascript" grep -q 'display notification' "$T/osascript.calls"
 
 printf '# pass %d fail %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

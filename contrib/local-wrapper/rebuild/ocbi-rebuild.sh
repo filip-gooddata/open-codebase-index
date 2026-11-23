@@ -2,9 +2,10 @@
 # Usage: ocbi-rebuild.sh CHECKOUT
 # Full rebuild of the shared store of the repository CHECKOUT (an absolute path) belongs to. The
 # repository needs a repository config, <git common dir>/codebase-index/config.json. Started on
-# demand by `ocbi-rebuild [CHECKOUT]`, through a launchd job on macOS or detached with nohup
-# elsewhere. OCBI_HOME defaults to the directory this script is installed in. When CHECKOUT is
-# omitted, the path in $OCBI_HOME/rebuild.request (written by `ocbi-rebuild`) is used.
+# demand by `ocbi-rebuild [CHECKOUT]`, through a launchd job on macOS or a systemd user unit on
+# Linux, or detached with nohup without them. OCBI_HOME defaults to the directory this script is
+# installed in. When CHECKOUT is omitted, the path in $OCBI_HOME/rebuild.request (written by
+# `ocbi-rebuild`) is used.
 #
 # A forced index drops every branch catalog. Before `ocbi prune` existed this was the only way to
 # drop the catalogs of deleted branches and removed worktrees; prefer `ocbi prune --apply` for

@@ -5,16 +5,21 @@
 #   --pieces LIST        comma-separated pieces to install (default: hook,plugin,rebuild,notify)
 #                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
 #                        plugin    Claude Code / Codex local marketplace into --marketplace-dir
-#                        rebuild   ocbi-rebuild.sh into OCBI_HOME, ocbi-rebuild into --bin-dir and,
-#                                  on macOS, the launchd job plist into --launch-agents-dir
-#                        notify    ocbi-notify.sh into OCBI_HOME (the macOS notifier app is
-#                                  built separately; the command is printed)
+#                        rebuild   ocbi-rebuild.sh and ocbi-check.sh into OCBI_HOME, ocbi-rebuild
+#                                  and ocbi-schedule into --bin-dir, and the jobs: on macOS two
+#                                  launchd plists into --launch-agents-dir, on Linux three systemd
+#                                  user units into --systemd-dir (ocbi-schedule install loads them)
+#                        notify    ocbi-notify.sh into OCBI_HOME (macOS: the notifier app is built
+#                                  separately, the command is printed; Linux: uses notify-send)
 #                        pkg       npm install of --package into OCBI_HOME/pkg
 #   --home DIR           OCBI_HOME (default: $OCBI_HOME, else ${XDG_DATA_HOME:-$HOME/.local/share}/ocbi)
 #   --bin-dir DIR        default: $HOME/.local/bin
 #   --marketplace-dir D  default: $HOME/.claude/local-marketplaces/ocbi-local
 #   --launch-agents-dir D  default: $HOME/Library/LaunchAgents (macOS only)
-#   --label LABEL        launchd label (default: io.github.open-codebase-index.rebuild)
+#   --systemd-dir D      default: ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user (Linux only)
+#   --label LABEL        launchd label of the rebuild job (default:
+#                        io.github.open-codebase-index.rebuild); the daily check's label is LABEL
+#                        with .rebuild replaced by .check (else LABEL.check)
 #   --node PATH          Node.js >= 22 the plugin, hook and rebuild run (default: $OCBI_NODE, else
 #                        the first node >= 22 of the fnm default alias, Homebrew, /usr/local,
 #                        /usr/bin and PATH; a per-shell fnm path is never chosen, it goes away)
@@ -23,7 +28,8 @@
 #   --dry-run            print what would change, change nothing
 #   -h, --help
 # Every run is idempotent: unchanged files are left alone, and repository configs are never
-# written. Host registration (Claude Code, Codex, git hooks, launchd) is printed, never applied.
+# written. Host registration (Claude Code, Codex, git hooks, launchd, systemd) is printed, never
+# applied.
 # Files of earlier wrapper versions in OCBI_HOME (ocbi-mcp.sh, projects.conf, profiles.conf, store
 # directories) are left alone; docs/local-wrapper.md says when to remove them.
 set -u
@@ -36,6 +42,7 @@ home="${OCBI_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ocbi}"
 bin_dir="$HOME/.local/bin"
 marketplace_dir="$HOME/.claude/local-marketplaces/ocbi-local"
 agents_dir="$HOME/Library/LaunchAgents"
+systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 label="io.github.open-codebase-index.rebuild"
 package=""
 node="${OCBI_NODE:-}"
@@ -52,6 +59,7 @@ while [ $# -gt 0 ]; do
     --bin-dir) need_arg "$@"; bin_dir="$2"; shift 2 ;;
     --marketplace-dir) need_arg "$@"; marketplace_dir="$2"; shift 2 ;;
     --launch-agents-dir) need_arg "$@"; agents_dir="$2"; shift 2 ;;
+    --systemd-dir) need_arg "$@"; systemd_dir="$2"; shift 2 ;;
     --label) need_arg "$@"; label="$2"; shift 2 ;;
     --package) need_arg "$@"; package="$2"; shift 2 ;;
     --node) need_arg "$@"; node="$2"; shift 2 ;;
@@ -77,13 +85,14 @@ else
   [ -x "$node" ] && [ "$(node_major "$node" || echo 0)" -ge 22 ] || die "--node $node is not a Node.js >= 22"
 fi
 
-for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir" "$node"; do
+for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir" "$systemd_dir" "$node"; do
   case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
   case "$path" in
     *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
   esac
 done
 [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid --label $label"
+case "$label" in *.rebuild) check_label="${label%.rebuild}.check" ;; *) check_label="$label.check" ;; esac
 [ -n "$package" ] && pieces="$pieces,pkg"
 
 has_piece() { case ",$pieces," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
@@ -92,8 +101,8 @@ for p in $(printf '%s' "$pieces" | tr ',' ' '); do
 done
 if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package SPEC"; fi
 
-is_macos=0
-[ "$(uname -s)" = Darwin ] && is_macos=1
+is_macos=0 is_linux=0
+case "${OCBI_UNAME:-$(uname -s)}" in Darwin) is_macos=1 ;; Linux) is_linux=1 ;; esac
 version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo_root/package.json" 2>/dev/null | head -n 1)"
 version="${version:-0.0.0}-local"
 changes=0
@@ -108,14 +117,17 @@ run() {
   fi
 }
 
-# render SRC: SRC with @OCBI_HOME@, @VERSION@, @LABEL@, @BIN_DIR@, @NODE@ and @PATH@ replaced, on
-# stdout.
+# render SRC: SRC with @OCBI_HOME@, @VERSION@, @LABEL@, @CHECK_LABEL@, @BIN_DIR@, @NODE@, @PATH@,
+# @LAUNCH_AGENTS_DIR@ and @SYSTEMD_USER_DIR@ replaced, on stdout.
 render() {
   local line path_value="${OCBI_INSTALL_PATH_VALUE:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line//@OCBI_HOME@/$home}"
     line="${line//@VERSION@/$version}"
     line="${line//@LABEL@/$label}"
+    line="${line//@CHECK_LABEL@/$check_label}"
+    line="${line//@LAUNCH_AGENTS_DIR@/$agents_dir}"
+    line="${line//@SYSTEMD_USER_DIR@/$systemd_dir}"
     line="${line//@BIN_DIR@/$bin_dir}"
     line="${line//@NODE@/$node}"
     line="${line//@PATH@/$path_value}"
@@ -186,11 +198,19 @@ install_plugin() {
 }
 
 install_rebuild() {
+  local unit
   say "rebuild -> $home, $bin_dir"
   place 755 "$here/rebuild/ocbi-rebuild.sh" "$home/ocbi-rebuild.sh" render
+  place 755 "$here/rebuild/ocbi-check.sh" "$home/ocbi-check.sh" render
   place 755 "$here/rebuild/ocbi-rebuild" "$bin_dir/ocbi-rebuild" render
+  place 755 "$here/rebuild/ocbi-schedule" "$bin_dir/ocbi-schedule" render
   if [ "$is_macos" = 1 ]; then
     place 644 "$here/rebuild/rebuild.plist.template" "$agents_dir/$label.plist" render
+    place 644 "$here/rebuild/check.plist.template" "$agents_dir/$check_label.plist" render
+  elif [ "$is_linux" = 1 ]; then
+    for unit in ocbi-rebuild.service ocbi-check.service ocbi-check.timer; do
+      place 644 "$here/rebuild/systemd/$unit" "$systemd_dir/$unit" render
+    done
   fi
 }
 
@@ -291,12 +311,16 @@ if has_piece hook; then
     ln -s "$home/ocbi-post-checkout.sh" "\$(git -C <repo> rev-parse --path-format=absolute --git-common-dir)/hooks/post-checkout"
 EOF
 fi
-if has_piece rebuild && [ "$is_macos" = 1 ]; then
+if has_piece rebuild && { [ "$is_macos" = 1 ] || [ "$is_linux" = 1 ]; }; then
+  if [ "$is_macos" = 1 ]; then job_names="launchd agents $label and $check_label"; else
+    job_names="systemd user units ocbi-rebuild.service and ocbi-check.timer"; fi
   cat <<EOF
 
-* Rebuild job (macOS launchd, on demand only):
-    launchctl bootstrap gui/\$(id -u) "$agents_dir/$label.plist"
-  Make sure $bin_dir is on PATH, then, from any checkout of the repository: ocbi-rebuild
+* Rebuild and daily check jobs ($job_names). Make sure $bin_dir
+  is on PATH, then load the jobs and name the checkouts the daily check covers:
+    ocbi-schedule install <checkout>...
+  The check only notifies; it never rebuilds or prunes by itself. A rebuild on demand, from any
+  checkout of the repository: ocbi-rebuild
 EOF
 fi
 if has_piece notify && [ "$is_macos" = 1 ]; then
@@ -304,6 +328,13 @@ if has_piece notify && [ "$is_macos" = 1 ]; then
 
 * Notifications with an action button (macOS, needs Xcode command line tools):
     bash "$here/notify/notifier/build.sh"
+EOF
+elif has_piece notify && [ "$is_linux" = 1 ] && ! command -v notify-send >/dev/null 2>&1; then
+  cat <<EOF
+
+* Desktop notifications (Linux): install notify-send (libnotify-bin on Debian and Ubuntu,
+  libnotify on Fedora and Arch). Without it, or without a desktop session, notifications are
+  printed and logged to $home/logs/notify.log.
 EOF
 fi
 if ! has_piece pkg && [ ! -f "$home/pkg/node_modules/open-codebase-index/dist/cli.js" ]; then

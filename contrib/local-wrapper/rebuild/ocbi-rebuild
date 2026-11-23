@@ -3,8 +3,9 @@
 # Starts a full rebuild of the shared store of the repository CHECKOUT (default: the current
 # directory) belongs to, in the background ($OCBI_HOME/ocbi-rebuild.sh). The repository needs a
 # repository config, <git common dir>/codebase-index/config.json.
-# macOS: through the launchd job @LABEL@ when it is loaded, so the run outlives the terminal and
-# the session. Elsewhere, or without the job: detached with nohup.
+# macOS: through the launchd job @LABEL@ when it is loaded; Linux: through the systemd user unit
+# ocbi-rebuild.service when it is installed. Either way the run outlives the terminal and the
+# session. Elsewhere, or without the job: detached with nohup.
 set -u
 OCBI_HOME="${OCBI_HOME:-@OCBI_HOME@}"
 label="${OCBI_REBUILD_LABEL:-@LABEL@}"
@@ -18,9 +19,14 @@ common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)" || 
   { echo "$root has no repository config $common/codebase-index/config.json; nothing to rebuild" >&2; exit 64; }
 mkdir -p "$OCBI_HOME/logs"
 
-if [ "$(uname -s)" = Darwin ] && launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+unit="${OCBI_REBUILD_UNIT:-ocbi-rebuild.service}"
+os="${OCBI_UNAME:-$(uname -s)}"
+if [ "$os" = Darwin ] && launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
   printf '%s\n' "$root" >"$OCBI_HOME/rebuild.request"
   launchctl kickstart "gui/$(id -u)/$label" || exit 1
+elif [ "$os" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl --user cat "$unit" >/dev/null 2>&1; then
+  printf '%s\n' "$root" >"$OCBI_HOME/rebuild.request"
+  systemctl --user start --no-block "$unit" || exit 1
 else
   nohup bash "$OCBI_HOME/ocbi-rebuild.sh" "$root" </dev/null >>"$OCBI_HOME/logs/rebuild-nohup.log" 2>&1 &
 fi

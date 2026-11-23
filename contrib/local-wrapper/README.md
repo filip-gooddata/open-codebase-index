@@ -15,21 +15,24 @@ directory once the package does its job natively.
 |---|---|---|---|---|
 | `hook` | `hook/ocbi-post-checkout.sh` | `$OCBI_HOME` | git `post-checkout` hook: runs `ocbi index` in the background after a branch checkout or `git worktree add` in a repository with a repository config, and once a day notifies when many catalogs are stale. | macOS, Linux |
 | `plugin` | `claude-plugin/` (copies of the repository's commands and skill; `index.md` and `status.md` differ) | local marketplace dir | Claude Code plugin that starts `dist/cli.js --host claude` from `$OCBI_HOME/pkg`; a Codex skill plugin in the same marketplace. | macOS, Linux |
-| `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-rebuild`, `rebuild/rebuild.plist.template` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job. | macOS; Linux support is planned |
-| `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the stale-catalog check and the rebuild, with an action button when the notifier app is built. | macOS; Linux support is planned |
+| `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-check.sh`, `rebuild/ocbi-rebuild`, `rebuild/ocbi-schedule`, `rebuild/*.plist.template`, `rebuild/systemd/` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` (macOS) or `~/.config/systemd/user` (Linux) | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job or systemd user unit. `ocbi-check.sh`: a daily check that notifies when a full rebuild (provider or model change) or a prune is worth doing, and never runs either by itself. `ocbi-schedule install [checkout...]`, `uninstall`, `status`: loads, removes and reports the jobs. | macOS, Linux |
+| `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the checks and the rebuild, with an action button: on macOS when the notifier app is built, on Linux when the notification server supports actions. Without a desktop the notification and its command are printed and logged. | macOS, Linux |
 | `pkg` | none | `$OCBI_HOME/pkg` | `npm install` of the package spec you pass with `--package`. | macOS, Linux |
 
 `repository-config.example.json` is a starting point for `<git common dir>/codebase-index/config.json`;
 nothing installs it.
 
-`rebuild` and `notify` already fall back to `nohup` and `notify-send` off macOS, but only the
-macOS path is in daily use. Full Linux support for both is planned as a later step.
+On Linux, `notify` uses `notify-send` (package `libnotify-bin` on Debian and Ubuntu) and the
+session D-Bus; the scheduled jobs need a systemd user instance. Elsewhere, run `ocbi-check.sh` from
+cron and `ocbi-rebuild` by hand; it then runs detached with `nohup`.
 
 ## Requirements
 
 bash 3.2 or newer, git 2.31 or newer, perl, Node.js 22 or newer, and an embedding provider for the
 index (the example config uses Ollama). The Xcode command line tools are needed only to build the
-macOS notifier.
+macOS notifier (`bash notify/notifier/build.sh`, which writes and ad-hoc signs
+`~/Applications/Codebase Index.app`). On Linux, `notify-send` and systemd are optional: without
+them notifications are printed and the rebuild runs detached.
 
 ## Install
 

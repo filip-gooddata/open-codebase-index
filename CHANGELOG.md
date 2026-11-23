@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Local wrapper rebuild and notifications on Linux**: `contrib/local-wrapper` gains a daily check (`ocbi-check.sh`) that notifies when a store needs a full rebuild after an embedding provider or model change, or when `ocbi prune` would remove 15 or more catalogs, with a Rebuild or Prune action; it never rebuilds or prunes by itself. `ocbi-schedule install|uninstall|status` loads, removes and reports the jobs: launchd agents on macOS, systemd user units (`ocbi-rebuild.service`, `ocbi-check.service`, `ocbi-check.timer`) on Linux, where `ocbi-rebuild` now starts the rebuild through its unit. `ocbi-notify.sh` uses `notify-send` on Linux with an action button where the notification server supports actions, and prints the notification and its command where there is no desktop session.
+
 ## [0.38.2-gd.7] - 2026-11-23
 
 Fork release on top of 0.38.2-gd.6. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.

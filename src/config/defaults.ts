@@ -16,6 +16,7 @@ export function getDefaultIndexingConfig(): IndexingConfig {
   return {
     mode: "hybrid",
     autoIndex: false,
+    autoIndexOnStartup: true,
     autoIndexWaitMs: 10_000,
     autoIndexMaxRetries: 5,
     autoIndexRetryDelayMs: 100,

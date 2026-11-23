@@ -40,6 +40,7 @@ import { isFullGitCommit, resolveLocalGitCommit, withMaterializedBranch } from "
 import { runGit } from "../git/branch-resolution.js";
 import type { HostMode } from "../config/host.js";
 import { isProjectIndexPathOwnedByProject, resolveProjectIndexPath } from "../config/paths.js";
+import { resolveMatchedRepositoryRoute, type RepositoryRoute } from "../config/repository-route.js";
 import { getChangedFiles, getWorkingTreeChanges } from "../tools/changed-files.js";
 import type { SharedPrImpactArgs } from "../tools/contracts.js";
 import type { PrImpactResult } from "./pr-impact-types.js";
@@ -1626,6 +1627,41 @@ export class Indexer {
 
   private getProjectIdentityHash(projectRoot: string): string {
     return hashContent(this.getCanonicalPath(projectRoot)).slice(0, 16);
+  }
+
+  private canRecoverInterruptedProjectIndex(): boolean {
+    // Every checkout of a configured repository shares one store, and recovery
+    // runs under the store's writer lease, so a secondary may recover it.
+    return resolveMatchedRepositoryRoute(this.projectRoot, this.host) !== null
+      || this.isProjectOwnedIndexPath();
+  }
+
+  private getRoutedSecondaryCheckout(): RepositoryRoute | null {
+    if (this.config.scope !== "project") return null;
+    const route = resolveMatchedRepositoryRoute(this.projectRoot, this.host);
+    return route && route.role !== "primary" ? route : null;
+  }
+
+  private describeSharedStoreRepairCheckout(route: RepositoryRoute): string {
+    if (route.primaryPath) return `the primary checkout ${route.primaryPath}`;
+    return `the primary checkout once checkouts.primary.path is set in ${route.configPath ?? "the repository config"}`;
+  }
+
+  private assertForceRebuildAllowedOnThisCheckout(): void {
+    const route = this.getRoutedSecondaryCheckout();
+    if (!route) return;
+    throw new Error(
+      "Project-scoped force rebuild is limited to the primary checkout of a shared repository store. " +
+      `This checkout is secondary (${route.roleReason ?? "no primary"}). ` +
+      `Run index_codebase with force=true from ${this.describeSharedStoreRepairCheckout(route)}.`
+    );
+  }
+
+  private getSharedStoreRepairRefusal(route: RepositoryRoute, artifact: string, artifactPath: string, error: unknown): string {
+    return `The ${artifact} ${artifactPath} of the shared repository store is unreadable. ` +
+      `This checkout is secondary (${route.roleReason ?? "no primary"}) and does not reset shared store artifacts; ` +
+      `repair it by running index_codebase with force=true from ${this.describeSharedStoreRepairCheckout(route)}. ` +
+      `Original error: ${getErrorMessage(error)}`;
   }
 
   private isProjectOwnedIndexPath(): boolean {
@@ -4084,6 +4120,11 @@ export class Indexer {
     if (this.config.scope === "global") {
       return "Shared vector index could not be read. Restore or repair the complete fingerprinted shared vector artifacts; automatic reset is disabled for global scope.";
     }
+    const secondaryRoute = this.getRoutedSecondaryCheckout();
+    if (secondaryRoute) {
+      return `Vector index could not be read from the shared repository store. This secondary checkout does not repair the shared store; ` +
+        `run index_codebase with force=true from ${this.describeSharedStoreRepairCheckout(secondaryRoute)}.`;
+    }
     if (!this.isProjectOwnedIndexPath()) {
       return "Vector index could not be read from an inherited project index. Restore or fingerprint it from the checkout that owns the index; do not remove or rebuild it from this worktree.";
     }
@@ -4097,6 +4138,12 @@ export class Indexer {
     if (this.config.scope === "global") {
       return "Shared keyword index could not be read; semantic search remains available. Restore or repair the shared keyword artifact; automatic reset is disabled for global scope.";
     }
+    const secondaryRoute = this.getRoutedSecondaryCheckout();
+    if (secondaryRoute) {
+      return "Keyword index could not be read from the shared repository store; semantic search remains available. " +
+        "This secondary checkout does not repair the shared store; " +
+        `run index_codebase with force=true from ${this.describeSharedStoreRepairCheckout(secondaryRoute)}.`;
+    }
     if (!this.isProjectOwnedIndexPath()) {
       return "Keyword index could not be read from an inherited project index; semantic search remains available. Restore or repair it from the checkout that owns the index; do not rebuild it from this worktree.";
     }
@@ -4106,6 +4153,11 @@ export class Indexer {
   private getDatabaseReadIssueMessage(): string {
     if (this.config.scope === "global") {
       return "Shared index database could not be read. Restore or repair the shared SQLite database; automatic reset is disabled for global scope.";
+    }
+    const secondaryRoute = this.getRoutedSecondaryCheckout();
+    if (secondaryRoute) {
+      return `Index database could not be read from the shared repository store. This secondary checkout does not repair the shared store; ` +
+        `run index_codebase with force=true from ${this.describeSharedStoreRepairCheckout(secondaryRoute)}.`;
     }
     if (!this.isProjectOwnedIndexPath()) {
       return "Index database could not be read from an inherited project index. Restore or repair it from the checkout that owns the index; do not migrate or rebuild it from this worktree.";
@@ -4394,7 +4446,7 @@ export class Indexer {
       await fsPromises.mkdir(this.indexPath, { recursive: true });
 
       // Interrupted recovery remains entirely under the writer lease.
-      if (recoveredOwners.length > 0 && this.config.scope === "project" && !this.isProjectOwnedIndexPath()) {
+      if (recoveredOwners.length > 0 && this.config.scope === "project" && !this.canRecoverInterruptedProjectIndex()) {
         throw new Error(
           "Interrupted indexing recovery is unsafe while using an inherited worktree index. " +
           "Run index_codebase with force=true to create a local project index boundary."
@@ -4436,6 +4488,13 @@ export class Indexer {
       } catch (error) {
         if (isUnsupportedKeywordIndexVersion(error)) throw error;
         if (existsSync(invertedIndexPath)) {
+          const secondaryRoute = this.getRoutedSecondaryCheckout();
+          if (secondaryRoute) {
+            throw new Error(
+              this.getSharedStoreRepairRefusal(secondaryRoute, "keyword index", invertedIndexPath, error),
+              { cause: error },
+            );
+          }
           await fsPromises.unlink(invertedIndexPath);
         }
         this.invertedIndex = new InvertedIndex(invertedIndexPath);
@@ -4579,6 +4638,15 @@ export class Indexer {
         this.invertedIndex.load();
       } catch (error) {
         if (isUnsupportedKeywordIndexVersion(error)) throw error;
+        if (existsSync(invertedIndexPath)) {
+          const secondaryRoute = this.getRoutedSecondaryCheckout();
+          if (secondaryRoute) {
+            throw new Error(
+              this.getSharedStoreRepairRefusal(secondaryRoute, "structural keyword index", invertedIndexPath, error),
+              { cause: error },
+            );
+          }
+        }
         this.structuralKeywordRebuildRequired = existsSync(invertedIndexPath);
         this.logger.warn("Structural keyword index is unreadable; rebuilding it from source files", {
           error: getErrorMessage(error),
@@ -4888,6 +4956,19 @@ export class Indexer {
         error: errorMessage,
       });
       throw new Error(`${warning} Original SQLite error: ${errorMessage}`);
+    }
+
+    const secondaryRoute = this.getRoutedSecondaryCheckout();
+    if (secondaryRoute) {
+      this.logger.error("Detected corrupted shared repository index database on a secondary checkout", {
+        stage,
+        dbPath,
+        error: errorMessage,
+      });
+      throw new Error(
+        this.getSharedStoreRepairRefusal(secondaryRoute, "SQLite database", dbPath, error),
+        { cause: error },
+      );
     }
 
     this.logger.warn("Detected corrupted local index database, resetting local index", {
@@ -7738,6 +7819,11 @@ export class Indexer {
     return results.slice(0, normalizedLimit);
   }
 
+  /** The scope this indexer was initialized with. */
+  getConfiguredScope(): "project" | "global" {
+    return this.config.scope;
+  }
+
   async getStatus(): Promise<StatusResult> {
     const { store, configuredProviderInfo, database, readIssues, compatibility } = await this.ensureInitialized();
     const failedBatchesCount = this.getFailedBatchesCount();
@@ -7947,6 +8033,7 @@ export class Indexer {
 
   async forceIndex(onProgress?: ProgressCallback, options: IndexOperationOptions = {}): Promise<IndexStats> {
     throwIfOperationAborted(options.signal);
+    this.assertForceRebuildAllowedOnThisCheckout();
     return this.withIndexMutationLease("force-index", async (recoveredOwners) => {
       throwIfOperationAborted(options.signal);
       await this.ensureInitializedUnlocked(recoveredOwners);
@@ -7968,6 +8055,7 @@ export class Indexer {
   }
 
   async clearIndex(): Promise<void> {
+    this.assertForceRebuildAllowedOnThisCheckout();
     await this.withIndexMutationLease("clear", async (recoveredOwners) => {
       await this.ensureInitializedUnlocked(recoveredOwners);
       const recovery = this.config.indexing.mode === "structural" ? null : this.beginClearRecoveryState();
@@ -8108,6 +8196,7 @@ export class Indexer {
       return;
     }
 
+    this.assertForceRebuildAllowedOnThisCheckout();
     if (!this.isProjectOwnedIndexPath()) {
       throw new Error(
         "Project-scoped force rebuild is unsafe while using an inherited worktree index. " +

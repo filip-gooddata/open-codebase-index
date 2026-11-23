@@ -1,6 +1,9 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import * as path from "path";
+import { resolveGitDir } from "./git-dir.js";
 import { collectBranchRefs, readPackedRefs, resolveCommonGitDir, tryResolveRefCommit } from "./refs.js";
+
+export { resolveGitDir };
 
 /**
  * Discover the nearest checkout for an implicit project scope. Explicit project
@@ -52,42 +55,6 @@ export function resolveWorktreeMainRepoRoot(repoRoot: string): string | null {
  * 
  * @returns The resolved git directory path, or null if not a git repo
  */
-export function resolveGitDir(repoRoot: string): string | null {
-  const gitPath = path.join(repoRoot, ".git");
-  
-  if (!existsSync(gitPath)) {
-    return null;
-  }
-  
-  try {
-    const stat = statSync(gitPath);
-    
-    if (stat.isDirectory()) {
-      return gitPath;
-    }
-    
-    if (stat.isFile()) {
-      const content = readFileSync(gitPath, "utf-8").trim();
-      const match = content.match(/^gitdir:\s*(.+)$/);
-      if (match) {
-        const gitdir = match[1];
-        // Handle relative paths
-        const resolvedPath = path.isAbsolute(gitdir)
-          ? gitdir
-          : path.resolve(repoRoot, gitdir);
-        
-        if (existsSync(resolvedPath)) {
-          return resolvedPath;
-        }
-      }
-    }
-  } catch {
-    // Ignore errors (permission issues, etc.)
-  }
-  
-  return null;
-}
-
 export function isGitRepo(dir: string): boolean {
   return resolveGitDir(dir) !== null;
 }

@@ -100,7 +100,9 @@ export function createWatcherWithIndexer(
         if (startupCatchupRequested) return;
         startupCatchupRequested = true;
         // Reconcile edits made after the startup scan but before subscriptions became ready.
-        if (config.indexing?.autoIndex !== false) requestReindex();
+        if (config.indexing?.autoIndex !== false && config.indexing?.autoIndexOnStartup !== false) {
+          requestReindex();
+        }
       });
     },
     async stop() {

@@ -44,6 +44,11 @@ export interface IndexingConfig {
    */
   mode: IndexingMode;
   autoIndex: boolean;
+  /**
+   * Run the automatic index when the server starts. Only gates the startup
+   * run; retrieval-triggered refresh and watchers are unaffected. Default: true
+   */
+  autoIndexOnStartup: boolean;
   /** Maximum time retrieval tools wait for first-use auto-indexing. */
   autoIndexWaitMs: number;
   /** Maximum transient interprocess lock retries for auto-indexing. */
@@ -299,6 +304,9 @@ export function parseConfig(raw: unknown): ParsedCodebaseIndexConfig {
       ? rawIndexing.mode
       : defaultIndexing.mode,
     autoIndex: typeof rawIndexing.autoIndex === "boolean" ? rawIndexing.autoIndex : defaultIndexing.autoIndex,
+    autoIndexOnStartup: typeof rawIndexing.autoIndexOnStartup === "boolean"
+      ? rawIndexing.autoIndexOnStartup
+      : defaultIndexing.autoIndexOnStartup,
     autoIndexWaitMs: typeof rawIndexing.autoIndexWaitMs === "number"
       ? Math.min(MAX_AUTO_INDEX_WAIT_MS, Math.max(0, Math.floor(rawIndexing.autoIndexWaitMs)))
       : defaultIndexing.autoIndexWaitMs,

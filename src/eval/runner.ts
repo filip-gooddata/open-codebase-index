@@ -19,9 +19,11 @@ import { evaluateBudgetGate } from "./budget.js";
 import { compareSummaries } from "./compare.js";
 import { buildPerQueryResult, computeEvalMetrics } from "./metrics.js";
 import {
+  assertEvalReindexAllowed,
   clearIndexRoot,
   ensureLocalEvalProjectConfig,
   getEmbeddingCostPer1MTokens,
+  isRoutedEvalCheckout,
   loadParsedConfig,
   resolveSearchConfig,
   toAbsolute,
@@ -286,7 +288,7 @@ export async function runEvaluation(options: EvalRunOptions): Promise<EvalRunRes
 
   const dataset = loadGoldenDataset(datasetPath);
 
-  const resolvedEvalConfigPath = options.reindex
+  const resolvedEvalConfigPath = options.reindex && !isRoutedEvalCheckout(options.projectRoot)
     ? ensureLocalEvalProjectConfig(options.projectRoot, options.configPath)
     : options.configPath;
 
@@ -294,6 +296,7 @@ export async function runEvaluation(options: EvalRunOptions): Promise<EvalRunRes
   const effectiveConfig = resolveSearchConfig(parsedConfig, options.searchOverrides);
 
   if (options.reindex) {
+    assertEvalReindexAllowed(options.projectRoot, effectiveConfig.scope);
     clearIndexRoot(options.projectRoot, effectiveConfig.scope);
   }
 

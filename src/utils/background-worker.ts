@@ -809,7 +809,7 @@ class BackgroundWorkerController {
     if (this.stopped || this.stopping || this.losingLeadership) return;
     this.startingLeaderWork = true;
     try {
-      if (this.config.indexing.autoIndex && !this.autoIndexStarted) {
+      if (this.config.indexing.autoIndex && this.config.indexing.autoIndexOnStartup && !this.autoIndexStarted) {
         this.autoIndexStarted = true;
         this.hooks.startAutoIndex("startup");
       }

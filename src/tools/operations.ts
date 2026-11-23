@@ -816,12 +816,19 @@ export async function runIndexCodebase(
   }
 }
 
-export async function getIndexStatus(
+export interface IndexStatusSnapshot {
+  root: string;
+  /** Scope of the indexer that produced `status`, read from that same instance. */
+  scope: "project" | "global";
+  status: IndexStatusResult;
+}
+
+export async function readIndexStatusSnapshot(
   projectRoot: string | undefined,
   host: HostMode,
   args: SharedIndexStatusArgs = {},
   control?: OperationControl,
-): Promise<IndexStatusResult> {
+): Promise<IndexStatusSnapshot> {
   await runOperationPhase(control, "reading_status");
   const root = getProjectRoot(projectRoot, host);
   const indexer = getIndexerForProject(root, host);
@@ -836,10 +843,23 @@ export async function getIndexStatus(
     : null;
   throwIfOperationAborted(control?.signal);
   return {
-    ...status,
-    freshness,
-    autoIndex: getAutoIndexStatus(root, host),
+    root,
+    scope: indexer.getConfiguredScope(),
+    status: {
+      ...status,
+      freshness,
+      autoIndex: getAutoIndexStatus(root, host),
+    },
   };
+}
+
+export async function getIndexStatus(
+  projectRoot: string | undefined,
+  host: HostMode,
+  args: SharedIndexStatusArgs = {},
+  control?: OperationControl,
+): Promise<IndexStatusResult> {
+  return (await readIndexStatusSnapshot(projectRoot, host, args, control)).status;
 }
 
 export async function pruneBranchCatalogs(

@@ -8,7 +8,9 @@ import {
   resolveProjectConfigPath,
 } from "./paths.js";
 import type { HostMode } from "./host.js";
+import { validateConfigLayerShape } from "./layer-shape.js";
 import { resolveInheritedKnowledgeBaseEntries } from "./rebase.js";
+import { resolveMatchedRepositoryRoute, type RepositoryRoute } from "./repository-route.js";
 
 const PROJECT_OVERRIDE_KEYS = [
   "embeddingProvider",
@@ -28,14 +30,14 @@ const PROJECT_OVERRIDE_KEYS = [
 
 const MERGE_ARRAY_KEYS = ["knowledgeBases", "additionalInclude"] as const;
 
+// Sections merged key by key across repository layers. Other sections,
+// including customProvider, reranker and embeddingFallback, are atomic.
+const REPOSITORY_RECURSIVE_KEYS = ["indexing", "search", "debug", "mcp", "effectivenessMetrics"] as const;
+
 type ProjectOverrideKey = (typeof PROJECT_OVERRIDE_KEYS)[number];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function applyProjectOverride(
@@ -83,38 +85,6 @@ function normalizeKnowledgeBasePath(value: unknown): string {
 
 function mergeKnowledgeBasePaths(values: unknown[]): string[] {
   return [...new Set(values.map((value) => normalizeKnowledgeBasePath(value)).filter((value) => value.length > 0))];
-}
-
-function validateConfigLayerShape(rawConfig: unknown, filePath: string): Record<string, unknown> {
-  if (!isRecord(rawConfig)) {
-    throw new Error(`Config file ${filePath} must contain a JSON object at the root.`);
-  }
-
-  if (rawConfig.embeddingFallback !== undefined && rawConfig.embeddingFallback !== false && !isRecord(rawConfig.embeddingFallback)) {
-    throw new Error(`Config file ${filePath} field 'embeddingFallback' must be an object or false.`);
-  }
-
-  if (rawConfig.knowledgeBases !== undefined && !isStringArray(rawConfig.knowledgeBases)) {
-    throw new Error(`Config file ${filePath} field 'knowledgeBases' must be an array of strings.`);
-  }
-  if (rawConfig.additionalInclude !== undefined && !isStringArray(rawConfig.additionalInclude)) {
-    throw new Error(`Config file ${filePath} field 'additionalInclude' must be an array of strings.`);
-  }
-  if (rawConfig.include !== undefined && !isStringArray(rawConfig.include)) {
-    throw new Error(`Config file ${filePath} field 'include' must be an array of strings.`);
-  }
-  if (rawConfig.exclude !== undefined && !isStringArray(rawConfig.exclude)) {
-    throw new Error(`Config file ${filePath} field 'exclude' must be an array of strings.`);
-  }
-
-  for (const section of ["customProvider", "indexing", "search", "debug", "effectivenessMetrics", "reranker", "mcp"] as const) {
-    const value = rawConfig[section];
-    if (value !== undefined && !isRecord(value)) {
-      throw new Error(`Config file ${filePath} field '${section}' must be an object.`);
-    }
-  }
-
-  return rawConfig;
 }
 
 function isMissingPathError(error: unknown): boolean {
@@ -232,6 +202,11 @@ export interface LoadMergedConfigOptions {
 }
 
 export function loadMergedConfig(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions = {}): unknown {
+  const route = resolveMatchedRepositoryRoute(projectRoot, host);
+  if (route) {
+    return loadRepositoryMergedConfig(projectRoot, host, route, options);
+  }
+
   let globalConfig: Record<string, unknown> | null = null;
   let globalConfigError: Error | null = null;
 
@@ -313,5 +288,94 @@ export function loadMergedConfig(projectRoot: string, host: HostMode, options: L
   const allAdditional = [...globalAdditional, ...projectAdditional];
   merged.additionalInclude = mergeUniqueStringArray(allAdditional);
 
+  return merged;
+}
+
+function mergeRecords(base: Record<string, unknown>, layer: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(layer)) {
+    const current = merged[key];
+    merged[key] = isRecord(current) && isRecord(value) ? mergeRecords(current, value) : value;
+  }
+  return merged;
+}
+
+function applyRepositoryLayer(merged: Record<string, unknown>, layer: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(layer)) {
+    if (MERGE_ARRAY_KEYS.includes(key as (typeof MERGE_ARRAY_KEYS)[number])) {
+      continue;
+    }
+    const current = merged[key];
+    merged[key] = REPOSITORY_RECURSIVE_KEYS.includes(key as (typeof REPOSITORY_RECURSIVE_KEYS)[number])
+      && isRecord(current) && isRecord(value)
+      ? mergeRecords(current, value)
+      : value;
+  }
+}
+
+function getRoleOverrideLayer(route: RepositoryRoute): Record<string, unknown> {
+  const checkouts = route.config && isRecord(route.config.checkouts) ? route.config.checkouts : {};
+  const roleConfig = route.role ? checkouts[route.role] : undefined;
+  if (!isRecord(roleConfig)) {
+    return {};
+  }
+
+  const indexing: Record<string, unknown> = {};
+  for (const flag of ["watchFiles", "autoIndexOnStartup"] as const) {
+    if (typeof roleConfig[flag] === "boolean") {
+      indexing[flag] = roleConfig[flag];
+    }
+  }
+  return Object.keys(indexing).length > 0 ? { indexing } : {};
+}
+
+/**
+ * Merge for a checkout whose repository has a repository config:
+ * global < repository config (minus storage/checkouts) < role overrides < the
+ * checkout's own project config. Recursive sections merge key by key;
+ * knowledgeBases and additionalInclude are unions.
+ */
+function loadRepositoryMergedConfig(
+  projectRoot: string,
+  host: HostMode,
+  route: RepositoryRoute,
+  options: LoadMergedConfigOptions,
+): Record<string, unknown> {
+  const strict = options.strict === true;
+  const globalLayer = (strict
+    ? readStrictConfigLayer(getGlobalConfigCandidatePaths(host)).config
+    : (loadJsonFile(resolveGlobalConfigPath(host)) as Record<string, unknown> | null)) ?? {};
+
+  const repositoryLayer: Record<string, unknown> = {
+    ...validateConfigLayerShape(route.config ?? {}, route.configPath ?? ""),
+  };
+  delete repositoryLayer.storage;
+  delete repositoryLayer.checkouts;
+  if (Array.isArray(repositoryLayer.knowledgeBases)) {
+    repositoryLayer.knowledgeBases = (repositoryLayer.knowledgeBases as string[]).map((entry) =>
+      path.isAbsolute(entry) || entry.startsWith("~") ? entry : path.resolve(projectRoot, entry),
+    );
+  }
+
+  let projectLayer: Record<string, unknown>;
+  if (strict) {
+    const strictProjectLayer = readStrictConfigLayer(getProjectConfigCandidatePaths(projectRoot, host));
+    projectLayer = normalizeProjectConfigLayer(strictProjectLayer.config, strictProjectLayer.path, projectRoot);
+  } else {
+    projectLayer = loadProjectConfigLayer(projectRoot, host);
+  }
+  const layers = [globalLayer, repositoryLayer, getRoleOverrideLayer(route), projectLayer];
+
+  const merged: Record<string, unknown> = {};
+  for (const layer of layers) {
+    applyRepositoryLayer(merged, layer);
+  }
+
+  merged.knowledgeBases = mergeKnowledgeBasePaths(
+    layers.flatMap((layer) => (Array.isArray(layer.knowledgeBases) ? layer.knowledgeBases : [])),
+  );
+  merged.additionalInclude = mergeUniqueStringArray(
+    layers.flatMap((layer) => (Array.isArray(layer.additionalInclude) ? layer.additionalInclude : [])),
+  );
   return merged;
 }

@@ -19,13 +19,14 @@ import {
   getArchitectureContext,
   getIndexLogs,
   getIndexMetrics,
-  getIndexStatus,
+  readIndexStatusSnapshot,
   implementationLookup,
   isExactSymbolQuery,
   runIndexCodebase,
   runIndexHealthCheck,
 } from "./operations.js";
 import { formatCostEstimate, formatDryRunEstimate } from "../utils/cost.js";
+import { formatRepositoryRouteStatus } from "../config/repository-route.js";
 import { resolveCodebaseEditContext } from "./edit-context.js";
 import { resolveCodebaseContext } from "./context.js";
 import {
@@ -90,14 +91,25 @@ export async function executeIndexCodebase(
   };
 }
 
+export interface IndexStatusExecutionOptions {
+  /** Leave the route block out for a legacy checkout (no repository config, no warnings). */
+  omitLegacyRoute?: boolean;
+}
+
 export async function executeIndexStatus(
   projectRoot: string | undefined,
   host: HostMode,
   args: SharedIndexStatusArgs = {},
   control?: OperationControl,
+  options: IndexStatusExecutionOptions = {},
 ): Promise<ExecutionResult> {
-  const status = await getIndexStatus(projectRoot, host, args, control);
-  return { text: formatStatus(status), details: { ...status } };
+  const { root, scope, status } = await readIndexStatusSnapshot(projectRoot, host, args, control);
+  const routeText = formatRepositoryRouteStatus(root, host, status.indexPath, {
+    scope,
+    omitLegacy: options.omitLegacyRoute,
+  });
+  const statusText = formatStatus(status);
+  return { text: routeText ? `${statusText}\n\n${routeText}` : statusText, details: { ...status } };
 }
 
 export async function executeIndexHealthCheck(

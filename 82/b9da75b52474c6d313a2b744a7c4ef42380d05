@@ -1,0 +1,29 @@
+contrib/local-wrapper/README.md
+  s_7d37d6543e0890::t_69def5cc293a43 44-46
+contrib/local-wrapper/hook/ocbi-post-checkout.sh
+  s_7d37d6543e0890::t_fe0dd3013adcf7 15-17,80-81,85,94-98
+contrib/local-wrapper/install.sh
+  s_7d37d6543e0890::t_34f52a73f6b100 19-20,70-73,222-232,234-239
+contrib/local-wrapper/rebuild/ocbi-rebuild.sh
+  s_7d37d6543e0890::t_b545b52aab8c4b 54,61-67,101-107,113-116,163-170
+contrib/local-wrapper/test/run-tests.sh
+  s_7d37d6543e0890::t_5ceee1ab64175c 49,144-145,150,164-171,176-186,245-251,259,335,377-404
+docs/local-wrapper.md
+  s_7d37d6543e0890::t_84742471d396a9 46-55,105-106,109-110,115-120,139-140,145-151,187-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c08329530ce54abe4c5585038c5ce3a1fce3d50c",
+  "prompts": {},
+  "sessions": {
+    "s_7d37d6543e0890": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10960ee2-205e-4112-9318-6277e3d7c4f3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

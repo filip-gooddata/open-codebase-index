@@ -369,7 +369,7 @@ cp "$H/ocbi-check.sh" "$CK/"
 stub_cbi "$CK"
 fake "$CK" ocbi-notify.sh "printf '%s|' \"\$@\" >>'$T/ck-notified'; printf '\\n' >>'$T/ck-notified'"
 ck_calls() { grep -c "^CBI $1" "$CK/calls" 2>/dev/null; }
-ck_run() { : >"$CK/calls"; rm -f "$T/ck-notified"; OCBI_REBUILD_CMD="$T/bin/ocbi-rebuild" bash "$CK/ocbi-check.sh" "$@"; }
+ck_run() { : >"$CK/calls"; rm -f "$T/ck-notified"; OCBI_STALE_CHECK="${CK_STALE_CHECK:-1}" OCBI_REBUILD_CMD="$T/bin/ocbi-rebuild" bash "$CK/ocbi-check.sh" "$@"; }
 ck_run
 expect_eq "check without checkouts exits 0 and calls nothing" "0 0" "$? $(ck_calls '')"
 expect_match "check without checkouts says how to add them" "no checkouts to check" "$(cat "$CK/logs/check.log")"
@@ -397,6 +397,11 @@ printf '{ "compatibility": { "compatible": true } }' >"$CK/status-json"
 printf '0' >"$CK/prune-count"
 ck_run
 expect_eq "check of a compatible store goes on to the prune dry run" "0 1 absent" "$? $(ck_calls 'prune --json') $([ -e "$T/ck-notified" ] && echo present || echo absent)"
+printf '20' >"$CK/prune-count"
+CK_STALE_CHECK=0 ck_run
+expect_eq "check with OCBI_STALE_CHECK=0 skips the prune dry run but still checks compatibility" "0 0 1 absent" \
+  "$? $(ck_calls 'prune') $(ck_calls 'status --json') $([ -e "$T/ck-notified" ] && echo present || echo absent)"
+printf '0' >"$CK/prune-count"
 printf '%s\n%s\n%s\n' "$T/nowhere" "$NR" "$R" >"$CK/check.conf"
 ck_run
 expect_eq "check skips a missing path and a repository without config, checks the rest, exits 1" "1 1" "$? $(ck_calls 'prune --json')"
@@ -644,6 +649,18 @@ expect_eq "notify-send without --action gets a plain notification" "--app-name=C
 rm -f "$FN/old"
 nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B"
 expect_eq "notify without an action sends a plain notification" "--app-name=Codebase index|T|B|" "$(cat "$T/notify-send.calls")"
+# The package's post-checkout hook (--stale-notify) passes TITLE and BODY only, the command after
+# "Run: " at the end of BODY: it becomes the action.
+printf "(['actions', 'body'],)\n" >"$FN/caps"
+rm -f "$T/hook-clicked"
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "Worth a cleanup: demo" "20 catalogs of deleted branches or worktrees. Run: echo pruned >'$T/hook-clicked'"
+if wait_for "$T/hook-clicked" pruned; then ok "a hook notification's Run command becomes the action"; else not_ok "a hook notification's Run command becomes the action"; fi
+expect_eq "the hook notification shows the body without the command and a Run button" \
+  "--app-name=Codebase index|--wait|--action=run=Run|Worth a cleanup: demo|20 catalogs of deleted branches or worktrees.|" "$(cat "$T/notify-send.calls")"
+printf "(['body'],)\n" >"$FN/caps"
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "Worth a cleanup: demo" "20 catalogs. Run: echo hi"
+expect_eq "without actions the hook notification keeps the command in its body" "--app-name=Codebase index|Worth a cleanup: demo|20 catalogs. Run: echo hi|" "$(cat "$T/notify-send.calls")"
+printf "(['actions', 'body'],)\n" >"$FN/caps"
 # Inside a systemd unit the waiter gets a transient unit of its own.
 nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x INVOCATION_ID=test bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "cd '/src/\${HOME}' && echo hi"
 expect_match "notify inside a systemd unit starts the waiter with systemd-run, its text in variables" \

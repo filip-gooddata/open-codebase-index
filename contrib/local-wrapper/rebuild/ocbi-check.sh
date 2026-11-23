@@ -6,7 +6,9 @@
 #   - the store no longer matches the configured embedding provider or model (a full rebuild is
 #     needed): action Rebuild, which runs `ocbi-rebuild CHECKOUT`;
 #   - `ocbi prune` would remove OCBI_STALE_THRESHOLD (15) or more catalogs of deleted branches and
-#     removed worktrees: action Prune, which runs `ocbi prune --apply` for that checkout.
+#     removed worktrees: action Prune, which runs `ocbi prune --apply` for that checkout (skipped
+#     with OCBI_STALE_CHECK=0, for instance where the post-checkout hook already notifies through
+#     `ocbi hooks install --stale-notify`).
 # It never rebuilds or prunes by itself; both wait for the user's click (or the printed command
 # where notifications cannot carry a button). Checkouts of one repository are checked once. Nothing
 # is checked while a rebuild runs. Notifies through $OCBI_HOME/ocbi-notify.sh when installed, and
@@ -83,6 +85,7 @@ while IFS= read -r checkout; do
     continue
   fi
 
+  [ "${OCBI_STALE_CHECK:-1}" != 0 ] || continue
   stale="$(cd "$root" && "$NODE" "$CBI_JS" prune --json --host "$HOST" --project "$root" 2>/dev/null | "$NODE" -e "$count_js")"
   if [ -z "$stale" ]; then
     log "$repo: prune dry run failed"

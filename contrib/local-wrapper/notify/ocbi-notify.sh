@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ocbi-notify.sh TITLE BODY [ACTION_LABEL ACTION_COMMAND]
-# Posts a desktop notification. ACTION_COMMAND is a shell command the action button runs. Every
+# Posts a desktop notification. ACTION_COMMAND is a shell command the action button runs. Called
+# with TITLE and BODY only, as the package's post-checkout hook does when installed with
+# `ocbi hooks install --stale-notify <this script>`, a BODY ending in " Run: COMMAND" offers
+# COMMAND as a Run action. Every
 # notification is also appended to $OCBI_HOME/logs/notify.log (OCBI_HOME defaults to the
 # directory this script is installed in), so nothing is lost on a machine without a desktop.
 # macOS: from "Codebase Index.app" (built by notifier/build.sh), which carries the action button.
@@ -30,6 +33,9 @@ if [ "${1:-}" = --wait-action ]; then
 fi
 
 title="${1:-}" body="${2:-}" action_label="${3:-}" action_command="${4:-}"
+if [ $# -eq 2 ]; then
+  case "$body" in *" Run: "?*) action_label=Run action_command="${body#* Run: }" body="${body%% Run: *}" ;; esac
+fi
 [ -n "$action_command" ] || action_label=""
 run_hint="${action_command:+ Run: $action_command}"
 

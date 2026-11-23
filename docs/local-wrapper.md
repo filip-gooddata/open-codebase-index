@@ -223,6 +223,12 @@ checkout listed in `$OCBI_HOME/check.conf`, one repository at a time:
   notifies "Worth a cleanup" with a Prune action that runs `ocbi prune --apply` for that checkout
   and logs to `$OCBI_HOME/logs/prune.log`.
 
+The post-checkout hook's own stale check (`ocbi hooks install --stale-notify
+<OCBI_HOME>/ocbi-notify.sh`) sends the same "Worth a cleanup" notification after checkouts;
+`ocbi-notify.sh` turns the command at the end of its message into a Run action. To get it only
+once a day from one of them, set `OCBI_STALE_CHECK=0` for the daily check (it then checks only
+for needed rebuilds), or leave `--stale-notify` out of the hook.
+
 It never rebuilds or prunes by itself, and checks nothing while a rebuild runs. Its log is
 `$OCBI_HOME/logs/check.log`. Load the jobs and name the checkouts once:
 

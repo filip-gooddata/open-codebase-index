@@ -54,7 +54,7 @@ if [ "${OCBI_UNAME:-$(uname -s)}" = Darwin ]; then
     [ -n "$action_command" ] && args+=(--action-label "$action_label" --action-command "$action_command")
     open -g -n "$app" --args "${args[@]}" || fallback
   else
-    TITLE="$title" BODY="$body" osascript \
+    TITLE="$title" BODY="$body$run_hint" osascript \
       -e 'display notification (system attribute "BODY") with title "Codebase index" subtitle (system attribute "TITLE")' || fallback
   fi
   exit 0

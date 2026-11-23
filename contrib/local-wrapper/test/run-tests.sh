@@ -695,6 +695,12 @@ PATH="$FN:$PATH" OCBI_UNAME=Darwin OCBI_NOTIFIER_APP="$T/Notifier.app" bash "$NH
 expect_eq "notify on macOS opens the notifier app with the action" "-g|-n|$T/Notifier.app|--args|--title|T|--body|B|--action-label|Rebuild|--action-command|echo hi|" "$(cat "$T/open.calls")"
 PATH="$FN:$PATH" OCBI_UNAME=Darwin OCBI_NOTIFIER_APP="$T/none.app" bash "$NH/ocbi-notify.sh" "T" "B"
 check "notify on macOS without the app uses osascript" grep -q 'display notification' "$T/osascript.calls"
+# A hook notification (TITLE BODY only) keeps its command in the osascript body, which has no button.
+fake "$FN" osascript "printf '%s' \"\$BODY\" >'$T/osascript.body'"
+PATH="$FN:$PATH" OCBI_UNAME=Darwin OCBI_NOTIFIER_APP="$T/none.app" bash "$NH/ocbi-notify.sh" "Worth a cleanup: demo" "20 catalogs. Run: echo hi"
+expect_eq "notify on macOS without the app keeps a hook notification's command in the body" "20 catalogs. Run: echo hi" "$(cat "$T/osascript.body")"
+PATH="$FN:$PATH" OCBI_UNAME=Darwin OCBI_NOTIFIER_APP="$T/Notifier.app" bash "$NH/ocbi-notify.sh" "Worth a cleanup: demo" "20 catalogs. Run: echo hi"
+expect_eq "notify on macOS with the app turns a hook notification's command into the action" "-g|-n|$T/Notifier.app|--args|--title|Worth a cleanup: demo|--body|20 catalogs.|--action-label|Run|--action-command|echo hi|" "$(cat "$T/open.calls")"
 
 printf '# pass %d fail %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

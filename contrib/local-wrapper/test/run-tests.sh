@@ -636,6 +636,12 @@ if [ "$(id -u)" != 0 ]; then
   expect_eq "schedule uninstall keeps the units when it cannot search for an enablement link" "1 present" \
     "$? $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent)"
   chmod 755 "$XC/systemd/user/timers.target.wants"
+  chmod 000 "$XC"
+  XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
+  rc=$?
+  chmod 755 "$XC"
+  expect_eq "schedule uninstall keeps the units and the link when an ancestor cannot be searched" "1 present present" \
+    "$rc $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent) $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent)"
 else
   skip "schedule uninstall keeps the units when an enablement link cannot be removed" "root ignores directory permissions"
 fi

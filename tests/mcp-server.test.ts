@@ -1322,7 +1322,7 @@ describe("MCP server tools and prompts", () => {
     });
   });
 
-  it("should explain when an unreadable lock requires manual verification", async () => {
+  it("should point an unreadable lock at the unlock command", async () => {
     const indexer = (await import("../src/tools/operations.js")).getIndexerForProject("/tmp/test-project", "opencode");
     vi.mocked(indexer.index).mockRejectedValueOnce(
       new IndexLockContentionError("/tmp/indexing.lock", null, "unknown-owner"),
@@ -1337,7 +1337,8 @@ describe("MCP server tools and prompts", () => {
     const content = result.content as Array<{ type: string; text?: string }>;
     expect(content[0].text).toContain("INDEX_BUSY");
     expect(content[0].text).toContain("Automatic recovery was refused");
-    expect(content[0].text).toContain("manual verification");
+    expect(content[0].text).toContain('ocbi unlock "/tmp"');
+    expect(content[0].text).toContain("--force");
   });
 
   it("should explain legacy locks in English", async () => {
@@ -1361,7 +1362,9 @@ describe("MCP server tools and prompts", () => {
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text?: string }>;
     expect(content[0].text).toContain("legacy lock format detected");
-    expect(content[0].text).toContain("remove this lock manually only if it is stale");
+    expect(content[0].text).toContain("PID 4243 on local-test");
+    expect(content[0].text).toContain('ocbi unlock "/tmp"');
+    expect(content[0].text).not.toContain("remove this lock manually");
   });
 
   it("should surface failed batch diagnostics in index_status output", async () => {

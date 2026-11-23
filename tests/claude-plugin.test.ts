@@ -76,7 +76,8 @@ describe("Claude Code plugin", () => {
       expect(text, command).toContain("`<git common dir>/codebase-index/config.json` when that line says `repository default store`");
       expect(text, command).toContain("restarts the MCP server");
       // The force policy is the server's merged-config decision, refused before any change.
-      expect(text, command).toContain("returns `FORCE_REBUILD_DISABLED` before it changes anything");
+      expect(text, command).toContain("`FORCE_REBUILD_DISABLED`");
+      expect(text, command).toContain("before it changes anything");
       expect(text, command).not.toContain("sets `indexing.allowForceRebuild` to `false`");
     }
     // The commands key off index_status text; keep the quoted phrases in step with the formatter.
@@ -90,6 +91,10 @@ describe("Claude Code plugin", () => {
     ]) {
       expect(route, phrase).toContain(phrase);
     }
+    // /status is a readiness check: it asks the user to run /index force and never forces itself.
+    expect(fs.readFileSync("./commands/status.md", "utf-8")).toContain("Otherwise tell the user to run `/index force`. Never call `index_codebase` with force from `/status`");
+    expect(fs.readFileSync("./commands/status.md", "utf-8")).not.toContain("Otherwise run `index_codebase` with force");
+    expect(fs.readFileSync("./commands/index.md", "utf-8")).toContain("3. Otherwise run `index_codebase` with force (`/index force`)");
     // Incompatibility needs a rebuild even when the index is populated.
     const status = fs.readFileSync("./commands/status.md", "utf-8");
     expect(status).toContain("Whenever status reports provider/model incompatibility, indexed or not");

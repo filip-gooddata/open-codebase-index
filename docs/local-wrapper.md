@@ -217,6 +217,13 @@ ocbi-schedule uninstall                  # unloads the jobs and removes their fi
 | Job files | `~/Library/LaunchAgents/<label>.plist` | `~/.config/systemd/user/` |
 | Notifications | `Codebase Index.app` (build with `notify/notifier/build.sh`) with an action button; `osascript` without one when the app is missing | `notify-send` over the session D-Bus; an action button when the server reports the `actions` capability and notify-send has `--action` (libnotify 0.7.10 or later) |
 
+Before forcing, the rebuild checks that Ollama answers at `$OLLAMA_HOST` (default
+`localhost:11434`) when the primary reports the `ollama` provider, and checks nothing for other
+providers. The jobs do not inherit your shell's environment: set `OLLAMA_HOST` or
+`OCBI_REBUILD_PREFLIGHT_URL` (empty skips the check) with `systemctl --user set-environment` or in
+the plist's `EnvironmentVariables`. `ocbi-schedule install` leaves a running rebuild's launchd agent
+loaded, and `uninstall` refuses while a rebuild runs.
+
 On Linux, user units run while you are logged in unless lingering is on (`loginctl
 enable-linger`). A clicked action runs in a detached waiter (its own transient unit when the
 notification comes from a systemd unit). Without `notify-send`, a session bus or a notification

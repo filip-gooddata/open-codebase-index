@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_f43f404a6ca8ed::t_078985825684e2 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "237c7857024e68bbeb5b16b323e61cfa72340b51",
+  "prompts": {},
+  "sessions": {
+    "s_f43f404a6ca8ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c709045c-bf33-402d-8926-030e24b4c1e8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

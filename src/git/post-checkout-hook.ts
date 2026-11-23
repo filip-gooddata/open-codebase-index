@@ -33,8 +33,6 @@ export const GIT_LOCAL_REPOSITORY_ENV_VARS = [
 const STALE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STALE_THRESHOLD = 15;
 const LOG_ROTATE_BYTES = 1024 * 1024;
-/** A lock file that cannot be parsed for this long is corrupt, not a writer mid-write. */
-const UNREADABLE_LOCK_STALE_MS = 60 * 1000;
 
 export type HookEnv = Record<string, string | undefined>;
 
@@ -97,6 +95,7 @@ export function getCheckoutStatePaths(commonDir: string, checkoutRoot: string): 
     stateDir,
     key,
     log: path.join(stateDir, `${key}.log`),
+    /** Prefix of the lock's generation files, `<lock>.<n>`. */
     lock: path.join(stateDir, `${key}.lock`),
     again: path.join(stateDir, `${key}.again`),
   };
@@ -106,6 +105,7 @@ interface LockOwner {
   pid: number;
   hostname: string;
   startedAt: string;
+  released?: boolean;
 }
 
 function getErrorCode(error: unknown): string | undefined {
@@ -122,25 +122,12 @@ function parseLockOwner(content: string): LockOwner | null {
   try {
     const parsed: unknown = JSON.parse(content);
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { pid, hostname, startedAt } = parsed as Record<string, unknown>;
+    const { pid, hostname, startedAt, released } = parsed as Record<string, unknown>;
     if (typeof pid !== "number" || typeof hostname !== "string" || typeof startedAt !== "string") return null;
-    return { pid, hostname, startedAt };
+    return { pid, hostname, startedAt, released: released === true };
   } catch {
     return null;
   }
-}
-
-function readLockContent(lockPath: string): string | null {
-  try {
-    return fs.readFileSync(lockPath, "utf-8");
-  } catch {
-    return null;
-  }
-}
-
-function readLockOwner(lockPath: string): LockOwner | null {
-  const content = readLockContent(lockPath);
-  return content === null ? null : parseLockOwner(content);
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -152,42 +139,88 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function lockFileAgeMs(lockPath: string): number | null {
+/*
+ * The refresh lock is a series of generation files `<lock>.<n>`; the highest one present is the
+ * lock. Taking it means creating `<lock>.<highest + 1>` with link(2), which fails when that file
+ * exists, so two processes that saw the same free generation cannot both win the next one. A
+ * holder releases by marking its file released, never by deleting it, so a generation number is
+ * not reused while it is the highest. Older generations are deleted after an acquisition; a
+ * delayed process can then recreate one of them, so every acquisition ends by checking that its
+ * generation is still the highest, and gives it up otherwise.
+ */
+
+function lockGenerationPath(lockPrefix: string, generation: number): string {
+  return `${lockPrefix}.${generation}`;
+}
+
+function listLockGenerations(lockPrefix: string): number[] {
+  const dir = path.dirname(lockPrefix);
+  const prefix = `${path.basename(lockPrefix)}.`;
+  let names: string[];
   try {
-    return Date.now() - fs.statSync(lockPath).mtimeMs;
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const generations: number[] = [];
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const suffix = name.slice(prefix.length);
+    if (/^[1-9][0-9]*$/.test(suffix)) generations.push(Number(suffix));
+  }
+  return generations.sort((left, right) => left - right);
+}
+
+function highestLockGeneration(lockPrefix: string): number {
+  const generations = listLockGenerations(lockPrefix);
+  return generations.length === 0 ? 0 : generations[generations.length - 1];
+}
+
+function readGenerationOwner(lockPrefix: string, generation: number): LockOwner | null {
+  try {
+    return parseLockOwner(fs.readFileSync(lockGenerationPath(lockPrefix, generation), "utf-8"));
   } catch {
     return null;
   }
 }
 
 /**
- * Whether lock content names a live owner: one running on this host, or one written on another
- * host, whose liveness cannot be checked. Content that does not parse is a live writer only while
- * the file is young; acquisition links a complete file, so it is corrupt after that.
+ * A generation is held while its owner has not released it and runs on this host, or was written
+ * on another host, whose processes cannot be checked. A generation that vanished or does not parse
+ * is not held: it is created complete by link(2) and replaced whole by rename(2).
  */
-function isLockContentLive(content: string, lockPath: string): boolean {
-  const owner = parseLockOwner(content);
-  if (owner) return owner.hostname !== os.hostname() || isProcessAlive(owner.pid);
-  const age = lockFileAgeMs(lockPath);
-  return age !== null && age < UNREADABLE_LOCK_STALE_MS;
+function isGenerationHeld(lockPrefix: string, generation: number): boolean {
+  const owner = readGenerationOwner(lockPrefix, generation);
+  if (!owner || owner.released) return false;
+  return owner.hostname !== os.hostname() || isProcessAlive(owner.pid);
 }
 
-/** True when the lock exists and its owner is live. */
-export function isRefreshLockHeld(lockPath: string): boolean {
-  const content = readLockContent(lockPath);
-  return content !== null && isLockContentLive(content, lockPath);
+/** True when the checkout's refresh lock has a live holder. */
+export function isRefreshLockHeld(lockPrefix: string): boolean {
+  const highest = highestLockGeneration(lockPrefix);
+  return highest > 0 && isGenerationHeld(lockPrefix, highest);
 }
 
-function writeOwnerFile(target: string, pid: number): string {
-  const temp = `${target}.${pid}.${randomBytes(4).toString("hex")}.tmp`;
-  const owner: LockOwner = { pid, hostname: os.hostname(), startedAt: new Date().toISOString() };
+/** The live holder of the checkout's refresh lock, or null. */
+export function readRefreshLockOwner(lockPrefix: string): LockOwner | null {
+  const highest = highestLockGeneration(lockPrefix);
+  if (highest === 0 || !isGenerationHeld(lockPrefix, highest)) return null;
+  return readGenerationOwner(lockPrefix, highest);
+}
+
+function writeOwnerFile(target: string, owner: LockOwner): string {
+  const temp = `${target}.${owner.pid}.${randomBytes(4).toString("hex")}.tmp`;
   fs.writeFileSync(temp, `${JSON.stringify(owner)}\n`, { flag: "wx" });
   return temp;
 }
 
+function newOwner(pid: number): LockOwner {
+  return { pid, hostname: os.hostname(), startedAt: new Date().toISOString() };
+}
+
 /** Atomically creates `target` naming `pid` as its owner; false when it exists. */
 function tryLinkOwnerFile(target: string, pid: number): boolean {
-  const temp = writeOwnerFile(target, pid);
+  const temp = writeOwnerFile(target, newOwner(pid));
   try {
     fs.linkSync(temp, target);
     return true;
@@ -199,91 +232,46 @@ function tryLinkOwnerFile(target: string, pid: number): boolean {
   }
 }
 
-/**
- * Removes a guard whose dead content was read as `staleContent`. It is moved aside and compared
- * first, so a guard another process took in the meantime goes back instead.
- */
-function removeStaleGuard(guardPath: string, staleContent: string): void {
-  const moved = `${guardPath}.${process.pid}.${randomBytes(4).toString("hex")}.stale`;
-  try {
-    fs.renameSync(guardPath, moved);
-  } catch (error: unknown) {
-    if (getErrorCode(error) === "ENOENT") return;
-    throw error;
-  }
-  try {
-    if (readLockContent(moved) !== staleContent) {
-      try {
-        fs.linkSync(moved, guardPath);
-      } catch (error: unknown) {
-        if (getErrorCode(error) !== "EEXIST") throw error;
-      }
-    }
-  } finally {
-    fs.rmSync(moved, { force: true });
-  }
+export interface AcquireRefreshLockOptions {
+  /** Test seam: runs after the free generation was read and before the next one is created. */
+  beforeLink?: (generation: number) => void;
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-const GUARD_WAIT_MS = 2000;
+const ACQUIRE_ATTEMPTS = 8;
 
 /**
- * Runs `action` while holding `<lock>.guard`, the short-lived mutex every acquisition and every
- * stale-lock reclaim takes, so a delayed reclaimer can never remove a lock another worker has
- * just taken. Returns null when the guard stays held past `waitMs`. A guard left by a process that
- * died inside these few file operations is reclaimed by owner liveness; two such reclaims racing a
- * third acquirer is the remaining window, and needs a crash inside the critical section.
+ * Takes the checkout's refresh lock for `pid`, recovering one whose holder is gone. Returns false
+ * when a live holder has it.
  */
-function withLockGuard<T>(lockPath: string, pid: number, waitMs: number, action: () => T): T | null {
-  const guardPath = `${lockPath}.guard`;
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    if (tryLinkOwnerFile(guardPath, pid)) break;
-    const content = readLockContent(guardPath);
-    if (content !== null && !isLockContentLive(content, guardPath)) {
-      removeStaleGuard(guardPath, content);
+export function tryAcquireRefreshLock(lockPrefix: string, pid: number = process.pid, options: AcquireRefreshLockOptions = {}): boolean {
+  fs.mkdirSync(path.dirname(lockPrefix), { recursive: true });
+  for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
+    const highest = highestLockGeneration(lockPrefix);
+    if (highest > 0 && isGenerationHeld(lockPrefix, highest)) return false;
+    const next = highest + 1;
+    options.beforeLink?.(next);
+    if (!tryLinkOwnerFile(lockGenerationPath(lockPrefix, next), pid)) continue;
+    if (highestLockGeneration(lockPrefix) !== next) {
+      // A generation above ours exists: we recreated one an earlier holder had already passed.
+      fs.rmSync(lockGenerationPath(lockPrefix, next), { force: true });
       continue;
     }
-    if (Date.now() >= deadline) return null;
-    sleepSync(10);
+    for (const generation of listLockGenerations(lockPrefix)) {
+      if (generation < next) fs.rmSync(lockGenerationPath(lockPrefix, generation), { force: true });
+    }
+    return true;
   }
-  try {
-    return action();
-  } finally {
-    if (readLockOwner(guardPath)?.pid === pid) fs.rmSync(guardPath, { force: true });
-  }
+  return false;
 }
 
-export interface AcquireRefreshLockOptions {
-  /** How long to wait for another process's guard. */
-  guardWaitMs?: number;
-  /** Test seam: runs inside the guard, after a dead owner was found and before its lock goes. */
-  beforeReclaim?: () => void;
-}
-
-/**
- * Takes the checkout's refresh lock for `pid`; recovers a lock whose owner is gone. Returns false
- * when a live owner holds it, or when another process holds the guard past the wait.
- */
-export function tryAcquireRefreshLock(lockPath: string, pid: number = process.pid, options: AcquireRefreshLockOptions = {}): boolean {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  return withLockGuard(lockPath, pid, options.guardWaitMs ?? GUARD_WAIT_MS, () => {
-    if (tryLinkOwnerFile(lockPath, pid)) return true;
-    const content = readLockContent(lockPath);
-    if (content !== null && isLockContentLive(content, lockPath)) return false;
-    options.beforeReclaim?.();
-    // Under the guard nobody else acquires or reclaims, and a dead owner releases nothing.
-    fs.rmSync(lockPath, { force: true });
-    return tryLinkOwnerFile(lockPath, pid);
-  }) ?? false;
-}
-
-/** Releases the lock when `pid` still owns it. Only a live owner releases, and reclaims need a dead one. */
-export function releaseRefreshLock(lockPath: string, pid: number = process.pid): void {
-  if (readLockOwner(lockPath)?.pid === pid) fs.rmSync(lockPath, { force: true });
+/** Releases the lock when `pid` holds it, by marking its generation released. */
+export function releaseRefreshLock(lockPrefix: string, pid: number = process.pid): void {
+  const highest = highestLockGeneration(lockPrefix);
+  if (highest === 0) return;
+  const target = lockGenerationPath(lockPrefix, highest);
+  const owner = readGenerationOwner(lockPrefix, highest);
+  if (!owner || owner.pid !== pid || owner.released) return;
+  fs.renameSync(writeOwnerFile(target, { ...owner, released: true }), target);
 }
 
 /** Takes a queued refresh request; false when none is queued. */

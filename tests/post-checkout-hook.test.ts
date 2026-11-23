@@ -8,6 +8,8 @@ import { resetRepositoryRoutesForTests } from "../src/config/repository-route.js
 import {
   getCheckoutStatePaths,
   getPostCheckoutSkipReason,
+  isRefreshLockHeld,
+  readRefreshLockOwner,
   releaseRefreshLock,
   resolvePostCheckoutTarget,
   runPostCheckoutHook,
@@ -163,62 +165,73 @@ describe("post-checkout hook", () => {
   });
 
   describe("refresh lock", () => {
-    it("recovers a lock whose owner is gone", () => {
-      const lock = path.join(tempDir, "state", "x.lock");
+    const owner = (pid: number, released = false) =>
+      JSON.stringify({ pid, hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z", released });
+    let lock: string;
+    const generations = () => fs.readdirSync(path.dirname(lock)).filter((name) => /^x\.lock\.\d+$/.test(name)).sort();
+
+    beforeEach(() => {
+      lock = path.join(tempDir, "state", "x.lock");
       fs.mkdirSync(path.dirname(lock), { recursive: true });
-      fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
-      expect(tryAcquireRefreshLock(lock, process.pid)).toBe(true);
-      expect(JSON.parse(fs.readFileSync(lock, "utf-8")).pid).toBe(process.pid);
     });
 
-    it("lets only one of three contenders take a stale lock", () => {
-      const lock = path.join(tempDir, "state", "x.lock");
-      fs.mkdirSync(path.dirname(lock), { recursive: true });
-      fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
-      const holders = new Set<number>();
+    it("recovers a lock whose owner is gone and keeps one whose owner runs", () => {
+      fs.writeFileSync(`${lock}.1`, owner(deadPid()));
+      expect(isRefreshLockHeld(lock)).toBe(false);
+      expect(tryAcquireRefreshLock(lock, process.pid)).toBe(true);
+      expect(readRefreshLockOwner(lock)?.pid).toBe(process.pid);
+      expect(generations()).toEqual(["x.lock.2"]);
+      expect(tryAcquireRefreshLock(lock, process.ppid)).toBe(false);
+      releaseRefreshLock(lock, process.ppid);
+      expect(isRefreshLockHeld(lock)).toBe(true);
+      releaseRefreshLock(lock, process.pid);
+      expect(isRefreshLockHeld(lock)).toBe(false);
+      expect(tryAcquireRefreshLock(lock, process.ppid)).toBe(true);
+      expect(generations()).toEqual(["x.lock.3"]);
+    });
+
+    it("lets only one of three contenders that saw the same dead holder take the lock", () => {
+      fs.writeFileSync(`${lock}.1`, owner(deadPid()));
+      const winners: number[] = [];
       const [first, second, third] = [process.pid, process.ppid, 1];
       const acquired = tryAcquireRefreshLock(lock, first, {
-        beforeReclaim: () => {
-          // Two more workers arrive while the first is between reading the dead owner and replacing it.
+        beforeLink: () => {
+          // Two more contenders run while the first sits between reading the dead holder and linking.
           for (const pid of [second, third]) {
-            if (tryAcquireRefreshLock(lock, pid, { guardWaitMs: 50 })) holders.add(pid);
+            if (tryAcquireRefreshLock(lock, pid)) winners.push(pid);
           }
         },
       });
-      if (acquired) holders.add(first);
-      expect([...holders]).toEqual([first]);
-      expect(JSON.parse(fs.readFileSync(lock, "utf-8")).pid).toBe(first);
-      expect(fs.existsSync(`${lock}.guard`)).toBe(false);
+      if (acquired) winners.push(first);
+      expect(winners).toEqual([second]);
+      expect(readRefreshLockOwner(lock)?.pid).toBe(second);
     });
 
-    it("waits out a live guard and reclaims a dead one", () => {
-      const lock = path.join(tempDir, "state", "x.lock");
-      fs.mkdirSync(path.dirname(lock), { recursive: true });
-      fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
-      fs.writeFileSync(`${lock}.guard`, JSON.stringify({ pid: process.ppid, hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
-      expect(tryAcquireRefreshLock(lock, process.pid, { guardWaitMs: 50 })).toBe(false);
-      expect(JSON.parse(fs.readFileSync(lock, "utf-8")).pid).not.toBe(process.pid);
-      fs.writeFileSync(`${lock}.guard`, JSON.stringify({ pid: deadPid(), hostname: os.hostname(), startedAt: "2020-01-01T00:00:00Z" }));
-      expect(tryAcquireRefreshLock(lock, process.pid, { guardWaitMs: 50 })).toBe(true);
-      expect(fs.existsSync(`${lock}.guard`)).toBe(false);
+    it("gives up a generation recreated after later holders deleted it", () => {
+      fs.writeFileSync(`${lock}.1`, owner(deadPid()));
+      let delayed = true;
+      const acquired = tryAcquireRefreshLock(lock, process.pid, {
+        beforeLink: (generation) => {
+          if (!delayed) return;
+          delayed = false;
+          expect(generation).toBe(2);
+          // While the first contender stalls, one holder takes and releases generation 2 and the
+          // next takes 3, deleting 1 and 2. The stalled contender then recreates 2.
+          expect(tryAcquireRefreshLock(lock, process.ppid)).toBe(true);
+          releaseRefreshLock(lock, process.ppid);
+          expect(tryAcquireRefreshLock(lock, 1)).toBe(true);
+          expect(generations()).toEqual(["x.lock.3"]);
+        },
+      });
+      expect(acquired).toBe(false);
+      expect(generations()).toEqual(["x.lock.3"]);
+      expect(readRefreshLockOwner(lock)?.pid).toBe(1);
     });
 
-    it("keeps a lock whose owner runs", () => {
-      const lock = path.join(tempDir, "state", "x.lock");
+    it("treats an unreadable generation as free", () => {
+      fs.writeFileSync(`${lock}.4`, "");
       expect(tryAcquireRefreshLock(lock, process.pid)).toBe(true);
-      expect(tryAcquireRefreshLock(lock, process.pid)).toBe(false);
-      releaseRefreshLock(lock, process.pid);
-      expect(fs.existsSync(lock)).toBe(false);
-    });
-
-    it("treats a fresh unreadable lock as a writer mid-write and an old one as stale", () => {
-      const lock = path.join(tempDir, "state", "x.lock");
-      fs.mkdirSync(path.dirname(lock), { recursive: true });
-      fs.writeFileSync(lock, "");
-      expect(tryAcquireRefreshLock(lock, process.pid)).toBe(false);
-      const old = new Date(Date.now() - 5 * 60 * 1000);
-      fs.utimesSync(lock, old, old);
-      expect(tryAcquireRefreshLock(lock, process.pid)).toBe(true);
+      expect(generations()).toEqual(["x.lock.5"]);
     });
   });
 
@@ -255,7 +268,7 @@ describe("post-checkout hook", () => {
       expect(await worker).toBe(2);
 
       const paths = getCheckoutStatePaths(commonDir, repo);
-      expect(fs.existsSync(paths.lock)).toBe(false);
+      expect(isRefreshLockHeld(paths.lock)).toBe(false);
       expect(fs.existsSync(paths.again)).toBe(false);
       expect(fs.readFileSync(paths.log, "utf-8").match(/^== exit 0 /gm)).toHaveLength(2);
     });
@@ -281,7 +294,7 @@ describe("post-checkout hook", () => {
         spawnWorker: () => { throw new Error("spawn EACCES"); },
       });
       expect(outcome).toEqual({ kind: "skipped", reason: "worker failed to start: spawn EACCES" });
-      expect(fs.existsSync(getCheckoutStatePaths(commonDir, repo).lock)).toBe(false);
+      expect(isRefreshLockHeld(getCheckoutStatePaths(commonDir, repo).lock)).toBe(false);
     });
 
     it("does no pass when nothing is queued, and leaves a live worker's lock alone", async () => {
@@ -289,13 +302,13 @@ describe("post-checkout hook", () => {
       const paths = getCheckoutStatePaths(commonDir, repo);
       const runPass = (): RefreshPassResult => { throw new Error("must not run"); };
       expect(await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, { env: {}, runPass })).toBe(0);
-      expect(fs.existsSync(paths.lock)).toBe(false);
+      expect(isRefreshLockHeld(paths.lock)).toBe(false);
 
       expect(tryAcquireRefreshLock(paths.lock, process.pid)).toBe(true);
       fs.writeFileSync(paths.again, "");
       expect(await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, { env: {}, runPass, pid: deadPid() })).toBe(0);
       expect(fs.existsSync(paths.again)).toBe(true);
-      expect(JSON.parse(fs.readFileSync(paths.lock, "utf-8")).pid).toBe(process.pid);
+      expect(readRefreshLockOwner(paths.lock)?.pid).toBe(process.pid);
     });
 
     it("queues before checking the lock, so a finishing worker picks the request up", async () => {
@@ -314,7 +327,7 @@ describe("post-checkout hook", () => {
         },
       })).toBe(2);
       expect(queued).toMatchObject({ kind: "queued" });
-      expect(fs.existsSync(paths.lock)).toBe(false);
+      expect(isRefreshLockHeld(paths.lock)).toBe(false);
     });
 
     it("logs a busy store and does not retry", async () => {
@@ -328,11 +341,32 @@ describe("post-checkout hook", () => {
       });
       expect(passes).toBe(1);
       expect(fs.readFileSync(paths.log, "utf-8")).toMatch(/^== busy: another index operation holds the store/m);
-      expect(fs.existsSync(paths.lock)).toBe(false);
+      expect(isRefreshLockHeld(paths.lock)).toBe(false);
     });
   });
 
   describe("stale check", () => {
+    it("quotes the cleanup command so a shell gets the exact arguments", async () => {
+      const repo = createRepository(path.join(tempDir, "it's quoted"));
+      const commonDir = path.join(repo, ".git");
+      writeRepositoryConfig(commonDir);
+      const paths = getCheckoutStatePaths(commonDir, repo);
+      fs.mkdirSync(paths.stateDir, { recursive: true });
+      fs.writeFileSync(paths.again, "");
+      const entryScript = path.join(tempDir, "pkg dir", "it's", "cbi.js");
+      const messages: string[] = [];
+      await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex", staleNotify: "notifier" }, {
+        env: {},
+        entryScript,
+        runPass: () => ({ exitCode: 0, busy: false }),
+        countPrunable: () => 15,
+        notify: (_command, _title, message) => { messages.push(message); },
+      });
+      const command = messages[0]?.split("Run: ")[1] ?? "";
+      const words = execFileSync("sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { encoding: "utf-8" }).split("\n").slice(0, -1);
+      expect(words).toEqual([process.execPath, entryScript, "prune", "--apply", "--host", "codex", "--project", repo]);
+    });
+
     it("counts prunable catalogs once a day and notifies from the threshold", async () => {
       const repo = createRepository(path.join(tempDir, "stale"));
       const commonDir = path.join(repo, ".git");

@@ -51,6 +51,11 @@ function gitOk(cwd: string, args: string[]): string {
   return result.stdout;
 }
 
+/** git ends its output with one newline; a path may itself end in spaces, so strip nothing else. */
+function stripNewline(output: string): string {
+  return output.endsWith("\n") ? output.slice(0, -1) : output;
+}
+
 function realpathOrResolve(filePath: string): string {
   try {
     return fs.realpathSync.native(filePath);
@@ -63,7 +68,7 @@ function realpathOrResolve(filePath: string): string {
 export function resolveHookRepository(repo: string): HookRepository {
   const absolute = path.resolve(repo);
   if (!fs.existsSync(absolute)) throw new Error(`Repository path does not exist: ${absolute}`);
-  const commonDir = gitOk(absolute, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
+  const commonDir = stripNewline(gitOk(absolute, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
   const bare = gitOk(absolute, ["rev-parse", "--is-bare-repository"]).trim() === "true";
   return { repo: absolute, commonDir: realpathOrResolve(commonDir), bare };
 }
@@ -197,12 +202,12 @@ function isInside(child: string, parent: string): boolean {
  */
 export function resolveHookFileLocation(repository: HookRepository): HookFileLocation {
   const configured = git(repository.repo, ["config", "--get", "core.hooksPath"]);
-  const hooksPath = configured.status === 0 ? configured.stdout.trim() || null : null;
-  const dir = realpathOrResolve(gitOk(repository.repo, ["rev-parse", "--path-format=absolute", "--git-path", "hooks"]).trim());
+  const hooksPath = configured.status === 0 ? stripNewline(configured.stdout) || null : null;
+  const dir = realpathOrResolve(stripNewline(gitOk(repository.repo, ["rev-parse", "--path-format=absolute", "--git-path", "hooks"])));
   const location: HookFileLocation = { dir, file: path.join(dir, "post-checkout"), hooksPath, error: null, warnings: [] };
   if (hooksPath === null) return location;
 
-  const topLevel = repository.bare ? null : realpathOrResolve(gitOk(repository.repo, ["rev-parse", "--show-toplevel"]).trim());
+  const topLevel = repository.bare ? null : realpathOrResolve(stripNewline(gitOk(repository.repo, ["rev-parse", "--show-toplevel"])));
   if (isInside(dir, repository.commonDir)) return location;
   if (!(topLevel !== null && isInside(dir, topLevel))) {
     location.error = `core.hooksPath is ${hooksPath} (${dir}), outside this repository, so other repositories may share it. Use a git with config-based hooks, or call \`ocbi hook post-checkout "$@"\` from that hook yourself.`;

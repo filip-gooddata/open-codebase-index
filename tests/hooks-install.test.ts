@@ -20,7 +20,7 @@ import {
   uninstallPostCheckoutHook,
   type HookCommandSpec,
 } from "../src/git/hook-install.js";
-import { getCheckoutStatePaths, scrubGitRepositoryEnv } from "../src/git/post-checkout-hook.js";
+import { getCheckoutStatePaths, isRefreshLockHeld, scrubGitRepositoryEnv } from "../src/git/post-checkout-hook.js";
 
 const CBI = path.resolve("dist/cbi.js");
 const CONFIG_HOOKS = gitSupportsConfigHooks();
@@ -239,6 +239,20 @@ describe("hook file install", () => {
     expect(uninstallPostCheckoutHook(repo).changed).toBe(false);
   });
 
+  it("writes to a hooks path that ends in spaces, where git looks", () => {
+    const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
+    git(repo.repo, "config", "--local", "core.hooksPath", ".repo-hooks  ");
+    const spaced = path.join(repo.repo, ".repo-hooks  ");
+    fs.mkdirSync(spaced);
+    const marker = path.join(tempDir, "ran");
+    fs.writeFileSync(path.join(spaced, "post-checkout"), `#!/bin/sh\necho ran >> "${marker}"\n`, { mode: 0o755 });
+    installPostCheckoutHook(repo, { method: "file", spec: spec(), configHooksSupported: false });
+    expect(getPostCheckoutHookStatus(repo, CBI, false).file?.path).toBe(path.join(spaced, "post-checkout"));
+    expect(fs.existsSync(path.join(spaced, CHAINED_HOOK_NAME))).toBe(true);
+    execFileSync("git", ["checkout", "-q", "-b", "feature"], { cwd: repo.repo, env: { ...gitEnv, OCBI_PREWARM: "0" } });
+    expect(fs.readFileSync(marker, "utf-8")).toBe("ran\n");
+  });
+
   it("parks and restores a hook symlink whose target is missing", () => {
     const repo = resolveHookRepository(createRepository(path.join(tempDir, "repo")));
     const hooks = path.join(repo.commonDir, "hooks");
@@ -341,7 +355,7 @@ describe("post-checkout through git", () => {
     await vi.waitFor(() => {
       const log = fs.existsSync(paths.log) ? fs.readFileSync(paths.log, "utf-8") : "";
       expect(log.match(/^== (exit|busy)/gm)?.length ?? 0).toBeGreaterThanOrEqual(passes);
-      expect(fs.existsSync(paths.lock)).toBe(false);
+      expect(isRefreshLockHeld(paths.lock)).toBe(false);
     }, { timeout: 60_000, interval: 100 });
     return fs.readFileSync(paths.log, "utf-8");
   }
@@ -361,7 +375,7 @@ describe("post-checkout through git", () => {
         git(repo, "checkout", "-q", "-b", "feature");
         // git is back while the refresh still waits for its embeddings.
         await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0), { timeout: 30_000, interval: 50 });
-        expect(fs.existsSync(lock)).toBe(true);
+        expect(isRefreshLockHeld(lock)).toBe(true);
       } finally {
         held = null;
         for (const respond of pending.splice(0)) respond();

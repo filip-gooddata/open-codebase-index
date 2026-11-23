@@ -1,0 +1,73 @@
+CHANGELOG.md
+  s_daca32480d7852::t_586a1556fd998b 10-14
+docs/configuration.md
+  s_daca32480d7852::t_6c642f9e4e41ee 23-90,358
+src/adapters/shared/extension-core.ts
+  s_daca32480d7852::t_7c3bbe5515427e 17,382-383
+src/config/defaults.ts
+  s_daca32480d7852::t_2fcad68942f29b 19
+src/config/layer-shape.ts
+  s_daca32480d7852::t_798463e6e594b1 1-43
+src/config/merger.ts
+  s_daca32480d7852::t_0ef634fa39b27d 11,13,33-36,205-209,293-381
+src/config/paths.ts
+  s_daca32480d7852::t_1d078bf6a79748 8,70-74,91-97,205-209
+src/config/repository-route.ts
+  s_daca32480d7852::t_022e96b4681e87 1-352
+src/config/schema.ts
+  s_daca32480d7852::t_72240fe92844b9 47-51,307-309
+src/eval/runner-config.ts
+  s_daca32480d7852::t_ca4d0bce97e0a9 6,9,178-190,192-194,198-211
+src/eval/runner.ts
+  s_daca32480d7852::t_2fbfbfb4418c02 22,26,291,299
+src/git/git-dir.ts
+  s_daca32480d7852::t_96712733934388 1-39
+src/git/index.ts
+  s_daca32480d7852::t_b3c1d7d7f41682 1,3,6-7
+src/git/layout.ts
+  s_daca32480d7852::t_4620666f054419 1-109
+src/indexer/index.ts
+  s_daca32480d7852::t_bd00524f1e4236 43,1632-1666,4123-4127,4141-4146,4157-4161,4449,4491-4497,4641-4649,4961-4973,7822-7826,8036,8058,8199
+src/tools/execute-common.ts
+  s_daca32480d7852::t_9122c09075130b 22,29,94-98,104,106-112
+src/tools/operations.ts
+  s_daca32480d7852::t_7402b29b3bcb9e 819-826,831,846-852,856-864
+src/utils/background-worker.ts
+  s_daca32480d7852::t_2671aac9026808 812
+src/watcher/index.ts
+  s_daca32480d7852::t_71350624770c22 103-105
+tests/eval-repository-route.test.ts
+  s_daca32480d7852::t_adf080712a020c 1-177
+tests/mcp-server.test.ts
+  s_daca32480d7852::t_1140f6e9d2f1a4 195
+tests/repository-route-indexer-guards.test.ts
+  s_daca32480d7852::t_3030347730909a 1-249
+tests/repository-route-runtime.test.ts
+  s_daca32480d7852::t_3ebb16c4ecc641 1-272
+tests/repository-route-status.test.ts
+  s_daca32480d7852::t_aaf21d95823429 1-283
+tests/repository-route-watcher.test.ts
+  s_daca32480d7852::t_c7f1e8618bc6fd 1-159
+tests/repository-route.test.ts
+  s_daca32480d7852::t_023d51eb0aaa39 1-594
+tests/setup/isolated-home.ts
+  s_daca32480d7852::t_259906c9d1ebee 1-14
+vitest.config.ts
+  s_daca32480d7852::t_cc69248838c54a 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "db585b9708f7e4faf1bfea17a03a8e7ecffae863",
+  "prompts": {},
+  "sessions": {
+    "s_daca32480d7852": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74c12c6e-c1b5-4c7a-bd6b-a37883e411d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

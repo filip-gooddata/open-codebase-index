@@ -41,7 +41,7 @@ describe("Codex plugin host mode", () => {
       name: string;
     };
     const mcpManifest = JSON.parse(fs.readFileSync(".mcp.json", "utf-8")) as {
-      mcpServers: Record<string, { command: string; args: string[] }>;
+      mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
     };
 
     expect(pluginManifest.name).toBe("codebase-index");
@@ -53,15 +53,16 @@ describe("Codex plugin host mode", () => {
     expect(fs.existsSync(".codex-plugin/hooks.json")).toBe(true);
 
     const codebaseMcp = mcpManifest.mcpServers["codebase-index"];
-    expect(codebaseMcp.command).toBe("npx");
+    expect(codebaseMcp.command).toBe("sh");
     expect(codebaseMcp.args).toEqual([
-      "-y",
-      "--package",
-      `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/open-codebase-index-${packageManifest.version}.tgz`,
+      "-c",
+      "if command -v open-codebase-index-mcp >/dev/null 2>&1; then exec open-codebase-index-mcp \"$@\"; fi; "
+        + `exec npx -y --package '${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/`
+        + `open-codebase-index-${packageManifest.version}.tgz' open-codebase-index-mcp "$@"`,
       "open-codebase-index-mcp",
       "--host",
       "codex",
     ]);
-
+    expect(codebaseMcp.env).toEqual({ OCBI_PLUGIN_VERSION: packageManifest.version });
   });
 });

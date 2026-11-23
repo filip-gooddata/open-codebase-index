@@ -15,6 +15,7 @@ directory once the package does its job natively.
 | Piece | Files | Installs to | What it does | Platforms |
 |---|---|---|---|---|
 | `hook` | `hook/ocbi-post-checkout.sh` | `$OCBI_HOME` | git `post-checkout` hook: runs `ocbi index` in the background after a branch checkout or `git worktree add` in a repository with a repository config, and once a day notifies when many catalogs are stale. | macOS, Linux |
+| `mcp` | `mcp/open-codebase-index-mcp` | bin dir | Runs `$OCBI_HOME/pkg` with the chosen Node.js; the Claude Code and Codex plugins start the first `open-codebase-index-mcp` on `PATH`, so this serves them without `npx`. | macOS, Linux |
 | `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-rebuild`, `rebuild/rebuild.plist.template` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job. | macOS; Linux support is planned |
 | `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the stale-catalog check and the rebuild, with an action button when the notifier app is built. | macOS; Linux support is planned |
 | `pkg` | none | `$OCBI_HOME/pkg` | `npm install` of the package spec you pass with `--package`. | macOS, Linux |
@@ -41,7 +42,7 @@ contrib/local-wrapper/install.sh --pieces hook,rebuild           # a subset
 
 `OCBI_HOME` defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/ocbi`; `--home`, `--bin-dir`,
 `--launch-agents-dir`, `--label` and `--node` override the destinations and the Node.js the
-pieces run. The package is installed first, and the hook and rebuild are
+pieces run. The package is installed first, and the hook, mcp and rebuild are
 placed only next to a package with the repository config (gd.7) and `--allow-shared-rebuild`
 (gd.6). Reruns are idempotent. The installer never writes a repository config,
 and never registers anything with Claude Code, Codex, git or launchd: it prints those commands for

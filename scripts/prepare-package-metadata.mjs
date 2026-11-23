@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "node:path";
 import { fileURLToPath } from "url";
-import { pluginServerArgs } from "./plugin-manifests.mjs";
+import { pluginServerEntry } from "./plugin-manifests.mjs";
 
 /**
  * @typedef {{
@@ -161,7 +161,7 @@ function prepareManifest(manifestPath, host) {
   if (!server?.command || !Array.isArray(server.args)) {
     fail(`Missing codebase-index MCP server in ${manifestPath}`);
   }
-  server.args = pluginServerArgs(catalog, packageJson.version, host);
+  Object.assign(server, pluginServerEntry(catalog, packageJson.version, host));
   if (manifest.author?.url) {
     manifest.author.url = appliedRepositoryUrl;
   }
@@ -181,7 +181,7 @@ function prepareClaudePluginManifest(manifestPath) {
   if (!server?.command || !Array.isArray(server.args)) {
     fail(`Missing codebase-index MCP server in ${manifestPath}`);
   }
-  server.args = pluginServerArgs(catalog, packageJson.version, "claude");
+  Object.assign(server, pluginServerEntry(catalog, packageJson.version, "claude"));
 
   if (manifest.homepage) {
     manifest.homepage = appliedRepositoryUrl;

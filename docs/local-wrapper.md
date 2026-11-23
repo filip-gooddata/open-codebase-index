@@ -41,9 +41,10 @@ plugin's version through `npx` ([Installation and host setup](installation.md#cl
 | `hook` | A git `post-checkout` hook that indexes a new branch or worktree in the background, so a secondary checkout (which skips the startup index) is warm before an agent asks. Once a day per repository it also counts the catalogs `ocbi prune` would remove and notifies past a threshold. |
 | `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. |
 | `notify` | Desktop notifications for the hook and the rebuild. |
+| `mcp` | `open-codebase-index-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the Node.js `install.sh` found. The Claude Code and Codex plugins start the first `open-codebase-index-mcp` on `PATH`, so this gives them the pinned package, with no `npx` download and no network. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
-The hook and the rebuild run the Node.js that `install.sh` found (or `--node`), with
+The hook, `open-codebase-index-mcp` and the rebuild run the Node.js that `install.sh` found (or `--node`), with
 `dist/cbi.js` or `dist/cli.js` from `$OCBI_HOME/pkg`. `install.sh` installs the package first and
 refuses to place these pieces next to a package without the repository config (gd.7) or
 `--allow-shared-rebuild` (gd.6). Pick a stable Node.js path: a per-shell path such as fnm's
@@ -64,10 +65,11 @@ claude plugin marketplace add filip-gooddata/open-codebase-index
 claude plugin install codebase-index@open-codebase-index
 ```
 
-The plugin starts `npx -y --package <release tarball> open-codebase-index-mcp --host claude` in the
-session's directory. Fill the npm cache once after installing or upgrading (`npx -y --package
-<release tarball> ocbi --help`), because the first download takes longer than Claude Code's MCP
-start timeout.
+The plugin starts the first `open-codebase-index-mcp` on the host's `PATH` with `--host claude` in
+the session's directory, and falls back to `npx` of its release tarball only when there is none.
+With the `mcp` piece that is `<bin dir>/open-codebase-index-mcp`, which runs `$OCBI_HOME/pkg` with
+a fixed Node.js; keep the bin dir on the `PATH` the host starts with. Install the package at the
+plugin's version (`install.sh --package <release tarball>`); `index_status` warns when they differ.
 
 **Codex.** Install the plugin the same way (`codex plugin marketplace add`, see
 [Installation and host setup](installation.md#codex)), or register the server in

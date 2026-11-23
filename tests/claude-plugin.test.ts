@@ -11,7 +11,7 @@ describe("Claude Code plugin", () => {
       version: string;
       hooks?: string;
       skills?: string;
-      mcpServers?: Record<string, { command: string; args: string[] }>;
+      mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
     };
 
     const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf-8")) as { version: string };
@@ -21,17 +21,19 @@ describe("Claude Code plugin", () => {
     expect(pluginManifest.skills).toBe("./skills/");
 
     const codebaseMcp = pluginManifest.mcpServers?.["codebase-index"];
-    // Runs the pinned GitHub release tarball of this version, not the
-    // uncommitted dist/, so a git marketplace install starts without a build.
-    expect(codebaseMcp?.command).toBe("npx");
+    // Runs the installed open-codebase-index-mcp from PATH, else this version's GitHub release
+    // tarball through npx, so a git marketplace install never needs the uncommitted dist/.
+    expect(codebaseMcp?.command).toBe("sh");
     expect(codebaseMcp?.args).toEqual([
-      "-y",
-      "--package",
-      `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/open-codebase-index-${packageManifest.version}.tgz`,
+      "-c",
+      "if command -v open-codebase-index-mcp >/dev/null 2>&1; then exec open-codebase-index-mcp \"$@\"; fi; "
+        + `exec npx -y --package '${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/`
+        + `open-codebase-index-${packageManifest.version}.tgz' open-codebase-index-mcp "$@"`,
       "open-codebase-index-mcp",
       "--host",
       "claude",
     ]);
+    expect(codebaseMcp?.env).toEqual({ OCBI_PLUGIN_VERSION: packageManifest.version });
   });
 
   it("loads no SessionStart hook and only the commands that work on Claude Code", () => {

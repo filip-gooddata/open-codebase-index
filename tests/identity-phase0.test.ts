@@ -5,6 +5,7 @@ import * as path from "path";
 
 import { describe, expect, it } from "vitest";
 
+import { pluginServerEntry } from "../scripts/plugin-manifests.mjs";
 import { IDENTITY_CATALOG } from "../src/identity-catalog.js";
 import { getNativeBindingFilename, resolveNativeBindingPath } from "../src/native/binding.js";
 
@@ -144,10 +145,10 @@ describe("Phase 1 product identity compatibility", () => {
     const packageJson = readJson<PackageMetadata>("package.json");
     const packageLock = readJson<PackageLockMetadata>("package-lock.json");
     const mcpManifest = readJson<{
-      mcpServers: Record<string, { command: string; args: string[] }>;
+      mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
     }>(".mcp.json");
     const claudeManifest = readJson<ClaudeManifestMetadata & {
-      mcpServers: Record<string, { command: string; args: string[] }>;
+      mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
     }>(".claude-plugin/plugin.json");
     const claudeMarketplace = readJson<{ owner: { url: string } }>(".claude-plugin/marketplace.json");
     const codexManifest = readJson<CodexManifestMetadata>(".codex-plugin/plugin.json");
@@ -164,16 +165,14 @@ describe("Phase 1 product identity compatibility", () => {
     expect(packageJson.napi.binaryName).toBe(IDENTITY_CATALOG.native.binaryName);
 
     const codexMcpManifest = readJson<{
-      mcpServers: Record<string, { command: string; args: string[] }>;
+      mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
     }>(codexManifest.mcpServers);
-    const releaseTarball = `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageJson.version}/`
-      + `${IDENTITY_CATALOG.product.future.packageName}-${packageJson.version}.tgz`;
-    const expectedCodexArgs = ["-y", "--package", releaseTarball, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "codex"];
-    const expectedClaudeArgs = ["-y", "--package", releaseTarball, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "claude"];
+    const expectedCodex = pluginServerEntry(IDENTITY_CATALOG, packageJson.version, "codex");
+    const expectedClaude = pluginServerEntry(IDENTITY_CATALOG, packageJson.version, "claude");
 
-    expect(mcpManifest.mcpServers["codebase-index"]).toMatchObject({ command: "npx", args: expectedCodexArgs });
-    expect(codexMcpManifest.mcpServers["codebase-index"]).toMatchObject({ command: "npx", args: expectedCodexArgs });
-    expect(claudeManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedClaudeArgs });
+    expect(mcpManifest.mcpServers["codebase-index"]).toMatchObject(expectedCodex);
+    expect(codexMcpManifest.mcpServers["codebase-index"]).toMatchObject(expectedCodex);
+    expect(claudeManifest.mcpServers["codebase-index"]).toEqual(expectedClaude);
     expect(claudeManifest.homepage).toBe(current.repository);
     expect(claudeManifest.repository).toBe(current.repository);
     expect(claudeManifest.author?.url).toBe(current.repository);
@@ -221,10 +220,10 @@ describe("Phase 1 product identity compatibility", () => {
       const packageJson = readJson<PackageMetadata>(path.join(tempDir, "package.json"));
       const packageLock = readJson<PackageLockMetadata>(path.join(tempDir, "package-lock.json"));
       const stagedMcpManifest = readJson<{
-        mcpServers: Record<string, { command: string; args: string[] }>;
+        mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
       }>(path.join(tempDir, ".mcp.json"));
       const stagedClaudeManifest = readJson<ClaudeManifestMetadata & {
-        mcpServers: Record<string, { command: string; args: string[] }>;
+        mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
       }>(path.join(tempDir, ".claude-plugin", "plugin.json"));
       const stagedCodexManifest = readJson<CodexManifestMetadata>(
         path.join(tempDir, ".codex-plugin", "plugin.json"),
@@ -240,24 +239,9 @@ describe("Phase 1 product identity compatibility", () => {
       };
       expect(packageJson.engines.node).toBe(">=22.22.0");
       expect(packageLock.packages[""]?.engines?.node).toBe(">=22.22.0");
-      const releaseTarball = `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageJson.version}/`
-        + `${IDENTITY_CATALOG.product.future.packageName}-${packageJson.version}.tgz`;
-      const expectedMcpArgs = [
-        "-y",
-        "--package",
-        releaseTarball,
-        IDENTITY_CATALOG.product.future.mcpBinary,
-        "--host",
-        "codex",
-      ];
-      const expectedClaudeArgs = [
-        "-y",
-        "--package",
-        releaseTarball,
-        IDENTITY_CATALOG.product.future.mcpBinary,
-        "--host",
-        "claude",
-      ];
+      const stagedVersion = readJson<{ version: string }>(path.join(tempDir, "package.json")).version;
+      const expectedMcp = pluginServerEntry(IDENTITY_CATALOG, stagedVersion, "codex");
+      const expectedClaude = pluginServerEntry(IDENTITY_CATALOG, stagedVersion, "claude");
 
       expect(packageJson.name).toBe(IDENTITY_CATALOG.product.future.packageName);
       expect(packageJson.bin).toEqual(expectedBin);
@@ -265,8 +249,8 @@ describe("Phase 1 product identity compatibility", () => {
       expect(packageLock.name).toBe(IDENTITY_CATALOG.product.future.packageName);
       expect(packageLock.packages[""]?.name).toBe(IDENTITY_CATALOG.product.future.packageName);
       expect(packageLock.packages[""]?.bin).toEqual(expectedBin);
-      expect(stagedMcpManifest.mcpServers["codebase-index"]).toMatchObject({ command: "npx", args: expectedMcpArgs });
-      expect(stagedClaudeManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedClaudeArgs });
+      expect(stagedMcpManifest.mcpServers["codebase-index"]).toMatchObject(expectedMcp);
+      expect(stagedClaudeManifest.mcpServers["codebase-index"]).toEqual(expectedClaude);
       expect(stagedClaudeManifest.homepage).toBe(IDENTITY_CATALOG.product.current.repository);
       expect(stagedClaudeManifest.repository).toBe(IDENTITY_CATALOG.product.current.repository);
       expect(stagedClaudeManifest.author?.url).toBe(IDENTITY_CATALOG.product.current.repository);
@@ -305,10 +289,10 @@ describe("Phase 1 product identity compatibility", () => {
       const packageJson = readJson<PackageMetadata>(path.join(tempDir, "package.json"));
       const packageLock = readJson<PackageLockMetadata>(path.join(tempDir, "package-lock.json"));
       const stagedMcpManifest = readJson<{
-        mcpServers: Record<string, { command: string; args: string[] }>;
+        mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
       }>(path.join(tempDir, ".mcp.json"));
       const stagedClaudeManifest = readJson<ClaudeManifestMetadata & {
-        mcpServers: Record<string, { command: string; args: string[] }>;
+        mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
       }>(path.join(tempDir, ".claude-plugin", "plugin.json"));
       const stagedCodexManifest = readJson<CodexManifestMetadata>(
         path.join(tempDir, ".codex-plugin", "plugin.json"),
@@ -332,8 +316,8 @@ describe("Phase 1 product identity compatibility", () => {
       expect(stagedCodexManifest.interface.privacyPolicyURL).toBe(`${repositoryUrl}/blob/main/SECURITY.md`);
       expect(stagedCodexManifest.interface.termsOfServiceURL).toBe(`${repositoryUrl}/blob/main/LICENSE`);
       expect(stagedClaudeMarketplace.owner.url).toBe(repositoryUrl);
-      expect(stagedMcpManifest.mcpServers["codebase-index"].args[2]).toMatch(
-        new RegExp(`/${IDENTITY_CATALOG.product.future.packageName}-[^/]+\\.tgz$`),
+      expect(stagedMcpManifest.mcpServers["codebase-index"].args[1]).toMatch(
+        new RegExp(`/${IDENTITY_CATALOG.product.future.packageName}-[^/']+\\.tgz'`),
       );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

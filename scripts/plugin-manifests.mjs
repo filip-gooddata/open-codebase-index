@@ -24,9 +24,26 @@ export function releaseTarballUrl(catalog, version) {
   return `${repository}/releases/download/${tag}/${catalog.product.future.packageName}-${version}.tgz`;
 }
 
+/** Environment variable through which a plugin-launched server learns the plugin's version. */
+export const PLUGIN_VERSION_ENV = "OCBI_PLUGIN_VERSION";
+
 /**
- * npx needs `--package <spec> <bin>` because the tarball declares several bins.
+ * POSIX sh program the plugins run: the `open-codebase-index-mcp` on PATH when one is installed
+ * (instant, offline), else this release's tarball through npx. npx needs `--package <spec> <bin>`
+ * because the tarball declares several bins. Hosts without `sh` (Windows) fail to spawn it.
  *
+ * @param {{ product: { future: { mcpBinary: string } } }} catalog
+ * @param {string} packageSpec
+ * @returns {string}
+ */
+export function pluginLauncherScript(catalog, packageSpec) {
+  const bin = catalog.product.future.mcpBinary;
+  const quoted = `'${packageSpec.replace(/'/g, "'\\''")}'`;
+  return `if command -v ${bin} >/dev/null 2>&1; then exec ${bin} "$@"; fi; `
+    + `exec npx -y --package ${quoted} ${bin} "$@"`;
+}
+
+/**
  * @param {{ product: { future: { packageName: string, mcpBinary: string } }, release: { repository: string, tagPrefix: string } }} catalog
  * @param {string} version
  * @param {"claude" | "codex"} host
@@ -34,7 +51,24 @@ export function releaseTarballUrl(catalog, version) {
  * @returns {string[]}
  */
 export function pluginServerArgs(catalog, version, host, packageSpec = releaseTarballUrl(catalog, version)) {
-  return ["-y", "--package", packageSpec, catalog.product.future.mcpBinary, "--host", host];
+  return ["-c", pluginLauncherScript(catalog, packageSpec), catalog.product.future.mcpBinary, "--host", host];
+}
+
+/**
+ * The `codebase-index` MCP server entry of a plugin manifest, without host-specific extras.
+ *
+ * @param {Parameters<typeof pluginServerArgs>[0]} catalog
+ * @param {string} version
+ * @param {"claude" | "codex"} host
+ * @param {string} [packageSpec]
+ * @returns {{ command: string, args: string[], env: Record<string, string> }}
+ */
+export function pluginServerEntry(catalog, version, host, packageSpec) {
+  return {
+    command: "sh",
+    args: pluginServerArgs(catalog, version, host, packageSpec),
+    env: { [PLUGIN_VERSION_ENV]: version },
+  };
 }
 
 function readJson(filePath) {
@@ -61,16 +95,16 @@ function serverEntry(manifest, filePath) {
 export function expectedPluginManifests(root, options = {}) {
   const catalog = readJson(path.join(root, "src", "identity-catalog.json"));
   const { version } = readJson(path.join(root, "package.json"));
-  const argsFor = (host) => pluginServerArgs(catalog, version, host, options.packageSpec);
+  const entryFor = (host) => pluginServerEntry(catalog, version, host, options.packageSpec);
 
   const mcpPath = ".mcp.json";
   const mcp = readJson(path.join(root, mcpPath));
-  Object.assign(serverEntry(mcp, mcpPath), { command: "npx", args: argsFor("codex") });
+  Object.assign(serverEntry(mcp, mcpPath), entryFor("codex"));
 
   const claudePath = path.join(".claude-plugin", "plugin.json");
   const claude = readJson(path.join(root, claudePath));
   claude.version = version;
-  Object.assign(serverEntry(claude, claudePath), { command: "npx", args: argsFor("claude") });
+  Object.assign(serverEntry(claude, claudePath), entryFor("claude"));
 
   const codexPath = path.join(".codex-plugin", "plugin.json");
   const codex = readJson(path.join(root, codexPath));

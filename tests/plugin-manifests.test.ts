@@ -5,14 +5,17 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { IDENTITY_CATALOG } from "../src/identity-catalog.js";
+import { spawnSync } from "node:child_process";
+
 import {
   COMMANDS_WITH_RELEASE_URL,
   pluginServerArgs,
+  pluginServerEntry,
   releaseTarballUrl,
   syncPluginManifests,
 } from "../scripts/plugin-manifests.mjs";
 
-type ServerManifest = { mcpServers: Record<string, { command: string; args: string[] }> };
+type ServerManifest = { mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> };
 
 const MANIFEST_PATHS = [
   ".mcp.json",
@@ -50,19 +53,14 @@ describe("plugin manifests launch the pinned release tarball", () => {
   it("checked-in manifests match package.json", () => {
     expect(syncPluginManifests(process.cwd(), { check: true })).toEqual([]);
 
-    const url = releaseTarballUrl(IDENTITY_CATALOG, packageVersion);
     const claude = readJson<ServerManifest & { version: string }>(".claude-plugin/plugin.json");
     const codexServers = readJson<ServerManifest>(".mcp.json");
     expect(claude.version).toBe(packageVersion);
-    expect(claude.mcpServers["codebase-index"]).toEqual({
-      command: "npx",
-      args: ["-y", "--package", url, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "claude"],
-    });
+    expect(claude.mcpServers["codebase-index"]).toEqual(pluginServerEntry(IDENTITY_CATALOG, packageVersion, "claude"));
     // Codex reads these per-server keys from plugin MCP configs; its 10 s startup default is
     // shorter than a cold npx download of the release tarball.
     expect(codexServers.mcpServers["codebase-index"]).toEqual({
-      command: "npx",
-      args: ["-y", "--package", url, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "codex"],
+      ...pluginServerEntry(IDENTITY_CATALOG, packageVersion, "codex"),
       startup_timeout_sec: 300,
       tool_timeout_sec: 420,
     });
@@ -162,5 +160,57 @@ describe("plugin marketplaces", () => {
       expect(text, relative).not.toMatch(/[A-Za-z]:\\Users\\/);
       expect(text, relative).not.toMatch(/~\/\.local\/share\/|@[A-Z_]+@/);
     }
+  });
+});
+
+describe.skipIf(process.platform === "win32")("plugin launcher", () => {
+  let binDir: string;
+  const url = "https://example.invalid/releases/download/v1.2.3/open-codebase-index-1.2.3.tgz";
+
+  beforeEach(() => {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-launcher-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  // A stub that prints its name and arguments, one per line, so the test sees what the launcher ran.
+  function stub(name: string): void {
+    const file = path.join(binDir, name);
+    fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "${name}" "$@"\n`);
+    fs.chmodSync(file, 0o755);
+  }
+
+  function launch(host: "claude" | "codex"): { status: number | null; lines: string[]; stderr: string } {
+    const entry = pluginServerEntry(IDENTITY_CATALOG, "1.2.3", host, url) as { command: string; args: string[] };
+    // Only the stub directory and the system shell utilities, so no real install on the
+    // developer's PATH takes part.
+    const result = spawnSync(entry.command, entry.args, {
+      encoding: "utf-8",
+      env: { PATH: `${binDir}:/usr/bin:/bin` },
+    });
+    return { status: result.status, lines: result.stdout.trim().split("\n"), stderr: result.stderr };
+  }
+
+  it("runs the installed binary from PATH with the host flag", () => {
+    stub("open-codebase-index-mcp");
+    stub("npx");
+    expect(launch("claude")).toMatchObject({ status: 0, lines: ["open-codebase-index-mcp", "--host", "claude"] });
+    expect(launch("codex").lines).toEqual(["open-codebase-index-mcp", "--host", "codex"]);
+  });
+
+  it("falls back to this release's tarball through npx when no binary is installed", () => {
+    stub("npx");
+    expect(launch("codex")).toMatchObject({
+      status: 0,
+      lines: ["npx", "-y", "--package", url, "open-codebase-index-mcp", "--host", "codex"],
+    });
+  });
+
+  it("fails with the shell's not-found error when neither is available", () => {
+    const result = launch("claude");
+    expect(result.status).toBe(127);
+    expect(result.stderr).toMatch(/npx/);
   });
 });

@@ -31,15 +31,17 @@
   ],
   "mcpServers": {
     "codebase-index": {
-      "command": "npx",
+      "command": "sh",
       "args": [
-        "-y",
-        "--package",
-        "https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.7/open-codebase-index-0.38.2-gd.7.tgz",
+        "-c",
+        "if command -v open-codebase-index-mcp >/dev/null 2>&1; then exec open-codebase-index-mcp \"$@\"; fi; exec npx -y --package 'https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.7/open-codebase-index-0.38.2-gd.7.tgz' open-codebase-index-mcp \"$@\"",
         "open-codebase-index-mcp",
         "--host",
         "claude"
-      ]
+      ],
+      "env": {
+        "OCBI_PLUGIN_VERSION": "0.38.2-gd.7"
+      }
     }
   }
 }

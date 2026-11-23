@@ -2,8 +2,11 @@
 # Installs the local-wrapper pieces. See README.md next to this script.
 #
 # Usage: install.sh [options]
-#   --pieces LIST        comma-separated pieces to install (default: hook,rebuild,notify)
+#   --pieces LIST        comma-separated pieces to install (default: hook,mcp,rebuild,notify)
 #                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
+#                        mcp       open-codebase-index-mcp into --bin-dir: the package in OCBI_HOME/pkg
+#                                  run by --node, which the Claude Code and Codex plugins start
+#                                  from PATH
 #                        rebuild   ocbi-rebuild.sh into OCBI_HOME, ocbi-rebuild into --bin-dir and,
 #                                  on macOS, the launchd job plist into --launch-agents-dir
 #                        notify    ocbi-notify.sh into OCBI_HOME (the macOS notifier app is
@@ -13,7 +16,7 @@
 #   --bin-dir DIR        default: $HOME/.local/bin
 #   --launch-agents-dir D  default: $HOME/Library/LaunchAgents (macOS only)
 #   --label LABEL        launchd label (default: io.github.open-codebase-index.rebuild)
-#   --node PATH          Node.js >= 22 the hook and rebuild run (default: $OCBI_NODE, else
+#   --node PATH          Node.js >= 22 the hook, mcp and rebuild run (default: $OCBI_NODE, else
 #                        the first node >= 22 of the fnm default alias, Homebrew, /usr/local,
 #                        /usr/bin and PATH; a per-shell fnm path is never chosen, it goes away)
 #   --package SPEC       npm spec for the pkg piece: a release tarball URL, a local .tgz, or a
@@ -30,7 +33,7 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 
-pieces="hook,rebuild,notify"
+pieces="hook,mcp,rebuild,notify"
 home="${OCBI_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ocbi}"
 bin_dir="$HOME/.local/bin"
 agents_dir="$HOME/Library/LaunchAgents"
@@ -87,7 +90,7 @@ done
 has_piece() { case ",$pieces," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 for p in $(printf '%s' "$pieces" | tr ',' ' '); do
   case "$p" in
-    hook | rebuild | notify | pkg) ;;
+    hook | mcp | rebuild | notify | pkg) ;;
     plugin) die "the plugin piece is gone; install the repository's plugin marketplace (docs/installation.md)" ;;
     *) die "unknown piece $p" ;;
   esac
@@ -172,6 +175,11 @@ install_hook() {
   place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh" render
 }
 
+install_mcp() {
+  say "mcp -> $bin_dir"
+  place 755 "$here/mcp/open-codebase-index-mcp" "$bin_dir/open-codebase-index-mcp" render
+}
+
 install_rebuild() {
   say "rebuild -> $home, $bin_dir"
   place 755 "$here/rebuild/ocbi-rebuild.sh" "$home/ocbi-rebuild.sh" render
@@ -206,12 +214,12 @@ install_pkg() {
   done
 }
 
-# The hook and rebuild need a package with the repository config (gd.7) and the shared
+# The hook, mcp and rebuild need a package with the repository config (gd.7) and the shared
 # rebuild override (gd.6). Checked before any of them is placed; a package that is not installed
 # yet only gets the reminder at the end.
 check_pkg() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist"
-  has_piece hook || has_piece rebuild || return 0
+  has_piece hook || has_piece mcp || has_piece rebuild || return 0
   [ -e "$home/pkg/node_modules/open-codebase-index" ] || return 0
   [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] ||
     die "the package in $home/pkg has no dist/cbi.js or dist/cli.js; rerun with --package <gd.7 or later spec>; nothing else was installed"
@@ -227,6 +235,7 @@ install_selected() {
     [ "$dry_run" = 1 ] || check_pkg
   fi
   has_piece hook && install_hook
+  has_piece mcp && install_mcp
   has_piece rebuild && install_rebuild
   has_piece notify && install_notify
   return 0
@@ -252,7 +261,9 @@ cat <<EOF
 EOF
 cat <<EOF
 
-* Claude Code: install the plugin from the repository marketplace (docs/installation.md):
+* Claude Code: install the plugin from the repository marketplace (docs/installation.md). It
+  starts the first open-codebase-index-mcp on PATH; with the mcp piece that is
+  $bin_dir/open-codebase-index-mcp, so keep $bin_dir on the PATH the host starts with.
     claude plugin marketplace add filip-gooddata/open-codebase-index
     claude plugin install codebase-index@open-codebase-index
 

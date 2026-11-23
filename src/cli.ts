@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { isCliEntrypoint, parseArgs } from "./adapters/mcp/cli-options.js";
 import { runIdleSupervisor } from "./adapters/mcp/idle-supervisor.js";
 import { runHistoryCli } from "./adapters/history-cli.js";
+import { recordPluginLaunch } from "./plugin-version.js";
 import type * as HistoryWorker from "./history-worker.js";
 
 const moduleUrl = import.meta.url ?? pathToFileURL(__filename).href;
@@ -55,6 +56,13 @@ Example:
       return;
     }
     const args = isCommand ? undefined : parseArgs(process.argv);
+    if (args) {
+      try {
+        recordPluginLaunch(args.host);
+      } catch (error: unknown) {
+        console.error(`Could not record the plugin version: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const timeout = args?.mcpIdleTimeout ?? (args?.host === "codex" ? 900 : 0);
     // Both packaged CLI formats use the ESM engine, whose metadata uses import.meta.url.
     const workerExtension = moduleUrl.endsWith(".ts") ? "ts" : "js";

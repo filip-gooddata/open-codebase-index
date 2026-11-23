@@ -8,6 +8,8 @@ const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "codebase-index-home-
 process.env.HOME = isolatedHome;
 process.env.USERPROFILE = isolatedHome;
 process.env.XDG_CONFIG_HOME = path.join(isolatedHome, ".config");
+// A plugin-launched shell would otherwise report its plugin version skew in every status test.
+delete process.env.OCBI_PLUGIN_VERSION;
 
 afterAll(() => {
   fs.rmSync(isolatedHome, { recursive: true, force: true });

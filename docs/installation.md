@@ -250,6 +250,8 @@ ocbi unlock --json --project /path/to/repo --host claude
 
 Known limitation: after a reboot, an unrelated process can reuse the dead owner's PID. The lock then looks alive and stays until that process exits.
 
+`ocbi hooks install --repo /path/to/repo --host claude` registers a git post-checkout hook that refreshes each checkout's index in the background after a branch checkout or `git worktree add`; see [Git post-checkout hook](configuration.md#git-post-checkout-hook).
+
 Use `ocbi index --dry-run` for a parse-only embedding-token total, `--estimate-only` for an estimate, and `ocbi --help` for command usage.
 
 A forced rebuild clears every branch catalog in the index and re-embeds the whole codebase. When several checkouts or sessions share one index, set `"indexing": { "allowForceRebuild": false }` so that `index_codebase` with `force: true` is refused in every host. An operator who really needs a full rebuild, for example after changing the embedding model, runs it from a terminal in the checkout that owns the index:

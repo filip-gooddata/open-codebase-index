@@ -37,22 +37,25 @@ What remains has a job the package does not do:
 | Piece | Why it is still here |
 |---|---|
 | `plugin` | A Claude Code plugin that runs the server from `$OCBI_HOME/pkg` with `--host claude`, instead of the repository plugin's `npx` of the registry package. Its `/index` and `/status` commands never request `force` and point at `ocbi-rebuild`. The session-hint hook is gone: the server's MCP instructions carry the same guidance. |
-| `hook` | A git `post-checkout` hook that indexes a new branch or worktree in the background, so a secondary checkout (which skips the startup index) is warm before an agent asks. Once a day per repository it also counts the catalogs `ocbi prune` would remove and notifies past a threshold. |
 | `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. |
-| `notify` | Desktop notifications for the hook and the rebuild. |
+| `notify` | Desktop notifications for the rebuild and, through `ocbi hooks install --stale-notify`, the post-checkout hook's daily stale-catalog check. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
-The hook, the rebuild and the plugin run the Node.js that `install.sh` found (or `--node`), with
+The rebuild and the plugin run the Node.js that `install.sh` found (or `--node`), with
 `dist/cbi.js` or `dist/cli.js` from `$OCBI_HOME/pkg`. `install.sh` installs the package first and
 refuses to place these pieces next to a package without the repository config (gd.7) or
 `--allow-shared-rebuild` (gd.6). Pick a stable Node.js path: a per-shell path such as fnm's
 `fnm_multishells` disappears with the shell, and the installer never picks one itself.
 
-The hook and the rebuild do nothing in a repository without a repository config. Before indexing
-they also ask the package (`ocbi status`) which store the checkout uses, and skip it unless that is
-the repository's store, so a `global` scope from some config layer never sends them to the global
-index. The rebuild forces only in a checkout the package reports as primary. They run the CLI with
-`--host claude`; set `OCBI_HOST` to change that.
+The rebuild does nothing in a repository without a repository config. Before indexing it also
+asks the package (`ocbi status`) which store the checkout uses, and skips it unless that is the
+repository's store, so a `global` scope from some config layer never sends it to the global index.
+It forces only in a checkout the package reports as primary. It runs the CLI with `--host claude`;
+set `OCBI_HOST` to change that.
+
+The post-checkout hook of earlier versions (`hook/ocbi-post-checkout.sh`) is gone: the package
+ships it as `ocbi hook post-checkout` with `ocbi hooks install`; see
+[Git post-checkout hook](configuration.md#git-post-checkout-hook).
 
 ## Host registration
 
@@ -81,15 +84,35 @@ shorter. `--host codex` reads `~/.config/codebase-index/config.json` as its glob
 its file watcher after 15 idle minutes. Keep settings that change index content in the repository
 config, so Claude Code and Codex servers index the shared store the same way.
 
-**git.** Register the hook per repository, in the local config on a git with config-based hooks:
+**git.** Install the package's post-checkout hook per repository; `install.sh` prints this with
+your paths:
 
 ```bash
-git -C <repo> config --local hook.ocbi-prewarm.event post-checkout
-git -C <repo> config --local hook.ocbi-prewarm.command "'<OCBI_HOME>/ocbi-post-checkout.sh'"
+<node> <OCBI_HOME>/pkg/node_modules/open-codebase-index/dist/cbi.js hooks install --repo <repo> \
+  --host claude --stale-notify <OCBI_HOME>/ocbi-notify.sh
 ```
 
-or, on any git version, by linking it as the repository's `post-checkout` hook in
-`<git common dir>/hooks/`. git 2.43 has no config-based hooks; git 2.54 does.
+`--stale-notify` hands the hook's daily stale-catalog count to the `notify` piece; leave it out to
+only log the count. Upgrading the package in `$OCBI_HOME/pkg` keeps the hook working, since its
+command names that unversioned path.
+
+### Replacing the shell hook
+
+Earlier versions registered `<OCBI_HOME>/ocbi-post-checkout.sh` as `hook.ocbi-prewarm` (or linked
+it as `<git common dir>/hooks/post-checkout`). Per repository:
+
+1. Save the old registration: `git -C <repo> config --local --get-regexp '^hook\.' > hooks-backup.txt`.
+2. Remove it: `git -C <repo> config --local --remove-section hook.ocbi-prewarm` (or delete the
+   symlink in `<git common dir>/hooks/`).
+3. Install the new hook as above, then check `hooks status --repo <repo>`: `Installed: yes`, the
+   command `current`, and no warning about `hook.ocbi-prewarm`.
+4. Check out a branch in a test worktree and read its log in
+   `<git common dir>/codebase-index/logs/post-checkout/`: one `== exit 0` per refresh.
+
+The new hook keeps its state under the repository's common dir instead of
+`$OCBI_HOME/logs/prewarm/`, which you can delete once no repository uses the shell hook. Remove
+`$OCBI_HOME/ocbi-post-checkout.sh` last: git fails a checkout whose registered hook is missing.
+To roll back, run `hooks uninstall --repo <repo>` and restore the saved `hook.ocbi-prewarm` keys.
 
 ## Migrating from projects.conf
 
@@ -156,8 +179,8 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
   another session is running instead of failing at once. The package caps it at 600000. Keep each
   host's tool timeout above it.
 - `checkouts.secondary.watchFiles: false`: hundreds of watchers on one store cost more than they
-  save. `autoIndexOnStartup: false` for secondaries leaves their first index to the hook or to
-  the first retrieval.
+  save. `autoIndexOnStartup: false` for secondaries leaves their first index to the
+  post-checkout hook or to the first retrieval.
 - `indexing.allowForceRebuild: false`. The server then refuses `index_codebase` with
   `force: true` in every host with `FORCE_REBUILD_DISABLED`. Only the CLI overrides it, with
   `ocbi index --force --allow-shared-rebuild` from the primary, which is what `ocbi-rebuild` runs.
@@ -185,14 +208,14 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
 - A store with hundreds of branch catalogs grows to gigabytes. `ocbi prune` (a dry run unless
   `--apply`) removes catalogs of branches with no worktree; see
   [Human CLI](installation.md#human-cli); with the bundle's install, run it as
-  `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js prune`. The hook's daily
-  check notifies past `OCBI_STALE_THRESHOLD` (15) when the `notify` piece is installed.
-- git exports `GIT_DIR` and related variables to hooks. The hook clears them before it runs the
-  CLI, which would otherwise describe the hook's repository view instead of the checkout.
+  `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js prune`. The post-checkout
+  hook logs the count once a day and notifies past `OCBI_STALE_THRESHOLD` (15) when installed
+  with `--stale-notify`.
 
 ## Platforms
 
-The hook, plugin and installer run on macOS (bash 3.2, BSD tools) and Linux (bash 5, GNU tools);
+The plugin and installer run on macOS (bash 3.2, BSD tools) and Linux (bash 5, GNU tools), and the
+package's post-checkout hook is Node code that runs on both;
 `contrib/local-wrapper/test/run-tests.sh` runs on both. The `rebuild` and `notify` pieces are
 macOS-only for now: the rebuild uses a launchd job, and notifications with an action button use a
 small Swift app built from source. Linux support for both is planned.

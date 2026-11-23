@@ -49,7 +49,7 @@ NODE="$(command -v node)"
 export OCBI_NODE="$NODE"
 
 # --- static checks -------------------------------------------------------------------------------
-scripts=("$here/install.sh" "$here/hook/ocbi-post-checkout.sh"
+scripts=("$here/install.sh"
   "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/notify/ocbi-notify.sh"
   "$here/notify/notifier/build.sh" "$here/test/run-tests.sh")
 for s in "${scripts[@]}"; do
@@ -77,6 +77,9 @@ bash "$here/install.sh" --bogus >/dev/null 2>&1
 expect_eq "install rejects an unknown option" 2 "$?"
 bash "$here/install.sh" --pieces launcher >/dev/null 2>&1
 expect_eq "install rejects the removed launcher piece" 2 "$?"
+out="$(bash "$here/install.sh" --pieces hook 2>&1)"
+expect_eq "install rejects the removed hook piece" 2 "$?"
+expect_match "install points the hook piece at ocbi hooks install" "run ocbi hooks install --repo <repo>" "$out"
 bash "$here/install.sh" --pieces pkg >/dev/null 2>&1
 expect_eq "install rejects pkg without --package" 2 "$?"
 bash "$here/install.sh" --node "$T/no-node" >/dev/null 2>&1
@@ -84,7 +87,7 @@ expect_eq "install rejects a --node that is not Node.js" 2 "$?"
 
 out="$(bash "$here/install.sh" --dry-run "${install_args[@]}" 2>&1)"
 expect_eq "dry run exits 0" 0 "$?"
-expect_match "dry run lists planned files" "would create +$H/ocbi-post-checkout.sh" "$out"
+expect_match "dry run lists planned files" "would create +$H/ocbi-rebuild.sh" "$out"
 if [ -z "$(find "$HOME" -mindepth 1 -not -name . 2>/dev/null)" ]; then ok "dry run writes nothing"; else
   not_ok "dry run writes nothing" "$(find "$HOME" -mindepth 1)"; fi
 out="$(bash "$here/install.sh" --dry-run --package ./x.tgz "${install_args[@]}" 2>&1)"
@@ -97,7 +100,7 @@ printf '#!/bin/sh\n' >"$H/ocbi-mcp.sh"
 printf '# mine\n' >"$H/projects.conf"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
 expect_eq "install exits 0" 0 "$?"
-for f in ocbi-post-checkout.sh ocbi-rebuild.sh ocbi-notify.sh; do
+for f in ocbi-rebuild.sh ocbi-notify.sh; do
   check "installed executable $f" test -x "$H/$f"
 done
 check "installed ocbi-rebuild into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild"
@@ -118,12 +121,13 @@ else
 fi
 expect_match "install prints the Codex registration with --host codex" "args = \\[\"$H/pkg/node_modules/open-codebase-index/dist/cli.js\", \"--host\", \"codex\"\\]" "$out"
 expect_match "install prints the Codex command as the chosen node" "command = \"$NODE\"" "$out"
-expect_match "install prints the git hook registration" "hook.ocbi-prewarm.command \"'$H/ocbi-post-checkout.sh'\"" "$out"
+expect_match "install prints the package's hook installer" "\"$H/pkg/node_modules/open-codebase-index/dist/cbi.js\" hooks install --repo <repo> --host claude --stale-notify \"$H/ocbi-notify.sh\"" "$out"
+check "install places no shell post-checkout hook" test ! -e "$H/ocbi-post-checkout.sh"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
 expect_match "second install changes nothing" "^0 change\\(s\\)\\." "$out"
-chmod -x "$H/ocbi-post-checkout.sh"
+chmod -x "$H/ocbi-notify.sh"
 bash "$here/install.sh" "${install_args[@]}" >/dev/null 2>&1
-check "reinstall restores the hook's executable bit" test -x "$H/ocbi-post-checkout.sh"
+check "reinstall restores the executable bit" test -x "$H/ocbi-notify.sh"
 BO="$T/bundle-only"
 mkdir -p "$BO" && cp -R "$here" "$BO/local-wrapper"
 bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --marketplace-dir "$BO/mp" --launch-agents-dir "$BO/la" >/dev/null 2>&1
@@ -132,8 +136,8 @@ check "bundle-only install has the plugin commands and skill" test -f "$BO/mp/pl
 bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
 expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"
 P2="$T/preflight"
-mkdir -p "$P2/ocbi-post-checkout.sh"
-bash "$here/install.sh" --pieces hook,rebuild --home "$P2" --bin-dir "$P2/bin" "${install_args[@]}" >/dev/null 2>&1
+mkdir -p "$P2/ocbi-notify.sh"
+bash "$here/install.sh" --pieces notify,rebuild --home "$P2" --bin-dir "$P2/bin" "${install_args[@]}" >/dev/null 2>&1
 expect_eq "install refuses a directory at a destination and writes nothing" "2 absent" "$? $([ -e "$P2/ocbi-rebuild.sh" ] || [ -e "$P2/bin" ] && echo present || echo absent)"
 
 # --- stub CLI ------------------------------------------------------------------------------------
@@ -178,15 +182,15 @@ OP="$T/oldpkg"
 mkdir -p "$OP/pkg/node_modules/open-codebase-index/dist"
 printf 'process.exit(0);\n' >"$OP/pkg/node_modules/open-codebase-index/dist/cbi.js"
 printf 'process.exit(0);\n' >"$OP/pkg/node_modules/open-codebase-index/dist/cli.js"
-bash "$here/install.sh" --pieces hook,rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
-expect_eq "install refuses a pre-gd.7 package and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-post-checkout.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
+bash "$here/install.sh" --pieces rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
+expect_eq "install refuses a pre-gd.7 package and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-rebuild.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
 expect_match "install names the package upgrade" "predates the repository config" "$(cat "$T/oldpkg.out")"
 rm -f "$OP/pkg/node_modules/open-codebase-index/dist/cbi.js"
-bash "$here/install.sh" --pieces hook,rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
-expect_eq "install refuses a package without dist/cbi.js and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-post-checkout.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
+bash "$here/install.sh" --pieces rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
+expect_eq "install refuses a package without dist/cbi.js and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-rebuild.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
 stub_cbi "$OP"
-bash "$here/install.sh" --pieces hook --home "$OP" >/dev/null 2>&1
-expect_eq "install accepts a package with both markers" "0 present" "$? $([ -x "$OP/ocbi-post-checkout.sh" ] && echo present || echo absent)"
+bash "$here/install.sh" --pieces rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >/dev/null 2>&1
+expect_eq "install accepts a package with both markers" "0 present" "$? $([ -x "$OP/ocbi-rebuild.sh" ] && echo present || echo absent)"
 
 # --- repositories --------------------------------------------------------------------------------
 R="$T/src/demo"
@@ -196,6 +200,8 @@ echo hi >"$R/a.txt"
 git -C "$R" add a.txt && git -C "$R" commit -qm init
 git -C "$R" worktree add -q "$T/src/demo-feature" -b feature
 W="$T/src/demo-feature"
+mkdir -p "$R/.git/codebase-index"
+printf '{}\n' >"$R/.git/codebase-index/config.json"
 
 # wait_for FILE PATTERN: up to 10 s.
 wait_for() {
@@ -207,121 +213,6 @@ wait_for() {
   done
   return 1
 }
-
-# --- post-checkout hook --------------------------------------------------------------------------
-S="$T/stubhome"
-mkdir -p "$S"
-stub_cbi "$S"
-cp "$H/ocbi-post-checkout.sh" "$S/ocbi-post-checkout.sh"
-key="demo-feature-$(printf '%s' "$W" | cksum | cut -d' ' -f1)"
-log="$S/logs/prewarm/$key.log"
-(cd "$W" && bash "$S/ocbi-post-checkout.sh" old new 1)
-sleep 0.3
-expect_match "without a repository config the hook only logs" "skipped: no repository config $R/.git/codebase-index/config.json" "$(cat "$log" 2>/dev/null)"
-check "without a repository config the hook runs no CLI" test ! -e "$S/calls"
-mkdir -p "$R/.git/codebase-index"
-printf '{}\n' >"$R/.git/codebase-index/config.json"
-(cd "$W" && GIT_DIR="$R/.git/worktrees/demo-feature" bash "$S/ocbi-post-checkout.sh" old new 1)
-if wait_for "$log" '^== exit'; then ok "hook runs a refresh in the background"; else not_ok "hook runs a refresh in the background" "$(cat "$log" 2>/dev/null)"; fi
-expect_match "hook indexes the checkout root with the claude host and no git env" "^CBI index --host claude --project $W cwd=$W git_dir=unset" "$(cat "$log" 2>/dev/null)"
-(cd "$W" && bash "$S/ocbi-post-checkout.sh" old new 0)
-sleep 0.3
-expect_eq "hook skips file checkouts" 1 "$(grep -c '^CBI index' "$log")"
-(cd "$W" && OCBI_PREWARM=0 bash "$S/ocbi-post-checkout.sh" old new 1)
-(cd "$W" && GIT_REFLOG_ACTION="rebase (pick)" bash "$S/ocbi-post-checkout.sh" old new 1)
-sleep 0.3
-expect_eq "hook honours OCBI_PREWARM=0 and skips rebases" 1 "$(grep -c '^CBI index' "$log")"
-# Real checkouts through git run the hook, registered either way install.sh prints.
-# wait_unlocked [STATE_HOME]: until the prewarm lock of this worktree under STATE_HOME (default
-# $S) is released; fails after 30 s.
-wait_unlocked() {
-  local lock="${1:-$S}/logs/prewarm/$key.lock" i=0
-  while [ -d "$lock" ]; do
-    [ "$i" -lt 300 ] || { not_ok "prewarm lock $lock released within 30 s"; return 1; }
-    sleep 0.1
-    i=$((i + 1))
-  done
-}
-wait_unlocked
-(cd "$W" && OCBI_HOST=codex bash "$S/ocbi-post-checkout.sh" old new 1)
-if wait_for "$log" '^CBI index --host codex'; then ok "hook honours OCBI_HOST"; else not_ok "hook honours OCBI_HOST" "$(cat "$log")"; fi
-wait_unlocked
-printf 'Store: /g/global-index (global scope)\n' >"$S/status"
-before="$(grep -c '^CBI index' "$log")"
-(cd "$W" && bash "$S/ocbi-post-checkout.sh" old new 1)
-wait_unlocked
-expect_eq "hook indexes nothing when the package reports another store" "$before" "$(grep -c '^CBI index' "$log")"
-expect_match "hook logs why it skipped" "skipped: not the repository's shared store \\(Store: .* \\(global scope\\)\\)" "$(cat "$log")"
-rm -f "$S/status"
-# The stale-catalog check: notifies at the threshold, at most once a day per repository.
-printf '#!/usr/bin/env bash\nprintf "%%s|" "$@" >>"%s/notified"\n' "$T" >"$S/ocbi-notify.sh"
-chmod +x "$S/ocbi-notify.sh"
-printf '2\n' >"$S/prune-count"
-(cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
-wait_unlocked
-expect_match "stale check runs a dry-run prune of the checkout" "^CBI prune --json --host claude --project $W " "$(cat "$S/calls")"
-expect_match "stale check notifies at the threshold" "^Worth a cleanup: demo\\|2 catalogs of deleted branches or worktrees\\. Run: $NODE $S/pkg/node_modules/open-codebase-index/dist/cbi.js prune --apply --host claude --project $W\\|$" "$(cat "$T/notified" 2>/dev/null)"
-notified="$(cat "$T/notified" 2>/dev/null)"
-notified="${notified#*Run: }"
-eval "set -- ${notified%|}"
-expect_eq "the notified prune command keeps host and project as separate shell words" "8 --host claude --project $W" "$# $5 $6 $7 $8"
-rm -f "$T/notified"
-(cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
-wait_unlocked
-check "stale check runs at most once a day" test ! -e "$T/notified"
-rm -f "$S"/logs/prewarm/*.stale-check
-printf '1\n' >"$S/prune-count"
-(cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
-wait_unlocked
-check "stale check stays quiet below the threshold" test ! -e "$T/notified"
-rm -f "$S/ocbi-notify.sh" "$S/prune-count"
-git init -q "$T/probe"
-git -C "$T/probe" config hook.probe.event post-checkout
-git -C "$T/probe" config hook.probe.command "touch '$T/probe-ran'"
-git -C "$T/probe" hook run post-checkout -- a b 1 >/dev/null 2>&1
-if [ -e "$T/probe-ran" ]; then
-  git -C "$W" config --local hook.ocbi-prewarm.event post-checkout
-  git -C "$W" config --local hook.ocbi-prewarm.command "$S/ocbi-post-checkout.sh"
-  git -C "$W" checkout -q -b feature2
-  if wait_for "$log" " feature2 "; then ok "git runs the config-registered hook"; else
-    not_ok "git runs the config-registered hook" "$(cat "$log")"; fi
-  git -C "$W" config --local --unset hook.ocbi-prewarm.event
-  git -C "$W" config --local --unset hook.ocbi-prewarm.command
-  wait_unlocked
-else
-  skip "git runs the config-registered hook" "$(git version) has no config-based hooks"
-fi
-ln -s "$S/ocbi-post-checkout.sh" "$R/.git/hooks/post-checkout"
-git -C "$W" checkout -q -b feature3
-if wait_for "$log" " feature3 "; then ok "git runs the hook linked into the common hooks dir"; else
-  not_ok "git runs the hook linked into the common hooks dir" "$(cat "$log")"; fi
-rm -f "$R/.git/hooks/post-checkout"
-wait_unlocked
-# The registration commands install.sh prints work as printed, also from a home with a space.
-SP="$T/sp ace/ocbi"
-reg="$(bash "$here/install.sh" --pieces hook --home "$SP" 2>&1 | grep -E 'hook\.ocbi-prewarm\.|ln -s ')"
-stub_cbi "$SP"
-splog="$SP/logs/prewarm/$key.log"
-if [ -e "$T/probe-ran" ]; then
-  while IFS= read -r cmd; do eval "${cmd//<repo>/\"\$W\"}"; done < <(printf '%s\n' "$reg" | grep 'git -C <repo> config')
-  git -C "$W" checkout -q -b feature4
-  if wait_for "$splog" " feature4 "; then ok "the printed config registration runs the hook from a spaced home"; else
-    not_ok "the printed config registration runs the hook from a spaced home" "$reg
-$(cat "$splog" 2>/dev/null)"; fi
-  git -C "$W" config --local --unset hook.ocbi-prewarm.event
-  git -C "$W" config --local --unset hook.ocbi-prewarm.command
-  wait_unlocked "$SP"
-else
-  skip "the printed config registration runs the hook from a spaced home" "no config-based hooks"
-fi
-eval "$(printf '%s\n' "$reg" | grep 'ln -s ' | sed 's/<repo>/"$W"/g')"
-git -C "$W" checkout -q -b feature5
-if wait_for "$splog" " feature5 "; then ok "the printed symlink registration runs the hook from a spaced home"; else
-  not_ok "the printed symlink registration runs the hook from a spaced home" "$reg
-$(cat "$splog" 2>/dev/null)"; fi
-expect_match "the spaced-home hook indexes through its own package" "^CBI index --host claude --project $W " "$(cat "$splog" 2>/dev/null)"
-rm -f "$R/.git/hooks/post-checkout"
-wait_unlocked "$SP"
 
 # --- rebuild -------------------------------------------------------------------------------------
 NR="$T/src/noconfig"

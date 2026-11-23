@@ -84,6 +84,31 @@ Checkout role: secondary - linked worktree; the main worktree <main worktree pat
 
 The source is `repository config <path>` (from `storage.indexPath`), `repository default store` (`<common dir>/codebase-index/index`) or `host default` (no repository config). When the effective scope is `global`, the line reads `Store: <path> (global scope)` with no checkout role. Pi and omp print no route block for a checkout without a repository config. Warnings follow on `Warning:` lines.
 
+### Git post-checkout hook
+
+A checkout that skips the startup index (`checkouts.secondary.autoIndexOnStartup: false`) gets its first index from the first retrieval, or earlier from the post-checkout hook the package ships:
+
+```bash
+ocbi hooks install --repo <repo> --host claude   # a checkout, linked worktree or bare repository
+ocbi hooks status --repo <repo>                  # what is installed, and whether it runs this package
+ocbi hooks uninstall --repo <repo>
+```
+
+`install` writes `hook.ocbi-post-checkout.event` and `hook.ocbi-post-checkout.command` to the repository's local git config when git supports config-based hooks (`git hook list` exists; git 2.54 has them). On an older git, or with `--method file`, it writes a managed `post-checkout` script into the hooks directory git uses (`<git common dir>/hooks`, or an absolute `core.hooksPath`; a relative one is per worktree and refused). An existing `post-checkout` script is moved to `post-checkout.ocbi-chained` and runs first; `uninstall` moves it back. Every run is idempotent, and a reinstall keeps the installed `--host` unless you pass one.
+
+The command names the node binary and the `ocbi` script by absolute path, so it keeps working across upgrades installed in the same place. `status` reports it as `stale` when either path is gone (a removed node version, say) and as `other-install` when it runs a different copy of the package; rerun `install` then. `--node <path>` picks another node binary.
+
+The hook, `ocbi hook post-checkout <prev> <new> <flag>`, returns at once and refreshes in a detached, low-priority `ocbi index` run:
+
+- It runs after a branch checkout (flag `1`), which includes `git worktree add` and `git clone`. File checkouts, rebases and `OCBI_PREWARM=0` are skipped.
+- It runs only in a repository with a repository config, and only when the checkout's project-scope store is the repository's store; a `global` scope from any layer makes it do nothing. It never forces a rebuild.
+- One refresh runs per checkout. A checkout during a refresh queues one more pass; further checkouts while one is queued add nothing. `INDEX_BUSY` (another process indexing the store) is logged and not retried; retrieval refreshes on demand.
+- The refresh runs without the `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and other repository-pinning variables git exports to hooks.
+- Logs and locks live in `<git common dir>/codebase-index/logs/post-checkout/`, named after the checkout directory plus a hash of its real path.
+- After a refresh, at most once a day per repository, it logs how many catalogs `ocbi prune` would remove. With `install --stale-notify <command>`, it runs `<command> <title> <message>` from `OCBI_STALE_THRESHOLD` (15) catalogs on; `notify-send` works as such a command. `OCBI_STALE_CHECK=0` turns the check off.
+
+Windows is not supported: `ocbi hooks` exits with an error and the hook does nothing.
+
 ### Sharing a store with older servers
 
 The store format and metadata are unchanged. Older servers do not read the repository config. While an older server and a newer one share a store (for example through a symlinked host index directory), keep settings that change index content (`embeddingProvider`, `embeddingModel`, `customProvider`, `include`, `exclude`, `additionalInclude`) in the global config so both read the same values. Older servers do not know about roles and can still force-clear the store.

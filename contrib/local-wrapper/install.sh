@@ -243,14 +243,27 @@ install_pkg() {
 # The hook, mcp and rebuild need a package with the repository config (gd.7) and the shared
 # rebuild override (gd.6). Checked before any of them is placed; a package that is not installed
 # yet only gets the reminder at the end.
+# An unusable package also takes down a shim this installer placed in front of it, so the plugins
+# reach their npx fallback while the install stops; any other file at the destination stays.
+retire_stale_mcp_shim() {
+  local dest="$bin_dir/ocbi-mcp"
+  has_piece mcp && [ "$dry_run" = 0 ] || return 0
+  [ -f "$dest" ] && [ ! -L "$dest" ] && grep -qF -- "$mcp_shim_marker" "$dest" || return 0
+  rm -f "$dest" && printf 'install.sh: removed %s, whose package is unusable, so the plugins fall back to npx\n' "$dest" >&2
+}
+
 check_pkg() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist"
   has_piece hook || has_piece mcp || has_piece rebuild || return 0
   [ -e "$home/pkg/node_modules/open-codebase-index" ] || return 0
-  [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] ||
+  [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] || {
+    retire_stale_mcp_shim
     die "the package in $home/pkg has no dist/cbi.js or dist/cli.js; rerun with --package <gd.7 or later spec>; nothing else was installed"
-  grep -qs -- --allow-shared-rebuild "$dist/cbi.js" && grep -rqs --include='*.js' 'checkouts.primary.path' "$dist" ||
+  }
+  grep -qs -- --allow-shared-rebuild "$dist/cbi.js" && grep -rqs --include='*.js' 'checkouts.primary.path' "$dist" || {
+    retire_stale_mcp_shim
     die "the package in $home/pkg predates the repository config (gd.7) or --allow-shared-rebuild (gd.6); rerun with --package <gd.7 or later spec>; nothing else was installed"
+  }
 }
 
 install_selected() {

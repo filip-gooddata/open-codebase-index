@@ -154,6 +154,20 @@ bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$B
 rm -rf "$BO/home/pkg"
 bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
 check "install retires its shim when the package is gone" test ! -e "$BO/bin/ocbi-mcp"
+# A package directory left without dist/cli.js stops the install, and still takes down the shim.
+mkdir -p "$BD"
+printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$BD/cbi.js"
+printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log("new");\n' >"$BD/cli.js"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+check "the shim is back in front of a usable package" test -x "$BO/bin/ocbi-mcp"
+rm -f "$BD/cli.js"
+out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
+expect_eq "install refuses a package without dist/cli.js" 2 "$?"
+check "install retires its shim in front of a package without dist/cli.js" test ! -e "$BO/bin/ocbi-mcp"
+expect_match "install says it removed the shim" "removed $BO/bin/ocbi-mcp, whose package is unusable" "$out"
+printf '#!/bin/sh\necho mine\n' >"$BO/bin/ocbi-mcp" && chmod 755 "$BO/bin/ocbi-mcp"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+expect_eq "a refused install leaves an unrelated ocbi-mcp alone" "mine" "$("$BO/bin/ocbi-mcp")"
 # The destination is checked before anything is written, even when --package would make the shim eligible.
 mkdir -p "$T/dir-bin/ocbi-mcp"
 out="$(bash "$here/install.sh" --pieces mcp --package ./x.tgz --home "$T/dir-home" --bin-dir "$T/dir-bin" 2>&1)"

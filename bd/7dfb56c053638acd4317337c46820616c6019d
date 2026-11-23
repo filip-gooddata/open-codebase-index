@@ -1,0 +1,53 @@
+.claude-plugin/plugin.json
+  s_e3a8969c11e471::t_18febe71e2fdfd 37
+.mcp.json
+  s_e3a8969c11e471::t_d4b09c3ebe6545 7
+CHANGELOG.md
+  s_e3a8969c11e471::t_332c830fd96695 12,16-17
+contrib/local-wrapper/install.sh
+  s_e3a8969c11e471::t_84dfac3d6a89fa 178-180,182,184-195
+contrib/local-wrapper/test/run-tests.sh
+  s_e3a8969c11e471::t_25e4ad3a1326b3 54,107-108,134-145
+docs/installation.md
+  s_e3a8969c11e471::t_c21af070817d3b 175,177-178,218
+docs/local-wrapper.md
+  s_e3a8969c11e471::t_d1613f34bb0d34 36-39,46,63-64
+scripts/plugin-manifests.mjs
+  s_e3a8969c11e471::t_33728257461710 33-35,44-46
+scripts/smoke-test-packed-cli.mjs
+  s_fe5e935150c3ef::t_9021ee681c2fb4 178-188
+src/plugin-version.ts
+  s_e3a8969c11e471::t_9c993966734e78 30-33,35,79
+tests/claude-plugin.test.ts
+  s_e3a8969c11e471::t_bc03355b4145f4 29-31
+tests/codex-plugin.test.ts
+  s_e3a8969c11e471::t_646ee6918b4dac 59-61
+tests/plugin-manifests.test.ts
+  s_e3a8969c11e471::t_b6ab3c97cb2586 185-188,194,214-223
+tests/plugin-version.test.ts
+  s_e3a8969c11e471::t_b80699c00ddde5 27,66-67,69-71,80-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bd7dfb56c053638acd4317337c46820616c6019d",
+  "prompts": {},
+  "sessions": {
+    "s_e3a8969c11e471": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23fe988b-6a89-4b9c-912f-70bdeaf10ced",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_fe5e935150c3ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b087127-0a56-4071-9033-c30ca7497f40",
+        "model": "unknown"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

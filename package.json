@@ -78,7 +78,7 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build",
     "sync:plugin-manifests": "node scripts/plugin-manifests.mjs",
-    "version": "node scripts/plugin-manifests.mjs && git add .mcp.json .claude-plugin .codex-plugin .agents/plugins"
+    "version": "node scripts/plugin-manifests.mjs && git add .mcp.json .claude-plugin .codex-plugin .agents/plugins commands/index.md commands/status.md"
   },
   "files": [
     "dist",

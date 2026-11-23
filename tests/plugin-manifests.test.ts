@@ -5,7 +5,12 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { IDENTITY_CATALOG } from "../src/identity-catalog.js";
-import { pluginServerArgs, releaseTarballUrl, syncPluginManifests } from "../scripts/plugin-manifests.mjs";
+import {
+  COMMANDS_WITH_RELEASE_URL,
+  pluginServerArgs,
+  releaseTarballUrl,
+  syncPluginManifests,
+} from "../scripts/plugin-manifests.mjs";
 
 type ServerManifest = { mcpServers: Record<string, { command: string; args: string[] }> };
 
@@ -64,7 +69,7 @@ describe("plugin manifests launch the pinned release tarball", () => {
   });
 
   it("rewrites every launch URL and version after a version bump", () => {
-    for (const relative of [...MANIFEST_PATHS, "package.json", "src/identity-catalog.json"]) {
+    for (const relative of [...MANIFEST_PATHS, ...COMMANDS_WITH_RELEASE_URL, "package.json", "src/identity-catalog.json"]) {
       fs.mkdirSync(path.dirname(path.join(tempDir, relative)), { recursive: true });
       fs.copyFileSync(relative, path.join(tempDir, relative));
     }
@@ -77,6 +82,7 @@ describe("plugin manifests launch the pinned release tarball", () => {
       path.join(".claude-plugin", "plugin.json"),
       path.join(".codex-plugin", "plugin.json"),
       path.join(".claude-plugin", "marketplace.json"),
+      ...COMMANDS_WITH_RELEASE_URL,
     ]);
     syncPluginManifests(tempDir);
     expect(syncPluginManifests(tempDir, { check: true })).toEqual([]);
@@ -94,8 +100,11 @@ describe("plugin manifests launch the pinned release tarball", () => {
       .toEqual(pluginServerArgs(IDENTITY_CATALOG, "9.9.9-gd.99", "codex"));
     expect(codex.version).toBe("9.9.9-gd.99");
     expect(marketplace.plugins.find((plugin) => plugin.name === "codebase-index")?.version).toBe("9.9.9-gd.99");
-    for (const relative of MANIFEST_PATHS) {
+    for (const relative of [...MANIFEST_PATHS, ...COMMANDS_WITH_RELEASE_URL]) {
       expect(fs.readFileSync(path.join(tempDir, relative), "utf-8")).not.toContain(packageVersion);
+    }
+    for (const relative of COMMANDS_WITH_RELEASE_URL) {
+      expect(fs.readFileSync(path.join(tempDir, relative), "utf-8")).toContain(`npx -y --package ${url} ocbi index --force`);
     }
   });
 
@@ -103,7 +112,8 @@ describe("plugin manifests launch the pinned release tarball", () => {
     const scripts = readJson<{ scripts: Record<string, string> }>("package.json").scripts;
     expect(scripts["sync:plugin-manifests"]).toBe("node scripts/plugin-manifests.mjs");
     expect(scripts.version).toBe(
-      "node scripts/plugin-manifests.mjs && git add .mcp.json .claude-plugin .codex-plugin .agents/plugins",
+      "node scripts/plugin-manifests.mjs && git add .mcp.json .claude-plugin .codex-plugin .agents/plugins"
+        + " commands/index.md commands/status.md",
     );
   });
 });

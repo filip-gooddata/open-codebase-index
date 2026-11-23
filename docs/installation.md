@@ -224,7 +224,7 @@ The server runs `npx -y --package <release tarball> open-codebase-index-mcp --ho
 
 ### Plugin launch through npx
 
-The plugins in this fork of [Helweg/open-codebase-index](https://github.com/Helweg/open-codebase-index) start the server from the release tarball of their own version; nothing is installed from the npm registry under the package name. `npm run sync:plugin-manifests` (run by `npm version`) writes the tarball URL and version into `.claude-plugin/plugin.json`, `.mcp.json`, `.codex-plugin/plugin.json` and the marketplace manifests, and the release workflow refuses a tag whose manifests are stale.
+The plugins in this fork of [Helweg/open-codebase-index](https://github.com/Helweg/open-codebase-index) start the server from the release tarball of their own version; nothing is installed from the npm registry under the package name. `npm run sync:plugin-manifests` (run by `npm version`) writes the tarball URL and version into `.claude-plugin/plugin.json`, `.mcp.json`, `.codex-plugin/plugin.json`, the marketplace manifests and the terminal rebuild command in `commands/index.md` and `commands/status.md`, and the release workflow refuses a tag whose manifests are stale.
 
 - `npx` and Node.js 22.22 or newer must be on the `PATH` the host passes to MCP servers. A host started from a desktop launcher may not see a shell-managed Node.js.
 - The tarball holds the native module for every release platform (macOS arm64 and Linux x64 glibc), so no build runs on install.

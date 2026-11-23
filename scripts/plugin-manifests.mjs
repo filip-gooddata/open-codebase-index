@@ -7,7 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  * GitHub release tarball of the package version they ship with. This module
  * derives those launch arguments from package.json and the identity catalog,
  * so a version bump rewrites them (npm `version` lifecycle) and a stale
- * manifest fails `--check` in tests and in the release workflow.
+ * manifest fails `--check` in tests and in the release workflow. The commands that
+ * tell users to run this release's `ocbi` get the same URL.
  */
 
 const SERVER_NAME = "codebase-index";
@@ -97,6 +98,32 @@ export function expectedPluginManifests(root, options = {}) {
 
 const serialize = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
+/** Commands that tell the user to run this release's `ocbi` through npx. */
+export const COMMANDS_WITH_RELEASE_URL = [path.join("commands", "index.md"), path.join("commands", "status.md")];
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * @param {string} root
+ * @param {{ packageSpec?: string }} [options]
+ * @returns {Array<[string, string]>} `[relativePath, expectedText]` pairs
+ */
+export function expectedCommandTexts(root, options = {}) {
+  const catalog = readJson(path.join(root, "src", "identity-catalog.json"));
+  const { version } = readJson(path.join(root, "package.json"));
+  const url = options.packageSpec ?? releaseTarballUrl(catalog, version);
+  const repository = catalog.release.repository.replace(/\/+$/, "");
+  const pattern = new RegExp(`${escapeRegExp(repository)}/releases/download/[^/\\s\`]+/[^/\\s\`]+\\.tgz`, "g");
+  return COMMANDS_WITH_RELEASE_URL.map((relativePath) => {
+    const text = readFileSync(path.join(root, relativePath), "utf-8");
+    if (!pattern.test(text)) throw new Error(`${relativePath} names no release tarball URL`);
+    pattern.lastIndex = 0;
+    return [relativePath, text.replace(pattern, url)];
+  });
+}
+
 /**
  * @param {string} root
  * @param {{ check?: boolean, packageSpec?: string }} [options]
@@ -104,9 +131,12 @@ const serialize = (value) => `${JSON.stringify(value, null, 2)}\n`;
  */
 export function syncPluginManifests(root, options = {}) {
   const stale = [];
-  for (const [relativePath, expected] of expectedPluginManifests(root, options)) {
+  const expectedTexts = [
+    ...expectedPluginManifests(root, options).map(([relativePath, expected]) => [relativePath, serialize(expected)]),
+    ...expectedCommandTexts(root, options),
+  ];
+  for (const [relativePath, text] of expectedTexts) {
     const filePath = path.join(root, relativePath);
-    const text = serialize(expected);
     if (readFileSync(filePath, "utf-8") === text) continue;
     stale.push(relativePath);
     if (!options.check) writeFileSync(filePath, text, "utf-8");

@@ -58,9 +58,17 @@ describe("Claude Code plugin", () => {
     }
     // A shared store refuses forced rebuilds; the commands must route the user to a terminal
     // rebuild instead of a retry that the server refuses.
+    // The rebuild must use this release's CLI (the flag is fork-specific) and target the
+    // primary checkout, which index_status names on its Checkout role line.
+    const version = (JSON.parse(fs.readFileSync("package.json", "utf-8")) as { version: string }).version;
+    const releaseCli = `npx -y --package ${IDENTITY_CATALOG.release.repository}/releases/download/v${version}/`
+      + `open-codebase-index-${version}.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <primary checkout>`;
     for (const command of ["./commands/index.md", "./commands/status.md"]) {
-      expect(fs.readFileSync(command, "utf-8"), command).toContain("FORCE_REBUILD_DISABLED");
-      expect(fs.readFileSync(command, "utf-8"), command).toContain("--allow-shared-rebuild");
+      const text = fs.readFileSync(command, "utf-8");
+      expect(text, command).toContain("FORCE_REBUILD_DISABLED");
+      expect(text, command).toContain(releaseCli);
+      expect(text, command).toContain("Checkout role:");
+      expect(text, command).not.toContain("npm install -g");
     }
   });
 

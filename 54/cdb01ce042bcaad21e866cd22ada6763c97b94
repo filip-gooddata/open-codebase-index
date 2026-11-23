@@ -1,0 +1,29 @@
+.claude-plugin/marketplace.json
+  s_6e759d10437727::t_9a241d7a016f55 13
+.claude-plugin/plugin.json
+  s_6e759d10437727::t_17324cbdc9ea07 3
+.codex-plugin/plugin.json
+  s_6e759d10437727::t_bbd7c044b3f3a7 3
+CHANGELOG.md
+  s_6e759d10437727::t_185520e8c9a1db 10-13
+package-lock.json
+  s_6e759d10437727::t_1dfe408eaf75e2 3,9
+package.json
+  s_6e759d10437727::t_b8ce8a86e63606 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "54cdb01ce042bcaad21e866cd22ada6763c97b94",
+  "prompts": {},
+  "sessions": {
+    "s_6e759d10437727": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06cb6ee7-862b-4903-8c33-d7ae79147c56",
+        "model": "unknown"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -51,7 +51,7 @@ export OCBI_NODE="$NODE"
 # --- static checks -------------------------------------------------------------------------------
 scripts=("$here/install.sh" "$here/hook/ocbi-post-checkout.sh"
   "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/notify/ocbi-notify.sh"
-  "$here/notify/notifier/build.sh" "$here/mcp/open-codebase-index-mcp" "$here/test/run-tests.sh")
+  "$here/notify/notifier/build.sh" "$here/mcp/ocbi-mcp" "$here/test/run-tests.sh")
 for s in "${scripts[@]}"; do
   check "bash -n ${s#"$here"/}" bash -n "$s"
 done
@@ -104,7 +104,7 @@ for f in ocbi-post-checkout.sh ocbi-rebuild.sh ocbi-notify.sh; do
   check "installed executable $f" test -x "$H/$f"
 done
 check "installed ocbi-rebuild into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild"
-check "install places no open-codebase-index-mcp without a package" test ! -e "$HOME/.local/bin/open-codebase-index-mcp"
+check "install places no ocbi-mcp without a package" test ! -e "$HOME/.local/bin/ocbi-mcp"
 expect_match "install says why it skipped the mcp piece" "skipped: no package in $H/pkg" "$out"
 expect_eq "install leaves an earlier version's launcher and projects.conf alone" "#!/bin/sh # mine" "$(cat "$H/ocbi-mcp.sh") $(cat "$H/projects.conf")"
 rm -f "$H/ocbi-mcp.sh" "$H/projects.conf"
@@ -136,14 +136,29 @@ BD="$BO/home/pkg/node_modules/open-codebase-index/dist"
 mkdir -p "$BD"
 printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$BD/cbi.js"
 printf '// checkouts.primary.path\nconsole.log(process.argv.slice(2).join(" "));\n' >"$BD/cli.js"
-printf '#!/bin/sh\necho mine\n' >"$BO/bin/open-codebase-index-mcp" && chmod 755 "$BO/bin/open-codebase-index-mcp"
+printf '#!/bin/sh\necho mine\n' >"$BO/bin/ocbi-mcp" && chmod 755 "$BO/bin/ocbi-mcp"
 out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
 expect_match "install skips the mcp piece for a package without plugin version checks" "predates plugin version checks" "$out"
-expect_eq "a skipped mcp piece leaves the existing executable alone" "mine" "$("$BO/bin/open-codebase-index-mcp")"
+expect_eq "a skipped mcp piece leaves the existing executable alone" "mine" "$("$BO/bin/ocbi-mcp")"
 printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log(process.argv.slice(2).join(" "));\n' >"$BD/cli.js"
 bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
-check "open-codebase-index-mcp runs the package with the chosen node" grep -qF "exec \"$NODE\" \"$BD/cli.js\" \"\$@\"" "$BO/bin/open-codebase-index-mcp"
-expect_eq "open-codebase-index-mcp passes its arguments to the package's cli.js" "--host claude" "$(env PATH=/usr/bin:/bin "$BO/bin/open-codebase-index-mcp" --host claude)"
+check "ocbi-mcp runs the package with the chosen node" grep -qF "exec \"$NODE\" \"$BD/cli.js\" \"\$@\"" "$BO/bin/ocbi-mcp"
+expect_eq "ocbi-mcp passes its arguments to the package's cli.js" "--host claude" "$(env PATH=/usr/bin:/bin "$BO/bin/ocbi-mcp" --host claude)"
+# A shim this installer placed is retired once its package no longer qualifies, so the plugins reach npx.
+printf '// checkouts.primary.path\nconsole.log("old");\n' >"$BD/cli.js"
+out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
+check "install retires its shim in front of a package without plugin version checks" test ! -e "$BO/bin/ocbi-mcp"
+expect_match "install reports the retired shim" "removed  $BO/bin/ocbi-mcp" "$out"
+printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log("new");\n' >"$BD/cli.js"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+rm -rf "$BO/home/pkg"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+check "install retires its shim when the package is gone" test ! -e "$BO/bin/ocbi-mcp"
+# The destination is checked before anything is written, even when --package would make the shim eligible.
+mkdir -p "$T/dir-bin/ocbi-mcp"
+out="$(bash "$here/install.sh" --pieces mcp --package ./x.tgz --home "$T/dir-home" --bin-dir "$T/dir-bin" 2>&1)"
+expect_eq "install refuses a directory at the shim destination before installing the package" "2 absent" "$? $([ -e "$T/dir-home/pkg" ] && echo present || echo absent)"
+expect_match "install names the directory in the way" "ocbi-mcp is a directory; nothing was installed" "$out"
 bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
 expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"
 P2="$T/preflight"

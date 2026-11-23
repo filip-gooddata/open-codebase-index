@@ -196,11 +196,19 @@ describe.skipIf(process.platform === "win32")("plugin launcher", () => {
     return { status: result.status, lines: result.stdout.trim().split("\n"), stderr: result.stderr };
   }
 
-  it("runs the installed binary from PATH with the host flag", () => {
+  it("runs the installed ocbi-mcp from PATH with the host flag", () => {
+    stub("ocbi-mcp");
     stub("open-codebase-index-mcp");
     stub("npx");
-    expect(launch("claude")).toMatchObject({ status: 0, lines: ["open-codebase-index-mcp", "--host", "claude"] });
-    expect(launch("codex").lines).toEqual(["open-codebase-index-mcp", "--host", "codex"]);
+    expect(launch("claude")).toMatchObject({ status: 0, lines: ["ocbi-mcp", "--host", "claude"] });
+    expect(launch("codex").lines).toEqual(["ocbi-mcp", "--host", "codex"]);
+  });
+
+  it("does not take an open-codebase-index-mcp that predates plugin version checks", () => {
+    // Older fork releases and the registry package declare only this bin and report no skew.
+    stub("open-codebase-index-mcp");
+    stub("npx");
+    expect(launch("claude").lines).toEqual(["npx", "-y", "--package", url, "open-codebase-index-mcp", "--host", "claude"]);
   });
 
   it("falls back to this release's tarball through npx when no binary is installed", () => {
@@ -212,7 +220,7 @@ describe.skipIf(process.platform === "win32")("plugin launcher", () => {
   });
 
   it("stops with directions on Windows, even where a POSIX sh exists", () => {
-    stub("open-codebase-index-mcp");
+    stub("ocbi-mcp");
     stub("npx");
     const result = launch("claude", { OS: "Windows_NT" });
     expect(result.status).toBe(1);

@@ -1,5 +1,0 @@
-#!/bin/sh
-# open-codebase-index-mcp of the package in @OCBI_HOME@/pkg, run by a fixed Node.js so a host started
-# outside a login shell finds it. The Claude Code and Codex plugins start the first
-# open-codebase-index-mcp on PATH and fall back to npx only when there is none.
-exec "@NODE@" "@OCBI_HOME@/pkg/node_modules/open-codebase-index/dist/cli.js" "$@"

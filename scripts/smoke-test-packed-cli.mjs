@@ -329,8 +329,9 @@ async function smokeIdentity(identity, expectedBinaries) {
 }
 
 const packages = [
-  await smokeIdentity(catalog.product.current, [catalog.product.current.mcpBinary, "ocbi", "cbi"]),
-  await smokeIdentity(catalog.product.future, [catalog.product.future.mcpBinary, catalog.product.current.mcpBinary, "ocbi", "cbi"]),
+  await smokeIdentity(catalog.product.current, [catalog.product.current.mcpBinary, catalog.release.pluginBinary, "ocbi", "cbi"]),
+  await smokeIdentity(catalog.product.future,
+    [catalog.product.future.mcpBinary, catalog.product.current.mcpBinary, catalog.release.pluginBinary, "ocbi", "cbi"]),
 ];
 writeFileSync(path.join(scratchRoot, "validated-packages.json"), JSON.stringify({
   schemaVersion: 1, version: manifest.version, packages,

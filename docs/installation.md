@@ -160,21 +160,21 @@ To use the MCP server instead of the native extension, register it in `.omp/mcp.
 
 ## Server for the Claude Code and Codex plugins
 
-The Claude Code and Codex plugins of this fork of [Helweg/open-codebase-index](https://github.com/Helweg/open-codebase-index) start an `open-codebase-index-mcp` installed on your machine. Install it first, at the plugin's version, from the GitHub release tarball (`<release tarball>` below is `https://github.com/filip-gooddata/open-codebase-index/releases/download/v<version>/open-codebase-index-<version>.tgz`):
+The Claude Code and Codex plugins of this fork of [Helweg/open-codebase-index](https://github.com/Helweg/open-codebase-index) start the `ocbi-mcp` command installed on your machine (the MCP server under the name only releases with plugin version checks declare). Install it first, at the plugin's version, from the GitHub release tarball (`<release tarball>` below is `https://github.com/filip-gooddata/open-codebase-index/releases/download/v<version>/open-codebase-index-<version>.tgz`):
 
 ```bash
 npm install -g <release tarball>
 ```
 
-or, with the [local wrapper](local-wrapper.md), `contrib/local-wrapper/install.sh --package <release tarball>`, whose `mcp` piece puts an `open-codebase-index-mcp` that runs the installed package with a fixed Node.js into `~/.local/bin`. Nothing is installed from the npm registry under the package name. The tarball holds the native module for every release platform (macOS arm64 and Linux x64 glibc), so no build runs on install. An installed binary needs no network; it completed the MCP handshake in 1.4 to 2.1 s in the package smoke test.
+or, with the [local wrapper](local-wrapper.md), `contrib/local-wrapper/install.sh --package <release tarball>`, whose `mcp` piece puts an `ocbi-mcp` that runs the installed package with a fixed Node.js into `~/.local/bin`. Nothing is installed from the npm registry under the package name. The tarball holds the native module for every release platform (macOS arm64 and Linux x64 glibc), so no build runs on install. An installed binary needs no network; it completed the MCP handshake in 1.4 to 2.1 s in the package smoke test.
 
 ### How the plugins start the server
 
-Each plugin runs a POSIX `sh` launcher: the first `open-codebase-index-mcp` on the `PATH` the host passes to MCP servers, with `--host claude` or `--host codex`, else the plugin's own release through `npx -y --package <release tarball> open-codebase-index-mcp`. It also sets `OCBI_PLUGIN_VERSION` to the plugin's version.
+Each plugin runs a POSIX `sh` launcher: the first `ocbi-mcp` on the `PATH` the host passes to MCP servers, with `--host claude` or `--host codex`, else the plugin's own release through `npx -y --package <release tarball> open-codebase-index-mcp`. It also sets `OCBI_PLUGIN_VERSION` to the plugin's version.
 
 - **Version skew.** When the installed package's version differs from the plugin's, `index_status` and `ocbi status` print a `Warning: Version skew: ...` line with the `npm install -g` command for the plugin's release. The server keeps working. The server records the plugin's version in `codebase-index-plugin-launch.<host>.json` next to the host's global config, so a later `ocbi status --host <host>` in a terminal reports the same skew.
 - **npx fallback.** Without an installed binary the first start downloads the tarball (about 35 MB) and its dependencies into the npm cache. That took 8 to 50 s on a cold cache in our measurements, which can pass Claude Code's 30 s `MCP_TIMEOUT` (no per-server override; raise it, for example `MCP_TIMEOUT=120000 claude`, or reconnect from `/mcp`). The Codex plugin raises its own `startup_timeout_sec` to 300 s. Later starts took 2 to 6 s. `npx` revalidates the URL on each start, so every fallback start needs network access to GitHub.
-- **PATH.** `sh`, and Node.js 22.22 or newer for the installed binary or `npx`, must be on the host's `PATH`. A host started from a desktop launcher may not see a shell-managed Node.js; the wrapper's `mcp` piece avoids that by naming Node.js by its absolute path. Any other `open-codebase-index-mcp` first on the `PATH` runs instead: the registry package of the same name, or a fork release before 0.38.2-gd.9, which predates the check, reports no skew. Replace such an install with the plugin's release.
+- **PATH.** `sh`, and Node.js 22.22 or newer for the installed binary or `npx`, must be on the host's `PATH`. A host started from a desktop launcher may not see a shell-managed Node.js; the wrapper's `mcp` piece avoids that by naming Node.js by its absolute path. The launcher looks for `ocbi-mcp`, not `open-codebase-index-mcp`: fork releases before 0.38.2-gd.9 and the registry package, which predate the check, declare only the latter, so with such an install the launcher uses `npx` until you install the plugin's release.
 - **Windows** is not supported by the launcher, and the release ships no Windows native module. Without a POSIX `sh` the server fails to spawn; with one, such as Git for Windows', the launcher stops with a message naming direct registration. Register a server you build or install yourself directly in the host's MCP settings instead.
 
 `npm run sync:plugin-manifests` (run by `npm version`) writes the tarball URL and version into `.claude-plugin/plugin.json`, `.mcp.json`, `.codex-plugin/plugin.json`, the marketplace manifests and the terminal rebuild command in `commands/index.md` and `commands/status.md`, and the release workflow refuses a tag whose manifests are stale.
@@ -190,7 +190,7 @@ codex plugin add codebase-index@open-codebase-index
 
 Restart or open a new thread in the target workspace. The plugin bundles MCP configuration, session guidance, and the `codebase-search` skill.
 
-The plugin's server runs the installed `open-codebase-index-mcp --host codex`, or its release through `npx` when none is installed ([how the plugins start the server](#how-the-plugins-start-the-server)).
+The plugin's server runs the installed `ocbi-mcp --host codex`, or its release through `npx` when none is installed ([how the plugins start the server](#how-the-plugins-start-the-server)).
 
 Approve the plugin's tools in `~/.codex/config.toml` with its plugin policy table:
 
@@ -208,7 +208,7 @@ To change the timeouts or the host mode, turn off the plugin's copy of the serve
 enabled = false
 
 [mcp_servers.codebase-index]
-command = "open-codebase-index-mcp"
+command = "ocbi-mcp"
 args = ["--host", "codex"]
 startup_timeout_sec = 30
 tool_timeout_sec = 420
@@ -241,7 +241,7 @@ claude plugin install codebase-index@open-codebase-index
 
 Restart or open a new session in the target workspace. The plugin provides the MCP server, the `codebase-search` skill, and the `/codebase-index:` commands `index`, `status`, `search`, `find`, `peek`, `definition`, `call-graph` and `pr-impact`. It has no SessionStart hook: the server sends its routing guidance in the MCP `instructions` at initialize.
 
-The server runs the installed `open-codebase-index-mcp --host claude`, or its release through `npx` when none is installed ([how the plugins start the server](#how-the-plugins-start-the-server)). The plugin version equals the package version: after `/plugin marketplace update open-codebase-index` and a plugin update, install the new release too, or status reports the skew. To stay on one release, add the marketplace at its tag, for example `filip-gooddata/open-codebase-index@v<version>`.
+The server runs the installed `ocbi-mcp --host claude`, or its release through `npx` when none is installed ([how the plugins start the server](#how-the-plugins-start-the-server)). The plugin version equals the package version: after `/plugin marketplace update open-codebase-index` and a plugin update, install the new release too, or status reports the skew. To stay on one release, add the marketplace at its tag, for example `filip-gooddata/open-codebase-index@v<version>`.
 
 Claude uses:
 

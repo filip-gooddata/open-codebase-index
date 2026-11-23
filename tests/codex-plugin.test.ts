@@ -58,10 +58,10 @@ describe("Codex plugin host mode", () => {
       "-c",
       "if [ \"$OS\" = Windows_NT ]; then echo \"codebase-index: this plugin's launcher does not support Windows; "
         + "register open-codebase-index-mcp directly in the host's MCP settings (docs/installation.md)\" >&2; exit 1; fi; "
-        + "if command -v open-codebase-index-mcp >/dev/null 2>&1; then exec open-codebase-index-mcp \"$@\"; fi; "
+        + "if command -v ocbi-mcp >/dev/null 2>&1; then exec ocbi-mcp \"$@\"; fi; "
         + `exec npx -y --package '${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/`
         + `open-codebase-index-${packageManifest.version}.tgz' open-codebase-index-mcp "$@"`,
-      "open-codebase-index-mcp",
+      "ocbi-mcp",
       "--host",
       "codex",
     ]);

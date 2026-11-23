@@ -4,7 +4,7 @@
 # Usage: install.sh [options]
 #   --pieces LIST        comma-separated pieces to install (default: hook,mcp,rebuild,notify)
 #                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
-#                        mcp       open-codebase-index-mcp into --bin-dir: the package in OCBI_HOME/pkg
+#                        mcp       ocbi-mcp into --bin-dir: the package in OCBI_HOME/pkg
 #                                  run by --node, which the Claude Code and Codex plugins start
 #                                  from PATH
 #                        rebuild   ocbi-rebuild.sh into OCBI_HOME, ocbi-rebuild into --bin-dir and,
@@ -175,25 +175,35 @@ install_hook() {
   place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh" render
 }
 
-# The plugins prefer an open-codebase-index-mcp on PATH to their pinned npx fallback, so place one
+# The plugins prefer an ocbi-mcp on PATH to their pinned npx fallback, so place one
 # only in front of a package that can run and that reports a plugin version skew (it reads
-# OCBI_PLUGIN_VERSION). Otherwise leave the destination as it is.
+# OCBI_PLUGIN_VERSION). Otherwise retire a shim this installer placed earlier, so the plugins reach
+# npx again, and leave any other file at the destination alone.
+mcp_shim_marker='# ocbi-mcp of the package in '
 install_mcp() {
-  local dist="$home/pkg/node_modules/open-codebase-index/dist"
+  local dist="$home/pkg/node_modules/open-codebase-index/dist" dest="$bin_dir/ocbi-mcp"
+  if [ "$preflight" = 1 ]; then
+    # --package may make the shim eligible, so check the destination whatever is installed now.
+    place 755 "$here/mcp/ocbi-mcp" "$dest" render
+    return 0
+  fi
   say "mcp -> $bin_dir"
-  if [ "$preflight" = 0 ] && [ "$dry_run" = 1 ] && has_piece pkg; then
-    say "  would place  $bin_dir/open-codebase-index-mcp if $package reports plugin version skew"
+  if [ "$dry_run" = 1 ] && has_piece pkg; then
+    say "  would place  $dest if $package reports plugin version skew"
     return 0
   fi
+  local reason=""
   if [ ! -f "$dist/cli.js" ]; then
-    say "  skipped: no package in $home/pkg; the plugins fall back to npx until you rerun with --package"
+    reason="no package in $home/pkg; the plugins fall back to npx until you rerun with --package"
+  elif ! grep -rqs --include='*.js' OCBI_PLUGIN_VERSION "$dist"; then
+    reason="the package in $home/pkg predates plugin version checks; rerun with --package <gd.9 or later spec>"
+  fi
+  if [ -n "$reason" ]; then
+    say "  skipped: $reason"
+    if [ -f "$dest" ] && [ ! -L "$dest" ] && grep -qF -- "$mcp_shim_marker" "$dest"; then retire "$dest"; fi
     return 0
   fi
-  if ! grep -rqs --include='*.js' OCBI_PLUGIN_VERSION "$dist"; then
-    say "  skipped: the package in $home/pkg predates plugin version checks; rerun with --package <gd.9 or later spec>"
-    return 0
-  fi
-  place 755 "$here/mcp/open-codebase-index-mcp" "$bin_dir/open-codebase-index-mcp" render
+  place 755 "$here/mcp/ocbi-mcp" "$dest" render
 }
 
 install_rebuild() {
@@ -278,8 +288,8 @@ EOF
 cat <<EOF
 
 * Claude Code: install the plugin from the repository marketplace (docs/installation.md). It
-  starts the first open-codebase-index-mcp on PATH; with the mcp piece that is
-  $bin_dir/open-codebase-index-mcp, so keep $bin_dir on the PATH the host starts with.
+  starts the first ocbi-mcp on PATH; with the mcp piece that is
+  $bin_dir/ocbi-mcp, so keep $bin_dir on the PATH the host starts with.
     claude plugin marketplace add filip-gooddata/open-codebase-index
     claude plugin install codebase-index@open-codebase-index
 

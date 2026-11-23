@@ -22,6 +22,8 @@ export interface ReleaseIdentity {
   repository: string;
   tagPrefix: string;
   marketplaceName: string;
+  /** MCP bin the plugin launcher looks for on PATH; only releases that report plugin version skew declare it. */
+  pluginBinary: string;
 }
 
 export interface IdentityCatalog {

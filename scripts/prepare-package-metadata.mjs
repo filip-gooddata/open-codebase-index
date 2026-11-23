@@ -9,7 +9,7 @@ import { pluginServerEntry } from "./plugin-manifests.mjs";
  *     current: { packageName: string, mcpBinary: string },
  *     future: { packageName: string, mcpBinary: string }
  *   },
- *   release: { repository: string, tagPrefix: string, marketplaceName: string }
+ *   release: { repository: string, tagPrefix: string, marketplaceName: string, pluginBinary: string }
  * }} IdentityCatalog
  */
 
@@ -104,6 +104,10 @@ if (typeof cliTarget !== "string") {
 }
 if (typeof cbiTarget !== "string") {
   fail("Missing ocbi binary entry");
+}
+
+if (packageJson.bin?.[catalog.release.pluginBinary] !== cliTarget) {
+  fail(`${catalog.release.pluginBinary} binary must match ${catalog.product.current.mcpBinary}`);
 }
 
 if (packageJson.bin?.cbi !== cbiTarget) {
@@ -236,10 +240,11 @@ function prepareClaudeMarketplace(manifestPath) {
 }
 
 const preparedBins = isCurrentIdentity()
-  ? { [catalog.product.current.mcpBinary]: cliTarget, ocbi: cbiTarget, cbi: cbiTarget }
+  ? { [catalog.product.current.mcpBinary]: cliTarget, [catalog.release.pluginBinary]: cliTarget, ocbi: cbiTarget, cbi: cbiTarget }
   : {
       [catalog.product.future.mcpBinary]: cliTarget,
       [catalog.product.current.mcpBinary]: cliTarget,
+      [catalog.release.pluginBinary]: cliTarget,
       ocbi: cbiTarget,
       cbi: cbiTarget,
     };

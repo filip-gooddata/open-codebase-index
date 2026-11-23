@@ -655,6 +655,13 @@ if [ "$(id -u)" != 0 ]; then
 else
   skip "schedule uninstall keeps the units when an enablement link cannot be removed" "root ignores directory permissions"
 fi
+# A configuration path that starts with a dash is data, not an option to perl or rm.
+mkdir -p "$T/dash/-zexample/systemd/user/timers.target.wants"
+ln -s "$LX/units/ocbi-check.timer" "$T/dash/-zexample/systemd/user/timers.target.wants/ocbi-check.timer"
+(cd "$T/dash" && XDG_CONFIG_HOME=-zexample sched uninstall >/dev/null 2>&1)
+expect_eq "schedule uninstall treats a configuration path with a leading dash as a path" "0 absent" \
+  "$? $([ -L "$T/dash/-zexample/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent)"
+printf '[Service]\n' >"$LX/units/ocbi-check.service"
 : >"$T/systemctl.calls"
 XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
 expect_eq "schedule uninstall without the timer file stops it and removes both enablement links" "0 absent absent absent --user stop ocbi-check.timer" \

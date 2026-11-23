@@ -47,7 +47,7 @@ case "${1:-}" in
         $^F = 255;
         open(my $fh, ">>", $lock) or die "cannot open $lock: $!\n";
         $ENV{OCBI_SCHEDULE_LOCK} = flock($fh, LOCK_EX | LOCK_NB) ? "held" : "busy";
-        exec("bash", @cmd) or die "cannot run bash: $!\n";' "$OCBI_HOME/rebuild.flock" "$0" "$@"
+        exec("bash", @cmd) or die "cannot run bash: $!\n";' -- "$OCBI_HOME/rebuild.flock" "$0" "$@"
     fi
     ;;
 esac
@@ -57,7 +57,7 @@ rebuild_running() {
     busy) return 0 ;;
   esac
   [ -f "$OCBI_HOME/rebuild.flock" ] &&
-    ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$OCBI_HOME/rebuild.flock"
+    ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' -- "$OCBI_HOME/rebuild.flock"
 }
 
 # add_checkout PATH: append the checkout root of PATH to check.conf unless it is listed.
@@ -113,7 +113,7 @@ install_jobs() {
 link_state() {
   # shellcheck disable=SC2016 # a single-quoted Perl program
   perl -e 'if (lstat $ARGV[0]) { print -l _ ? "link" : "other"; exit 0 }
-    print(($!{ENOENT} || $!{ENOTDIR}) ? "absent" : "unknown");' "$1"
+    print(($!{ENOENT} || $!{ENOTDIR}) ? "absent" : "unknown");' -- "$1"
 }
 
 uninstall_jobs() {
@@ -152,7 +152,7 @@ uninstall_jobs() {
         link) ;;
         *) die "cannot look up $f; kept the units, rerun uninstall" ;;
       esac
-      rm -f "$f" 2>/dev/null && [ "$(link_state "$f")" = absent ] || die "cannot remove $f; kept the units, rerun uninstall"
+      rm -f -- "$f" 2>/dev/null && [ "$(link_state "$f")" = absent ] || die "cannot remove $f; kept the units, rerun uninstall"
       echo "removed $f"
     done
     for f in $units; do

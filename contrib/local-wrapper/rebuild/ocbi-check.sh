@@ -37,7 +37,7 @@ notify() {
 
 # A rebuild drops and refills every catalog; its intermediate state is no reason to notify.
 if [ -f "$OCBI_HOME/rebuild.flock" ] &&
-  ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$OCBI_HOME/rebuild.flock"; then
+  ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' -- "$OCBI_HOME/rebuild.flock"; then
   log "a rebuild is running; nothing checked"
   exit 0
 fi

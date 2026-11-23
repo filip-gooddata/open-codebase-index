@@ -211,6 +211,27 @@ chmod 755 "$SH/npm-bin/npm"
 out="$(PATH="$SH/npm-bin:$PATH" bash "$here/install.sh" --pieces mcp --package ./broken.tgz --home "$SH/a" --bin-dir "$SB" 2>&1)"
 expect_eq "--package without dist/cli.js is refused and the shim retired" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
 expect_match "the refusal names the missing cli.js" "did not install open-codebase-index with dist/cli.js" "$out"
+# The same home spelled with a trailing slash or through a symlink still owns its shim.
+for alias in "$SH/a/" "$SH/a-link"; do
+  ln -sfn "$SH/a" "$SH/a-link"
+  fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+  fake_pkg "$SH/a" nocli
+  bash "$here/install.sh" --pieces mcp --home "$alias" --bin-dir "$SB" >/dev/null 2>&1
+  expect_eq "a refused install for $alias retires the shim of the same home" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
+done
+# A regular file in the way of a destination's parent stops the install before anything changes.
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+fake_pkg "$SH/a" nocli
+printf 'x\n' >"$SH/not-a-dir"
+bash "$here/install.sh" --pieces mcp,rebuild --home "$SH/a" --bin-dir "$SB" --launch-agents-dir "$SH/not-a-dir/la" >/dev/null 2>&1
+rc=$?
+if [ "$(uname -s)" = Darwin ]; then
+  expect_eq "a file blocking the plist's parent stops the install before the shim is retired" "2 present" "$rc $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+fi
+fake_pkg "$SH/a"
+out="$(bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SH/not-a-dir/bin" 2>&1)"
+expect_eq "a file blocking the bin dir is refused before any write" "2 absent" "$? $([ -e "$SH/a/ocbi-post-checkout.sh" ] && echo present || echo absent)"
+expect_match "the refusal names the blocking file" "$SH/not-a-dir is not a directory" "$out"
 # The destination is checked before anything is written, even when --package would make the shim eligible.
 mkdir -p "$T/dir-bin/ocbi-mcp"
 out="$(bash "$here/install.sh" --pieces mcp --package ./x.tgz --home "$T/dir-home" --bin-dir "$T/dir-bin" 2>&1)"

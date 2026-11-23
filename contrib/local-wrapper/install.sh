@@ -84,6 +84,7 @@ for path in "$home" "$bin_dir" "$agents_dir" "$node"; do
     *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
   esac
 done
+while [ "${home%/}" != "$home" ] && [ "$home" != / ]; do home="${home%/}"; done
 [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid --label $label"
 [ -n "$package" ] && pieces="$pieces,pkg"
 
@@ -135,6 +136,10 @@ place() {
   if [ "$preflight" = 1 ]; then
     [ -f "$src" ] && [ -r "$src" ] || die "cannot read $src; nothing was installed"
     [ ! -d "$dest" ] || [ -L "$dest" ] || die "$dest is a directory; nothing was installed"
+    local parent
+    parent="$(dirname "$dest")"
+    while [ ! -e "$parent" ] && [ "$parent" != / ]; do parent="$(dirname "$parent")"; done
+    [ -d "$parent" ] || die "$parent is not a directory, so $dest cannot be installed; nothing was installed"
     return 0
   fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/ocbi-install.XXXXXX")" || die "mktemp failed"
@@ -180,10 +185,16 @@ install_hook() {
 # OCBI_PLUGIN_VERSION). Otherwise retire a shim this installer placed earlier, so the plugins reach
 # npx again, and leave any other file at the destination alone.
 mcp_shim_marker='# ocbi-mcp of the package in '
-# is_own_mcp_shim DEST: DEST is a shim this installer rendered for this OCBI_HOME's package.
+# is_own_mcp_shim DEST: DEST is a shim this installer rendered for this OCBI_HOME's package, also
+# when it was rendered with another spelling of the same directory (a symlink alias).
 is_own_mcp_shim() {
-  [ -f "$1" ] && [ ! -L "$1" ] && grep -qF -- "$mcp_shim_marker" "$1" &&
-    grep -qF -- "\"$home/pkg/node_modules/open-codebase-index/dist/cli.js\"" "$1"
+  local target shim_home a b
+  [ -f "$1" ] && [ ! -L "$1" ] && grep -qF -- "$mcp_shim_marker" "$1" || return 1
+  target="$(sed -n 's/^exec "[^"]*" "\(.*\)" "\$@"$/\1/p' "$1")"
+  shim_home="${target%/pkg/node_modules/open-codebase-index/dist/cli.js}"
+  [ -n "$target" ] && [ "$shim_home" != "$target" ] || return 1
+  [ "$shim_home" = "$home" ] && return 0
+  a="$(cd "$shim_home" 2>/dev/null && pwd -P)" && b="$(cd "$home" 2>/dev/null && pwd -P)" && [ "$a" = "$b" ]
 }
 install_mcp() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist" dest="$bin_dir/ocbi-mcp"

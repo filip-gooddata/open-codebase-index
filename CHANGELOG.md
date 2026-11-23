@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.7] - 2026-11-23
+
+Fork release on top of 0.38.2-gd.6. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.
+
 ### Added
 
 - **Repository config and shared store**: A repository can carry a host-neutral config at `<git common dir>/codebase-index/config.json`. When it exists, every checkout of the repository (main worktree, linked worktrees, bare-base layouts) uses one store in every host mode, `storage.indexPath` or by default `<common dir>/codebase-index/index`, and the file's settings merge between the global config and the checkout's own project config. Checkouts get a primary or secondary role (`checkouts.primary.path`, else the main worktree of a normal clone) with per-role `watchFiles` and `autoIndexOnStartup`; only the primary can force-clear the store. An invalid file is a config error. Secondary checkouts never delete shared store files: they refuse force rebuilds and clears before taking the writer lease, and report an unreadable or corrupted shared keyword index or database with a pointer to the primary instead of resetting it. A file that exists but cannot be read (permission error, directory, dangling symbolic link) is also a config error. `index_status` in every host (including Pi and omp) and `ocbi status` show the store, its source, the role and its reason, and routing warnings; a global-scope store shows as `(global scope)` with no role. The evaluation CLI uses the merged settings when `--config` is absent and refuses project-scope `--reindex` in a checkout with a repository config. Without the file, store paths and config inheritance are unchanged.
@@ -16,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`indexing.allowForceRebuild` with a repository config**: The repository config file can set it, and each forced request re-reads that file along with the global and project configs, so a `false` written after the server started still refuses the request with `FORCE_REBUILD_DISABLED`; a repository config that cannot be read fails the request with a `Cannot confirm indexing.allowForceRebuild` error. A repository `false` stays in force when a project `indexing` section omits the key, an explicit project value wins, and checkout role overrides cannot set it. Evaluation `--reindex`, which clears the index root, now fails with an error starting `FORCE_REBUILD_DISABLED:` when the setting is `false` in the merged config on disk (checked before the evaluation copies a `--config` file into the checkout) or in the config the evaluation runs with.
+- **Local wrapper relies on the repository config**: `contrib/local-wrapper` uses `<git common dir>/codebase-index/config.json` instead of its own routing. The `ocbi-mcp.sh` launcher, `projects.conf`, `profiles.conf`, and the `--link-only` and `--cbi` modes are removed. The Claude Code plugin starts `dist/cli.js --host claude` directly, and Codex is registered with `--host codex`.
+- **`ocbi-rebuild` takes any checkout**: It takes a checkout of the repository instead of a project name, forces only in a checkout the package reports as primary, and checks the route before every attempt.
+- **Post-checkout hook checks the store**: It indexes only where the package reports the repository's store, and runs the daily stale-catalog check through `ocbi prune --json`.
+- **Local wrapper installer**: `install.sh` installs the package first, refuses packages without repository-config support, takes `--node`, and removes the plugin's old session-hint hook. `docs/local-wrapper.md` describes the migration from `projects.conf` and when the old `.claude` links can be removed.
 
 ### Fixed
 

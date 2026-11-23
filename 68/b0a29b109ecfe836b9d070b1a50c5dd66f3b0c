@@ -1,0 +1,29 @@
+contrib/local-wrapper/install.sh
+  s_e3a8969c11e471::t_1d3e7b54c6257f 183-187,208,243-244,246,258,278-280,282,284-289
+contrib/local-wrapper/test/run-tests.sh
+  s_84cff08bf01a44::t_34a0db75c674df 171-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "68b0a29b109ecfe836b9d070b1a50c5dd66f3b0c",
+  "prompts": {},
+  "sessions": {
+    "s_84cff08bf01a44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "954c977c-e930-4bbb-bf7e-9febec214830",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_e3a8969c11e471": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23fe988b-6a89-4b9c-912f-70bdeaf10ced",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

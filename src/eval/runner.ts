@@ -290,7 +290,10 @@ export async function runEvaluation(options: EvalRunOptions): Promise<EvalRunRes
   const dataset = loadGoldenDataset(datasetPath);
 
   if (options.reindex) {
+    // Both checks run before ensureLocalEvalProjectConfig, so a refused reindex never rewrites the
+    // checkout's project config.
     assertEvalForceRebuildAllowedOnDisk(options.projectRoot);
+    assertEvalReindexAllowed(options.projectRoot, loadParsedConfig(options.projectRoot, options.configPath));
   }
 
   const resolvedEvalConfigPath = options.reindex && !isRoutedEvalCheckout(options.projectRoot)

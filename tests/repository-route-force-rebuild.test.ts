@@ -234,6 +234,18 @@ describe("indexing.allowForceRebuild from the repository config", () => {
       expect(fs.existsSync(sentinel)).toBe(true);
     });
 
+    it("refuses a --config false without rewriting an allowing checkout config", async () => {
+      const checkoutConfig = { indexing: { ...BASE_INDEXING, allowForceRebuild: true }, search: { maxResults: 7 } };
+      writeJson(checkoutConfigPath, checkoutConfig);
+      const explicitConfigPath = path.join(tempDir, "eval-config.json");
+      writeJson(explicitConfigPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: false } });
+
+      expect(await reindexWith(explicitConfigPath)).toMatch(/^FORCE_REBUILD_DISABLED: refusing evaluation --reindex/);
+      expect(JSON.parse(fs.readFileSync(checkoutConfigPath, "utf-8"))).toEqual(checkoutConfig);
+      expect(fs.existsSync(sentinel)).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, "results"))).toBe(false);
+    });
+
     it("refuses when the evaluation's own config sets false", () => {
       writeJson(checkoutConfigPath, { indexing: { ...BASE_INDEXING, allowForceRebuild: false } });
       expect(() => assertEvalReindexAllowed(projectRoot, loadParsedConfig(projectRoot, checkoutConfigPath)))

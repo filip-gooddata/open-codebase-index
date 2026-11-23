@@ -171,8 +171,8 @@ describe("Phase 1 product identity compatibility", () => {
     const expectedCodexArgs = ["-y", "--package", releaseTarball, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "codex"];
     const expectedClaudeArgs = ["-y", "--package", releaseTarball, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "claude"];
 
-    expect(mcpManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedCodexArgs });
-    expect(codexMcpManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedCodexArgs });
+    expect(mcpManifest.mcpServers["codebase-index"]).toMatchObject({ command: "npx", args: expectedCodexArgs });
+    expect(codexMcpManifest.mcpServers["codebase-index"]).toMatchObject({ command: "npx", args: expectedCodexArgs });
     expect(claudeManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedClaudeArgs });
     expect(claudeManifest.homepage).toBe(current.repository);
     expect(claudeManifest.repository).toBe(current.repository);
@@ -265,7 +265,7 @@ describe("Phase 1 product identity compatibility", () => {
       expect(packageLock.name).toBe(IDENTITY_CATALOG.product.future.packageName);
       expect(packageLock.packages[""]?.name).toBe(IDENTITY_CATALOG.product.future.packageName);
       expect(packageLock.packages[""]?.bin).toEqual(expectedBin);
-      expect(stagedMcpManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedMcpArgs });
+      expect(stagedMcpManifest.mcpServers["codebase-index"]).toMatchObject({ command: "npx", args: expectedMcpArgs });
       expect(stagedClaudeManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedClaudeArgs });
       expect(stagedClaudeManifest.homepage).toBe(IDENTITY_CATALOG.product.current.repository);
       expect(stagedClaudeManifest.repository).toBe(IDENTITY_CATALOG.product.current.repository);

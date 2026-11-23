@@ -56,6 +56,12 @@ describe("Claude Code plugin", () => {
       const text = fs.readFileSync(command, "utf-8");
       expect(text, command).not.toContain("index_visualize");
     }
+    // A shared store refuses forced rebuilds; the commands must route the user to a terminal
+    // rebuild instead of a retry that the server refuses.
+    for (const command of ["./commands/index.md", "./commands/status.md"]) {
+      expect(fs.readFileSync(command, "utf-8"), command).toContain("FORCE_REBUILD_DISABLED");
+      expect(fs.readFileSync(command, "utf-8"), command).toContain("--allow-shared-rebuild");
+    }
   });
 
   it("exposes a Claude marketplace manifest using owner metadata", () => {

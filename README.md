@@ -103,7 +103,10 @@ The first index creates embeddings. Later runs reuse unchanged content and proce
 
 See [Installation and host setup](docs/installation.md) for complete instructions.
 
-The Claude Code and Codex plugins install from this repository's marketplace (`/plugin marketplace add filip-gooddata/open-codebase-index`, then `/plugin install codebase-index@open-codebase-index`) and start the server from the GitHub release tarball of the plugin's version through `npx`.
+The Claude Code and Codex plugins install from this repository's marketplace and start the server from the GitHub release tarball of the plugin's version through `npx`:
+
+- Claude Code: `/plugin marketplace add filip-gooddata/open-codebase-index`, then `/plugin install codebase-index@open-codebase-index`
+- Codex: `codex plugin marketplace add filip-gooddata/open-codebase-index`, then `codex plugin add codebase-index@open-codebase-index`
 
 ## Recommended workflow
 

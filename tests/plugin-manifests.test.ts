@@ -53,9 +53,13 @@ describe("plugin manifests launch the pinned release tarball", () => {
       command: "npx",
       args: ["-y", "--package", url, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "claude"],
     });
+    // Codex reads these per-server keys from plugin MCP configs; its 10 s startup default is
+    // shorter than a cold npx download of the release tarball.
     expect(codexServers.mcpServers["codebase-index"]).toEqual({
       command: "npx",
       args: ["-y", "--package", url, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "codex"],
+      startup_timeout_sec: 300,
+      tool_timeout_sec: 420,
     });
   });
 

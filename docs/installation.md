@@ -178,7 +178,9 @@ Approve the plugin's tools in `~/.codex/config.toml` with its plugin policy tabl
 default_tools_approval_mode = "approve"
 ```
 
-Codex documents `startup_timeout_sec` (default 10 s) and `tool_timeout_sec` (default 60 s) only for servers registered under `[mcp_servers]`. A cold first start takes longer than 10 s, and a retrieval call that waits for first-use indexing takes longer than 60 s. To set both, turn off the plugin's copy of the server and register it directly, keeping the plugin for its skill and session guidance:
+The plugin's server entry sets `startup_timeout_sec = 300`, which covers the first download of the release tarball (Codex's default is 10 s), and `tool_timeout_sec = 420`, above the default `indexing.autoIndexWaitMs`, so a retrieval call that waits for first-use indexing is not cut off (Codex's default is 60 s). If you raise `indexing.autoIndexWaitMs`, keep `tool_timeout_sec` above it (converted to seconds) with a direct entry.
+
+To change the timeouts or the host mode, turn off the plugin's copy of the server and register it directly, keeping the plugin for its skill and session guidance:
 
 ```toml
 [plugins."codebase-index@open-codebase-index".mcp_servers.codebase-index]
@@ -187,14 +189,14 @@ enabled = false
 [mcp_servers.codebase-index]
 command = "npx"
 args = ["-y", "--package", "<release tarball>", "open-codebase-index-mcp", "--host", "codex"]
-startup_timeout_sec = 120
+startup_timeout_sec = 300
 tool_timeout_sec = 420
 default_tools_approval_mode = "approve"
 ```
 
-Set `tool_timeout_sec` above `indexing.autoIndexWaitMs` (converted to seconds). A direct entry does not follow plugin updates: change its tarball URL when you upgrade.
+A direct entry does not follow plugin updates: change its tarball URL when you upgrade.
 
-`--host codex` reads `~/.config/codebase-index/config.json` as its global config and `.codebase-index/` as project storage, so in a repository without a [repository config](configuration.md#repository-config-and-shared-store) it builds an index separate from Claude Code's `.claude/index/`. Its idle engine shuts down after 900 seconds and stops watching files; pass `--mcp-idle-timeout 0` to keep it running. To reuse Claude Code's global config and project indexes instead, register the direct entry with `--host claude`. That server has no idle shutdown and sends Claude Code's routing instructions. In a repository with a repository config both host modes use the shared store.
+`--host codex` reads `~/.config/codebase-index/config.json` as its global config and `.codebase-index/` as project storage. In a repository without a [repository config](configuration.md#repository-config-and-shared-store) it therefore builds an index separate from Claude Code's `.claude/index/`. Its idle engine shuts down after 900 seconds and stops watching files; pass `--mcp-idle-timeout 0` to keep it running. To reuse Claude Code's global config and project indexes instead, register the direct entry with `--host claude`; that server has no idle shutdown and sends Claude Code's routing instructions. With a repository config, both host modes use the repository's shared store as long as the effective `scope` is `project`; a `global` scope selects each host's own global index instead.
 
 If Codex reports `Transport closed`, inspect `index_status` from a new thread or client session. Server-side cancellation and durable diagnostics cannot make a client reuse a stdio transport that it has already closed.
 
@@ -226,7 +228,7 @@ The plugins in this fork of [Helweg/open-codebase-index](https://github.com/Helw
 
 - `npx` and Node.js 22.22 or newer must be on the `PATH` the host passes to MCP servers. A host started from a desktop launcher may not see a shell-managed Node.js.
 - The tarball holds the native module for every release platform (macOS arm64 and Linux x64 glibc), so no build runs on install.
-- The first start downloads the tarball (about 35 MB) and its dependencies into the npm cache. That took about 50 s on a cold cache, past Claude Code's 30 s `MCP_TIMEOUT` and Codex's 10 s default `startup_timeout_sec`. Later starts reuse the cache and took 2 to 6 s.
+- The first start downloads the tarball (about 35 MB) and its dependencies into the npm cache. That took about 50 s on a cold cache, past Claude Code's 30 s `MCP_TIMEOUT`, which has no per-server override; the Codex plugin raises its own `startup_timeout_sec` to 300 s. Later starts reuse the cache and took 2 to 6 s.
 - `npx` revalidates the URL on each start, so a start needs network access to GitHub.
 
 After installing or upgrading, fill the cache once from a shell so the host's first start is fast:

@@ -62,7 +62,7 @@ describe("Claude Code plugin", () => {
     // primary checkout, which index_status names on its Checkout role line.
     const version = (JSON.parse(fs.readFileSync("package.json", "utf-8")) as { version: string }).version;
     const releaseCli = `npx -y --package ${IDENTITY_CATALOG.release.repository}/releases/download/v${version}/`
-      + `open-codebase-index-${version}.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <primary checkout>`;
+      + `open-codebase-index-${version}.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <checkout>`;
     for (const command of ["./commands/index.md", "./commands/status.md"]) {
       const text = fs.readFileSync(command, "utf-8");
       expect(text, command).toContain("FORCE_REBUILD_DISABLED");
@@ -72,7 +72,23 @@ describe("Claude Code plugin", () => {
       // A missing or invalid primary must be fixed before any rebuild, and a config that
       // disables force routes straight to the terminal rebuild.
       expect(text, command).toContain("set `checkouts.primary.path`");
-      expect(text, command).toContain("sets `indexing.allowForceRebuild` to `false`");
+      // The default store's Store line names no file, and a running server keeps its first role.
+      expect(text, command).toContain("`<git common dir>/codebase-index/config.json` when that line says `repository default store`");
+      expect(text, command).toContain("restarts the MCP server");
+      // The force policy is the server's merged-config decision, refused before any change.
+      expect(text, command).toContain("returns `FORCE_REBUILD_DISABLED` before it changes anything");
+      expect(text, command).not.toContain("sets `indexing.allowForceRebuild` to `false`");
+    }
+    // The commands key off index_status text; keep the quoted phrases in step with the formatter.
+    const route = fs.readFileSync("src/config/repository-route.ts", "utf-8");
+    for (const phrase of [
+      "Checkout role: ${route.role} - ${route.roleReason}",
+      "is not a checkout of this repository",
+      "bare-base layout needs checkouts.primary.path",
+      "\"repository default store\"",
+      "linked worktree; the main worktree ${mainWorktree} is primary",
+    ]) {
+      expect(route, phrase).toContain(phrase);
     }
     // Incompatibility needs a rebuild even when the index is populated.
     const status = fs.readFileSync("./commands/status.md", "utf-8");

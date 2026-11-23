@@ -1,0 +1,87 @@
+.agents/plugins/marketplace.json
+  s_e3a8969c11e471::t_8a25b4a63f57ad 2,4
+.claude-plugin/marketplace.json
+  s_e3a8969c11e471::t_b2d327360075c1 2,4-5,7
+.claude-plugin/plugin.json
+  s_e3a8969c11e471::t_289ba86aa6dbb7 22-31,38-39
+.codex-plugin/plugin.json
+  s_e3a8969c11e471::t_25f9244cdc08e4 21
+.mcp.json
+  s_e3a8969c11e471::t_ab75f0a65a0286 5-12
+CHANGELOG.md
+  s_e3a8969c11e471::t_8bb7baf13093b8 10-19
+README.md
+  s_e3a8969c11e471::t_fa5ec28dfe53de 106-107
+contrib/local-wrapper/README.md
+  s_e3a8969c11e471::t_67490f582970e8 7-9,43-44,48
+contrib/local-wrapper/install.sh
+  s_c1660566cd1a66::t_87e766793df7a5 5,16,25,33,51,78,89-93,209,214,255-258
+contrib/local-wrapper/test/run-tests.sh
+  s_e3a8969c11e471::t_59e6d85a4b286f 67,79-83,97-98,109-111,129,131
+docs/installation.md
+  s_e3a8969c11e471::t_a5a04b19c8c27a 127-128,166-167,172,174,176-178,181,184-186,188-192,195-201,208-235,238
+docs/local-wrapper.md
+  s_e3a8969c11e471::t_4d4b4cf81a9ff1 35-37,46,60,63-64,67-70,72-74,115-116,199
+package.json
+  s_e3a8969c11e471::t_eb21618599e33b 79-81,93
+scripts/plugin-manifests.mjs
+  s_9cb7ff26fcd3d5::t_437249b008aca6 1-133
+scripts/prepare-package-metadata.mjs
+  s_e3a8969c11e471::t_56a94eab44d02f 4,11-12,164,184
+scripts/smoke-test-packed-cli.mjs
+  s_e3a8969c11e471::t_104e36c3231b71 8,112-164,283-285,288
+src/identity-catalog.json
+  s_e3a8969c11e471::t_ba289811fbe2a8 20-24
+src/identity-catalog.ts
+  s_e3a8969c11e471::t_eb97f4f7d42f73 20-26,30
+tests/claude-plugin.test.ts
+  s_e3a8969c11e471::t_69573472eb9217 5-6,24-25,30-31,37-60,69
+tests/codex-plugin.test.ts
+  s_e3a8969c11e471::t_3ceb1a9f2320fd 5,51-53,60-61
+tests/identity-phase0.test.ts
+  s_d2f42151e1e756::t_3110b10784fe58 17,85-86,169-172,180,243-244,248,256,335-337
+tests/plugin-manifests.test.ts
+  s_e3a8969c11e471::t_69612a91228ee7 1-152
+.github/workflows/fork-release.yml
+  s_e3a8969c11e471::t_e7797a304ba259 121-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0ffdd2158bbecc626bab9d84b80b793e365ea849",
+  "prompts": {},
+  "sessions": {
+    "s_9cb7ff26fcd3d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb2b83e3-1490-4b22-b742-83e626103981",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_c1660566cd1a66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5f3b5d6-2402-4023-be04-0f96d6c16099",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_d2f42151e1e756": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37b0567a-857a-4db3-a52d-e2c4d6154553",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_e3a8969c11e471": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23fe988b-6a89-4b9c-912f-70bdeaf10ced",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

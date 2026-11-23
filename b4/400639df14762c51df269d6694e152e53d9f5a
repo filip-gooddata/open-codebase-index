@@ -1,0 +1,35 @@
+CHANGELOG.md
+  s_daca32480d7852::t_409e7fb3829f26 14-18
+docs/installation.md
+  s_daca32480d7852::t_034be283f77cbf 241-252
+src/adapters/cbi.ts
+  s_daca32480d7852::t_fd7c45ecf49df1 1,10,15-16,45,61,73-74,95-98,127,141-145,189,232,239,359-438
+src/indexer/index-lock.ts
+  s_daca32480d7852::t_044a5a3a55a10e 16-17,32-33,37-38,75,128,130-131,173,201-205,207,230-232,234,244-267,310-316,319,335,337-338,367,379-388,396,401-405,408,413,431,442-448,451,459,470,474,480,522-850,904
+src/indexer/lock-host-identity.ts
+  s_daca32480d7852::t_14c18c149595f6 1-283
+src/tools/operation-runtime.ts
+  s_daca32480d7852::t_f68cfd2b6712a4 4,35,37-40,44,50-56
+tests/index-lock-stale-recovery.test.ts
+  s_daca32480d7852::t_ed54a78f27cccb 1-685
+tests/index-lock-unlock-race.test.ts
+  s_daca32480d7852::t_cd0ff260ab2ca2 1-136
+tests/mcp-server.test.ts
+  s_daca32480d7852::t_1ab861f6e3b507 1325,1340-1341,1365-1367
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b4400639df14762c51df269d6694e152e53d9f5a",
+  "prompts": {},
+  "sessions": {
+    "s_daca32480d7852": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74c12c6e-c1b5-4c7a-bd6b-a37883e411d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

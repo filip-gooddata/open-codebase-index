@@ -525,7 +525,8 @@ rm -f "$CK/status-json" "$CK/prune-count"
 # --- ocbi-rebuild through systemd ----------------------------------------------------------------
 FS="$T/fake-systemd"
 fake "$FS" systemctl "printf '%s\\n' \"\$*\" >>'$T/systemctl.calls'; [ \"\$2\" != cat ] || [ -e '$FS/unit-present' ] || exit 1
-[ \"\$2\" != disable ] || [ ! -e '$FS/fail-disable' ] || { echo 'Failed to connect to bus' >&2; exit 1; }"
+[ \"\$2\" != disable ] || [ ! -e '$FS/fail-disable' ] || { echo 'Failed to connect to bus' >&2; exit 1; }
+if [ \"\$2\" = stop ]; then [ ! -e '$FS/fail-stop' ] || { echo 'Access denied' >&2; exit 1; }; echo 'Unit not loaded.' >&2; exit 5; fi"
 : >"$T/systemctl.calls"
 touch "$FS/unit-present"
 rm -f "$H/rebuild.request"
@@ -612,12 +613,32 @@ expect_eq "schedule uninstall disables the timer, removes the units and keeps ch
 check "schedule uninstall called systemctl disable --now on the timer" grep -qx -- '--user disable --now ocbi-check.timer' "$T/systemctl.calls"
 sched install >/dev/null 2>&1
 expect_eq "schedule install without units fails and names install.sh" 1 "$?"
-mkdir -p "$LX/units/timers.target.wants"
+# Without the timer file: a failed stop keeps everything; a link in either the unit directory or
+# the persistent user configuration directory (where systemctl enable puts it) is removed.
+XC="$T/xdg-config"
+mkdir -p "$LX/units/timers.target.wants" "$XC/systemd/user/timers.target.wants"
 ln -s "$LX/units/ocbi-check.timer" "$LX/units/timers.target.wants/ocbi-check.timer"
+ln -s "$LX/units/ocbi-check.timer" "$XC/systemd/user/timers.target.wants/ocbi-check.timer"
+printf '[Service]\n' >"$LX/units/ocbi-check.service"
+touch "$FS/fail-stop"
+err="$(XDG_CONFIG_HOME="$XC" sched uninstall 2>&1)"
+expect_eq "schedule uninstall keeps the links and units when the timer cannot be stopped" "1 present present" \
+  "$? $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent)"
+expect_match "schedule uninstall reports the failed stop" "stop ocbi-check.timer failed \\(Access denied\\)" "$err"
+rm -f "$FS/fail-stop"
+if [ "$(id -u)" != 0 ]; then
+  chmod 555 "$XC/systemd/user/timers.target.wants"
+  XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
+  expect_eq "schedule uninstall keeps the units when an enablement link cannot be removed" "1 present present" \
+    "$? $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent)"
+  chmod 755 "$XC/systemd/user/timers.target.wants"
+else
+  skip "schedule uninstall keeps the units when an enablement link cannot be removed" "root ignores directory permissions"
+fi
 : >"$T/systemctl.calls"
-sched uninstall >/dev/null 2>&1
-expect_eq "schedule uninstall without the timer file stops it and removes its enablement link" "0 absent --user stop ocbi-check.timer" \
-  "$? $([ -L "$LX/units/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $(head -n 1 "$T/systemctl.calls")"
+XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall without the timer file stops it and removes both enablement links" "0 absent absent absent --user stop ocbi-check.timer" \
+  "$? $([ -L "$LX/units/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent) $(head -n 1 "$T/systemctl.calls")"
 fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'
 if [ \"\$1\" = bootout ]; then
   perl -MFcntl=:flock -e 'open(my \$f, \">>\", \$ARGV[0]) or exit 1; exit(flock(\$f, LOCK_EX | LOCK_NB) ? 0 : 1)' '$MX/home/rebuild.flock' &&
@@ -647,10 +668,11 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 touch "$FS/fail-bootout"
 msched uninstall >/dev/null 2>&1
 expect_eq "schedule uninstall on macOS keeps a plist it could not unload" "1 present" "$? $([ -f "$MX/agents/org.example.ocbi.check.plist" ] && echo present || echo absent)"
-rm -f "$FS/fail-bootout"
+rm -f "$FS/fail-bootout" "$T/bootout-lock"
 msched uninstall >/dev/null 2>&1
 expect_eq "schedule uninstall on macOS boots both agents out and removes the plists" "0 absent" \
   "$? $([ -e "$MX/agents/org.example.ocbi.check.plist" ] || [ -e "$MX/agents/org.example.ocbi.rebuild.plist" ] && echo present || echo absent)"
+expect_eq "schedule uninstall on macOS holds the rebuild lock while it unloads the agents" "held held" "$(tr '\n' ' ' <"$T/bootout-lock" | sed 's/ $//')"
 OCBI_UNAME=SunOS bash "$MX/bin/ocbi-schedule" status >/dev/null 2>&1
 expect_eq "schedule refuses an unsupported system" 69 "$?"
 

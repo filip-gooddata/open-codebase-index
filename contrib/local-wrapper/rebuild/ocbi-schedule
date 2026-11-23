@@ -125,14 +125,23 @@ uninstall_jobs() {
         die "systemctl --user disable --now ocbi-check.timer failed (${err:-no output}); kept the units, rerun uninstall"
       echo "disabled ocbi-check.timer"
     else
-      # Without its file, systemctl cannot disable the timer by name; stop a loaded one and drop
-      # the enablement link, which would enable the timer again as soon as the file is back.
-      systemctl --user stop ocbi-check.timer >/dev/null 2>&1
+      # Without its file, systemctl cannot disable the timer by name: stop a loaded one (exit 5 is
+      # systemctl's "not loaded") and drop the enablement link below, which would enable the timer
+      # again as soon as the file is back.
+      err="$(systemctl --user stop ocbi-check.timer 2>&1)"
+      case $? in
+        0 | 5) ;;
+        *) die "systemctl --user stop ocbi-check.timer failed (${err:-no output}); kept the units, rerun uninstall" ;;
+      esac
     fi
-    if [ -L "$systemd_dir/timers.target.wants/ocbi-check.timer" ]; then
-      rm -f "$systemd_dir/timers.target.wants/ocbi-check.timer" &&
-        echo "removed $systemd_dir/timers.target.wants/ocbi-check.timer"
-    fi
+    # systemctl enable links the timer in the persistent user configuration directory, which is not
+    # --systemd-dir when the units live elsewhere on the user unit path.
+    for f in "$systemd_dir" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; do
+      f="$f/timers.target.wants/ocbi-check.timer"
+      [ -L "$f" ] || continue
+      rm -f "$f" 2>/dev/null && [ ! -L "$f" ] || die "cannot remove $f; kept the units, rerun uninstall"
+      echo "removed $f"
+    done
     for f in $units; do
       if [ -f "$systemd_dir/$f" ]; then rm -f "$systemd_dir/$f" && echo "removed $systemd_dir/$f"; fi
     done

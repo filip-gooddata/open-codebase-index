@@ -1,0 +1,19 @@
+tests/repository-route-status.test.ts
+  s_b2d2f751a89df2::t_f9f4ce5eee664a 26-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5fe544de13504b70a38b329ca0d475ffb452f5a7",
+  "prompts": {},
+  "sessions": {
+    "s_b2d2f751a89df2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a207b6-a0bd-7a61-a1e2-0fbdef0883d0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -17,6 +17,7 @@ import { FRESH_INDEX_LOCK_MS } from "../indexer/index-lock.js";
 import type { handleIndexCommand } from "./mcp/cli.js";
 import { redactSensitiveText } from "../utils/redact.js";
 import { runHistoryCli } from "./history-cli.js";
+import { runHookCli, runHooksCli } from "./hooks-cli.js";
 
 type TextSink = (text: string) => void;
 type Result = { text: string; isError?: boolean };
@@ -78,6 +79,10 @@ Commands:
   workspace status --repo NAME=PATH [--repo NAME=PATH ...] [--host <mode>] [--json]
                                   Show bounded multi-repository readiness
   history <sync|search|status|clear> Local-only opt-in GitHub issue/PR evidence
+  hooks <install|uninstall|status> [--repo <path>]
+                                  Manage the git post-checkout hook that refreshes the index
+  hook post-checkout <prev> <new> <flag>
+                                  Run by git: refresh this checkout's index in the background
 
 Global options:
   --project <path>  Project root, default: containing Git checkout or current directory
@@ -223,6 +228,8 @@ export async function runCbiCli(argv: string[], cwd: string, deps: CbiDeps = {})
   const stderr = deps.printStderr ?? ((text) => console.error(redactSensitiveText(text)));
   const command = argv[2];
   if (command === "history") return runHistoryCli(argv.slice(3), cwd, { printStdout: stdout, printStderr: stderr });
+  if (command === "hook") return runHookCli(argv.slice(3), cwd, { printStdout: stdout, printStderr: stderr });
+  if (command === "hooks") return runHooksCli(argv.slice(3), cwd, { printStdout: stdout, printStderr: stderr });
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printUsage(stdout);

@@ -2,8 +2,7 @@
 # Installs the local-wrapper pieces. See README.md next to this script.
 #
 # Usage: install.sh [options]
-#   --pieces LIST        comma-separated pieces to install (default: hook,plugin,rebuild,notify)
-#                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
+#   --pieces LIST        comma-separated pieces to install (default: plugin,rebuild,notify)
 #                        plugin    Claude Code / Codex local marketplace into --marketplace-dir
 #                        rebuild   ocbi-rebuild.sh and ocbi-check.sh into OCBI_HOME, ocbi-rebuild
 #                                  and ocbi-schedule into --bin-dir, and the jobs: on macOS two
@@ -20,13 +19,14 @@
 #   --label LABEL        launchd label of the rebuild job (default:
 #                        io.github.open-codebase-index.rebuild); the daily check's label is LABEL
 #                        with .rebuild replaced by .check (else LABEL.check)
-#   --node PATH          Node.js >= 22 the plugin, hook and rebuild run (default: $OCBI_NODE, else
+#   --node PATH          Node.js >= 22 the plugin and rebuild run (default: $OCBI_NODE, else
 #                        the first node >= 22 of the fnm default alias, Homebrew, /usr/local,
 #                        /usr/bin and PATH; a per-shell fnm path is never chosen, it goes away)
 #   --package SPEC       npm spec for the pkg piece: a release tarball URL, a local .tgz, or a
 #                        registry name such as open-codebase-index@<version>. Adds pkg to --pieces.
 #   --dry-run            print what would change, change nothing
 #   -h, --help
+# The git post-checkout hook ships in the package (`ocbi hooks install`, printed at the end).
 # Every run is idempotent: unchanged files are left alone, and repository configs are never
 # written. Host registration (Claude Code, Codex, git hooks, launchd, systemd) is printed, never
 # applied.
@@ -37,7 +37,7 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 
-pieces="hook,plugin,rebuild,notify"
+pieces="plugin,rebuild,notify"
 home="${OCBI_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ocbi}"
 bin_dir="$HOME/.local/bin"
 marketplace_dir="$HOME/.claude/local-marketplaces/ocbi-local"
@@ -97,7 +97,11 @@ case "$label" in *.rebuild) check_label="${label%.rebuild}.check" ;; *) check_la
 
 has_piece() { case ",$pieces," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 for p in $(printf '%s' "$pieces" | tr ',' ' '); do
-  case "$p" in hook | plugin | rebuild | notify | pkg) ;; *) die "unknown piece $p" ;; esac
+  case "$p" in
+    plugin | rebuild | notify | pkg) ;;
+    hook) die "the hook piece is gone: the package ships the hook, run ocbi hooks install --repo <repo> (docs/local-wrapper.md)" ;;
+    *) die "unknown piece $p" ;;
+  esac
 done
 if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package SPEC"; fi
 
@@ -177,11 +181,6 @@ retire() {
   say "  removed  $1"
 }
 
-install_hook() {
-  say "hook -> $home"
-  place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh" render
-}
-
 install_plugin() {
   local m="$marketplace_dir" p="$here/claude-plugin" name
   say "plugin -> $m"
@@ -239,12 +238,12 @@ install_pkg() {
   done
 }
 
-# The hook, plugin and rebuild need a package with the repository config (gd.7) and the shared
+# The plugin and rebuild need a package with the repository config (gd.7) and the shared
 # rebuild override (gd.6). Checked before any of them is placed; a package that is not installed
 # yet only gets the reminder at the end.
 check_pkg() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist"
-  has_piece hook || has_piece plugin || has_piece rebuild || return 0
+  has_piece plugin || has_piece rebuild || return 0
   [ -e "$home/pkg/node_modules/open-codebase-index" ] || return 0
   [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] ||
     die "the package in $home/pkg has no dist/cbi.js or dist/cli.js; rerun with --package <gd.7 or later spec>; nothing else was installed"
@@ -259,7 +258,6 @@ install_selected() {
     has_piece pkg && install_pkg
     [ "$dry_run" = 1 ] || check_pkg
   fi
-  has_piece hook && install_hook
   has_piece plugin && install_plugin
   has_piece rebuild && install_rebuild
   has_piece notify && install_notify
@@ -301,16 +299,13 @@ cat <<EOF
     startup_timeout_sec = 30.0
     tool_timeout_sec = 420.0
 EOF
-if has_piece hook; then
-  cat <<EOF
+cat <<EOF
 
-* Git post-checkout prewarm, per repository. With config-based hooks (git 2.43 lacks them):
-    git -C <repo> config --local hook.ocbi-prewarm.event post-checkout
-    git -C <repo> config --local hook.ocbi-prewarm.command "'$home/ocbi-post-checkout.sh'"
-  On any git, when the repository has no post-checkout hook yet:
-    ln -s "$home/ocbi-post-checkout.sh" "\$(git -C <repo> rev-parse --path-format=absolute --git-common-dir)/hooks/post-checkout"
+* Git post-checkout refresh, per repository (package gd.8 or later):
+    "$node" "$home/pkg/node_modules/open-codebase-index/dist/cbi.js" hooks install --repo <repo> --host claude --node "$node" --stale-notify "$home/ocbi-notify.sh"
+  Check it with the same command and "hooks status --repo <repo>". Replacing the shell hook of
+  earlier versions (hook.ocbi-prewarm, ocbi-post-checkout.sh): follow docs/local-wrapper.md.
 EOF
-fi
 if has_piece rebuild && { [ "$is_macos" = 1 ] || [ "$is_linux" = 1 ]; }; then
   if [ "$is_macos" = 1 ]; then job_names="launchd agents $label and $check_label"; else
     job_names="systemd user units ocbi-rebuild.service and ocbi-check.timer"; fi

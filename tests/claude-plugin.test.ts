@@ -69,7 +69,16 @@ describe("Claude Code plugin", () => {
       expect(text, command).toContain(releaseCli);
       expect(text, command).toContain("Checkout role:");
       expect(text, command).not.toContain("npm install -g");
+      // A missing or invalid primary must be fixed before any rebuild, and a config that
+      // disables force routes straight to the terminal rebuild.
+      expect(text, command).toContain("set `checkouts.primary.path`");
+      expect(text, command).toContain("sets `indexing.allowForceRebuild` to `false`");
     }
+    // Incompatibility needs a rebuild even when the index is populated.
+    const status = fs.readFileSync("./commands/status.md", "utf-8");
+    expect(status).toContain("Whenever status reports provider/model incompatibility, indexed or not");
+    expect(status.slice(status.indexOf("If not indexed:"), status.indexOf("Whenever status reports")))
+      .not.toContain("incompatibility");
   });
 
   it("exposes a Claude marketplace manifest using owner metadata", () => {

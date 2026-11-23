@@ -2,9 +2,8 @@
 # Installs the local-wrapper pieces. See README.md next to this script.
 #
 # Usage: install.sh [options]
-#   --pieces LIST        comma-separated pieces to install (default: hook,plugin,rebuild,notify)
+#   --pieces LIST        comma-separated pieces to install (default: hook,rebuild,notify)
 #                        hook      ocbi-post-checkout.sh into OCBI_HOME (registration is printed)
-#                        plugin    Claude Code / Codex local marketplace into --marketplace-dir
 #                        rebuild   ocbi-rebuild.sh into OCBI_HOME, ocbi-rebuild into --bin-dir and,
 #                                  on macOS, the launchd job plist into --launch-agents-dir
 #                        notify    ocbi-notify.sh into OCBI_HOME (the macOS notifier app is
@@ -12,10 +11,9 @@
 #                        pkg       npm install of --package into OCBI_HOME/pkg
 #   --home DIR           OCBI_HOME (default: $OCBI_HOME, else ${XDG_DATA_HOME:-$HOME/.local/share}/ocbi)
 #   --bin-dir DIR        default: $HOME/.local/bin
-#   --marketplace-dir D  default: $HOME/.claude/local-marketplaces/ocbi-local
 #   --launch-agents-dir D  default: $HOME/Library/LaunchAgents (macOS only)
 #   --label LABEL        launchd label (default: io.github.open-codebase-index.rebuild)
-#   --node PATH          Node.js >= 22 the plugin, hook and rebuild run (default: $OCBI_NODE, else
+#   --node PATH          Node.js >= 22 the hook and rebuild run (default: $OCBI_NODE, else
 #                        the first node >= 22 of the fnm default alias, Homebrew, /usr/local,
 #                        /usr/bin and PATH; a per-shell fnm path is never chosen, it goes away)
 #   --package SPEC       npm spec for the pkg piece: a release tarball URL, a local .tgz, or a
@@ -24,6 +22,7 @@
 #   -h, --help
 # Every run is idempotent: unchanged files are left alone, and repository configs are never
 # written. Host registration (Claude Code, Codex, git hooks, launchd) is printed, never applied.
+# The Claude Code and Codex plugin comes from the repository's marketplace, not from here.
 # Files of earlier wrapper versions in OCBI_HOME (ocbi-mcp.sh, projects.conf, profiles.conf, store
 # directories) are left alone; docs/local-wrapper.md says when to remove them.
 set -u
@@ -31,10 +30,9 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 
-pieces="hook,plugin,rebuild,notify"
+pieces="hook,rebuild,notify"
 home="${OCBI_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ocbi}"
 bin_dir="$HOME/.local/bin"
-marketplace_dir="$HOME/.claude/local-marketplaces/ocbi-local"
 agents_dir="$HOME/Library/LaunchAgents"
 label="io.github.open-codebase-index.rebuild"
 package=""
@@ -50,7 +48,7 @@ while [ $# -gt 0 ]; do
     --pieces) need_arg "$@"; pieces="$2"; shift 2 ;;
     --home) need_arg "$@"; home="$2"; shift 2 ;;
     --bin-dir) need_arg "$@"; bin_dir="$2"; shift 2 ;;
-    --marketplace-dir) need_arg "$@"; marketplace_dir="$2"; shift 2 ;;
+    --marketplace-dir) die "--marketplace-dir went with the plugin piece; see docs/installation.md for the plugin" ;;
     --launch-agents-dir) need_arg "$@"; agents_dir="$2"; shift 2 ;;
     --label) need_arg "$@"; label="$2"; shift 2 ;;
     --package) need_arg "$@"; package="$2"; shift 2 ;;
@@ -77,7 +75,7 @@ else
   [ -x "$node" ] && [ "$(node_major "$node" || echo 0)" -ge 22 ] || die "--node $node is not a Node.js >= 22"
 fi
 
-for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir" "$node"; do
+for path in "$home" "$bin_dir" "$agents_dir" "$node"; do
   case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
   case "$path" in
     *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
@@ -88,7 +86,11 @@ done
 
 has_piece() { case ",$pieces," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 for p in $(printf '%s' "$pieces" | tr ',' ' '); do
-  case "$p" in hook | plugin | rebuild | notify | pkg) ;; *) die "unknown piece $p" ;; esac
+  case "$p" in
+    hook | rebuild | notify | pkg) ;;
+    plugin) die "the plugin piece is gone; install the repository's plugin marketplace (docs/installation.md)" ;;
+    *) die "unknown piece $p" ;;
+  esac
 done
 if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package SPEC"; fi
 
@@ -170,21 +172,6 @@ install_hook() {
   place 755 "$here/hook/ocbi-post-checkout.sh" "$home/ocbi-post-checkout.sh" render
 }
 
-install_plugin() {
-  local m="$marketplace_dir" p="$here/claude-plugin" name
-  say "plugin -> $m"
-  place 644 "$p/.claude-plugin/marketplace.json" "$m/.claude-plugin/marketplace.json" render
-  place 644 "$p/.agents/plugins/marketplace.json" "$m/.agents/plugins/marketplace.json"
-  place 644 "$p/plugins/codebase-index/.claude-plugin/plugin.json" "$m/plugins/codebase-index/.claude-plugin/plugin.json" render
-  place 644 "$p/plugins/codebase-index/.codex-plugin/plugin.json" "$m/plugins/codebase-index/.codex-plugin/plugin.json" render
-  # The session hint of earlier versions; the server's own MCP instructions carry that guidance.
-  retire "$m/plugins/codebase-index/hooks/hooks.json"
-  for name in call-graph definition find index peek pr-impact search status; do
-    place 644 "$p/plugins/codebase-index/commands/$name.md" "$m/plugins/codebase-index/commands/$name.md"
-  done
-  place 644 "$p/plugins/codebase-index/skills/codebase-search/SKILL.md" "$m/plugins/codebase-index/skills/codebase-search/SKILL.md"
-}
-
 install_rebuild() {
   say "rebuild -> $home, $bin_dir"
   place 755 "$here/rebuild/ocbi-rebuild.sh" "$home/ocbi-rebuild.sh" render
@@ -219,12 +206,12 @@ install_pkg() {
   done
 }
 
-# The hook, plugin and rebuild need a package with the repository config (gd.7) and the shared
+# The hook and rebuild need a package with the repository config (gd.7) and the shared
 # rebuild override (gd.6). Checked before any of them is placed; a package that is not installed
 # yet only gets the reminder at the end.
 check_pkg() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist"
-  has_piece hook || has_piece plugin || has_piece rebuild || return 0
+  has_piece hook || has_piece rebuild || return 0
   [ -e "$home/pkg/node_modules/open-codebase-index" ] || return 0
   [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] ||
     die "the package in $home/pkg has no dist/cbi.js or dist/cli.js; rerun with --package <gd.7 or later spec>; nothing else was installed"
@@ -240,7 +227,6 @@ install_selected() {
     [ "$dry_run" = 1 ] || check_pkg
   fi
   has_piece hook && install_hook
-  has_piece plugin && install_plugin
   has_piece rebuild && install_rebuild
   has_piece notify && install_notify
   return 0
@@ -264,15 +250,11 @@ cat <<EOF
   $here/repository-config.example.json.
   Coming from projects.conf: follow the migration in docs/local-wrapper.md first.
 EOF
-if has_piece plugin; then
-  cat <<EOF
-
-* Claude Code: add the local marketplace and enable the plugin:
-    claude plugin marketplace add "$marketplace_dir"
-    claude plugin install codebase-index@ocbi-local
-EOF
-fi
 cat <<EOF
+
+* Claude Code: install the plugin from the repository marketplace (docs/installation.md):
+    claude plugin marketplace add filip-gooddata/open-codebase-index
+    claude plugin install codebase-index@open-codebase-index
 
 * Codex (~/.codex/config.toml): tool_timeout_sec must exceed indexing.autoIndexWaitMs.
     [mcp_servers.codebase-index]

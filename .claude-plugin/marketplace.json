@@ -1,10 +1,10 @@
 {
-  "name": "helweg-plugins",
+  "name": "open-codebase-index",
   "owner": {
-    "name": "Kenneth",
-    "email": "kenneth@example.com",
-    "url": "https://github.com/Helweg/open-codebase-index"
+    "name": "open-codebase-index",
+    "url": "https://github.com/filip-gooddata/open-codebase-index"
   },
+  "description": "open-codebase-index fork releases: semantic code search and call-graph MCP tools, launched from the pinned GitHub release tarball",
   "plugins": [
     {
       "name": "codebase-index",

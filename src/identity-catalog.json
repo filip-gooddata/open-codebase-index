@@ -17,5 +17,10 @@
   },
   "native": {
     "binaryName": "codebase-index-native"
+  },
+  "release": {
+    "repository": "https://github.com/filip-gooddata/open-codebase-index",
+    "tagPrefix": "v",
+    "marketplaceName": "open-codebase-index"
   }
 }

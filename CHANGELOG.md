@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Claude Code and Codex plugins launch the fork release**: `.claude-plugin/plugin.json` and `.mcp.json` start `npx -y --package <release tarball> open-codebase-index-mcp`, where the tarball is this repository's GitHub release asset for the plugin's own version, instead of the npm registry package. `npm run sync:plugin-manifests`, run by `npm version`, writes the URL and version into every plugin and marketplace manifest; the release workflow and the tests refuse stale manifests, and `npm run smoke:package` starts both hosts' servers through `npx` from the packed tarball and completes the MCP handshake.
+- **Marketplace**: The repository is a Claude Code and Codex marketplace named `open-codebase-index` (`/plugin marketplace add filip-gooddata/open-codebase-index`, `codex plugin marketplace add filip-gooddata/open-codebase-index`), listing `codebase-index`.
+- **Claude Code plugin contents**: The plugin lists the `index`, `status`, `search`, `find`, `peek`, `definition`, `call-graph` and `pr-impact` commands; `reindex` and the OpenCode-only `visualize` are no longer offered to Claude Code. The Codex SessionStart hook moved to `.codex-plugin/hooks.json`, because Claude Code also loads a root `hooks/hooks.json`; Claude Code gets its routing guidance from the server's MCP instructions only.
+
+### Removed
+
+- **Local wrapper plugin**: `contrib/local-wrapper/claude-plugin` and the `plugin` piece of `install.sh` (with `--marketplace-dir`) are gone; install the repository's marketplace instead.
+
 ## [0.38.2-gd.7] - 2026-11-23
 
 Fork release on top of 0.38.2-gd.6. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.

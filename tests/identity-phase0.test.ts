@@ -14,6 +14,7 @@ interface PackageMetadata {
   repository: { url: string };
   napi: { binaryName: string };
   engines: { node: string };
+  version: string;
 }
 
 interface CodexManifestMetadata {
@@ -79,9 +80,10 @@ describe("Phase 1 product identity compatibility", () => {
       "TROUBLESHOOTING.md",
       "CHANGELOG.md",
       ".claude-plugin/plugin.json",
-      ".claude-plugin/marketplace.json",
       ".codex-plugin/plugin.json",
     ];
+    // The marketplace is the fork's own listing; its owner is the release repository.
+    expect(readText(".claude-plugin/marketplace.json")).not.toContain(legacyRepository);
 
     expect(IDENTITY_CATALOG.product.current.repository).toBe(canonicalRepository);
     for (const filePath of publicUrlFiles) {
@@ -164,8 +166,10 @@ describe("Phase 1 product identity compatibility", () => {
     const codexMcpManifest = readJson<{
       mcpServers: Record<string, { command: string; args: string[] }>;
     }>(codexManifest.mcpServers);
-    const expectedCodexArgs = ["-y", "--package", current.packageName, current.mcpBinary, "--host", "codex"];
-    const expectedClaudeArgs = ["-y", "--package", current.packageName, current.mcpBinary, "--host", "claude"];
+    const releaseTarball = `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageJson.version}/`
+      + `${IDENTITY_CATALOG.product.future.packageName}-${packageJson.version}.tgz`;
+    const expectedCodexArgs = ["-y", "--package", releaseTarball, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "codex"];
+    const expectedClaudeArgs = ["-y", "--package", releaseTarball, IDENTITY_CATALOG.product.future.mcpBinary, "--host", "claude"];
 
     expect(mcpManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedCodexArgs });
     expect(codexMcpManifest.mcpServers["codebase-index"]).toEqual({ command: "npx", args: expectedCodexArgs });
@@ -173,7 +177,7 @@ describe("Phase 1 product identity compatibility", () => {
     expect(claudeManifest.homepage).toBe(current.repository);
     expect(claudeManifest.repository).toBe(current.repository);
     expect(claudeManifest.author?.url).toBe(current.repository);
-    expect(claudeMarketplace.owner.url).toBe(current.repository);
+    expect(claudeMarketplace.owner.url).toBe(IDENTITY_CATALOG.release.repository);
     expect(codexManifest.homepage).toBe(current.repository);
     expect(codexManifest.repository).toBe(current.repository);
     expect(codexManifest.interface.websiteURL).toBe(current.repository);
@@ -236,10 +240,12 @@ describe("Phase 1 product identity compatibility", () => {
       };
       expect(packageJson.engines.node).toBe(">=22.22.0");
       expect(packageLock.packages[""]?.engines?.node).toBe(">=22.22.0");
+      const releaseTarball = `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageJson.version}/`
+        + `${IDENTITY_CATALOG.product.future.packageName}-${packageJson.version}.tgz`;
       const expectedMcpArgs = [
         "-y",
         "--package",
-        IDENTITY_CATALOG.product.future.packageName,
+        releaseTarball,
         IDENTITY_CATALOG.product.future.mcpBinary,
         "--host",
         "codex",
@@ -247,7 +253,7 @@ describe("Phase 1 product identity compatibility", () => {
       const expectedClaudeArgs = [
         "-y",
         "--package",
-        IDENTITY_CATALOG.product.future.packageName,
+        releaseTarball,
         IDENTITY_CATALOG.product.future.mcpBinary,
         "--host",
         "claude",
@@ -326,7 +332,9 @@ describe("Phase 1 product identity compatibility", () => {
       expect(stagedCodexManifest.interface.privacyPolicyURL).toBe(`${repositoryUrl}/blob/main/SECURITY.md`);
       expect(stagedCodexManifest.interface.termsOfServiceURL).toBe(`${repositoryUrl}/blob/main/LICENSE`);
       expect(stagedClaudeMarketplace.owner.url).toBe(repositoryUrl);
-      expect(stagedMcpManifest.mcpServers["codebase-index"].args[2]).toBe(IDENTITY_CATALOG.product.future.packageName);
+      expect(stagedMcpManifest.mcpServers["codebase-index"].args[2]).toMatch(
+        new RegExp(`/${IDENTITY_CATALOG.product.future.packageName}-[^/]+\\.tgz$`),
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

@@ -4,8 +4,9 @@ Scripts around a machine-local install of open-codebase-index. They live outside
 nothing in `src/` or `native/` depends on them. Sharing one index across the worktrees of a
 repository is the package's job now, through a
 [repository config](../../docs/configuration.md#repository-config-and-shared-store); these pieces
-add a pinned Claude Code plugin, background indexing after checkouts, a detached full rebuild and
-notifications. For why each piece exists, the settings it relies on and the migration from the
+add background indexing after checkouts, a detached full rebuild and notifications. The Claude
+Code and Codex plugin comes from the repository's own marketplace
+([installation](../../docs/installation.md#claude-code)). For why each piece exists, the settings it relies on and the migration from the
 `projects.conf` launcher of earlier versions, read [docs/local-wrapper.md](../../docs/local-wrapper.md).
 
 Each piece is self-contained. Install any subset with `install.sh --pieces`, and delete a piece's
@@ -14,7 +15,6 @@ directory once the package does its job natively.
 | Piece | Files | Installs to | What it does | Platforms |
 |---|---|---|---|---|
 | `hook` | `hook/ocbi-post-checkout.sh` | `$OCBI_HOME` | git `post-checkout` hook: runs `ocbi index` in the background after a branch checkout or `git worktree add` in a repository with a repository config, and once a day notifies when many catalogs are stale. | macOS, Linux |
-| `plugin` | `claude-plugin/` (copies of the repository's commands and skill; `index.md` and `status.md` differ) | local marketplace dir | Claude Code plugin that starts `dist/cli.js --host claude` from `$OCBI_HOME/pkg`; a Codex skill plugin in the same marketplace. | macOS, Linux |
 | `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-rebuild`, `rebuild/rebuild.plist.template` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job. | macOS; Linux support is planned |
 | `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the stale-catalog check and the rebuild, with an action button when the notifier app is built. | macOS; Linux support is planned |
 | `pkg` | none | `$OCBI_HOME/pkg` | `npm install` of the package spec you pass with `--package`. | macOS, Linux |
@@ -40,13 +40,12 @@ contrib/local-wrapper/install.sh --pieces hook,rebuild           # a subset
 ```
 
 `OCBI_HOME` defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/ocbi`; `--home`, `--bin-dir`,
-`--marketplace-dir`, `--launch-agents-dir`, `--label` and `--node` override the destinations and
-the Node.js the pieces run. The package is installed first, and the hook, plugin and rebuild are
+`--launch-agents-dir`, `--label` and `--node` override the destinations and the Node.js the
+pieces run. The package is installed first, and the hook and rebuild are
 placed only next to a package with the repository config (gd.7) and `--allow-shared-rebuild`
 (gd.6). Reruns are idempotent. The installer never writes a repository config,
 and never registers anything with Claude Code, Codex, git or launchd: it prints those commands for
-you to run. It removes only the plugin's session-hint hook of earlier versions; their other files
-in `$OCBI_HOME` stay until you remove them as the migration describes. `install.sh --help` lists
+you to run. Files of earlier versions in `$OCBI_HOME` and their local plugin marketplace stay until you remove them as the migration describes. `install.sh --help` lists
 every option.
 
 The hook and `ocbi-rebuild.sh` find `OCBI_HOME` from their own location, so they need no

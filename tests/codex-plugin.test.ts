@@ -2,6 +2,7 @@ import * as fs from "fs";
 
 import { describe, expect, it } from "vitest";
 import { parseHostMode } from "../src/config/host.js";
+import { IDENTITY_CATALOG } from "../src/identity-catalog.js";
 
 describe("Codex plugin host mode", () => {
   it("ships MCP CLI runtime dependencies for clean npx installs", () => {
@@ -47,16 +48,17 @@ describe("Codex plugin host mode", () => {
     const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf-8")) as { version: string };
     expect(pluginManifest.version).toBe(packageManifest.version);
     expect(pluginManifest.mcpServers).toBe("./.mcp.json");
-    expect(pluginManifest.hooks).toBe("./hooks/hooks.json");
-    expect(fs.existsSync("hooks/hooks.json")).toBe(true);
+    // Outside hooks/, which Claude Code would also load from the shared root.
+    expect(pluginManifest.hooks).toBe("./.codex-plugin/hooks.json");
+    expect(fs.existsSync(".codex-plugin/hooks.json")).toBe(true);
 
     const codebaseMcp = mcpManifest.mcpServers["codebase-index"];
     expect(codebaseMcp.command).toBe("npx");
     expect(codebaseMcp.args).toEqual([
       "-y",
       "--package",
-      "opencode-codebase-index",
-      "opencode-codebase-index-mcp",
+      `${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/open-codebase-index-${packageManifest.version}.tgz`,
+      "open-codebase-index-mcp",
       "--host",
       "codex",
     ]);

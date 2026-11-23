@@ -124,8 +124,8 @@ omp plugin install npm:open-codebase-index
 Or add the bundled marketplace and install from it:
 
 ```bash
-omp plugin marketplace add Helweg/open-codebase-index
-omp plugin install codebase-index@helweg-plugins
+omp plugin marketplace add filip-gooddata/open-codebase-index
+omp plugin install codebase-index@open-codebase-index
 ```
 
 For local development from this checkout:
@@ -163,44 +163,79 @@ To use the MCP server instead of the native extension, register it in `.omp/mcp.
 Add the marketplace and install the plugin:
 
 ```text
-codex plugin marketplace add Helweg/open-codebase-index
-codex plugin add codebase-index@helweg-plugins
+codex plugin marketplace add filip-gooddata/open-codebase-index
+codex plugin add codebase-index@open-codebase-index
 ```
 
 Restart or open a new thread in the target workspace. The plugin bundles MCP configuration, session guidance, and the `codebase-search` skill.
 
-If Codex reports `Transport closed`, inspect `index_status` from a new thread or client session. Server-side cancellation and durable diagnostics cannot make a client reuse a stdio transport that it has already closed.
+The plugin's server runs `npx -y --package <release tarball> open-codebase-index-mcp --host codex`, where `<release tarball>` is the GitHub release asset of the plugin's own version, `https://github.com/filip-gooddata/open-codebase-index/releases/download/v<version>/open-codebase-index-<version>.tgz`. See [Plugin launch through npx](#plugin-launch-through-npx) for Node.js, network and first-start requirements.
 
-For local plugin development from this checkout:
-
-```bash
-npm run build:ts
-npm run dev:link-mcp
-codex plugin marketplace add Helweg/open-codebase-index
-codex plugin add codebase-index@helweg-plugins
-```
-
-Codex uses `.codebase-index/` project storage.
-
-Codex stops waiting for an MCP tool after its `tool_timeout_sec`. Set it above `indexing.autoIndexWaitMs` (converted to seconds) for this server, or a retrieval call that waits for first-use indexing is cut off before the index is ready:
+Approve the plugin's tools in `~/.codex/config.toml` with its plugin policy table:
 
 ```toml
-[mcp_servers.codebase-index]
-tool_timeout_sec = 120
+[plugins."codebase-index@open-codebase-index".mcp_servers.codebase-index]
+default_tools_approval_mode = "approve"
 ```
 
-The idle engine shuts down after 900 seconds by default for `--host codex`; pass `--mcp-idle-timeout 0` to keep it running and watching files.
+Codex documents `startup_timeout_sec` (default 10 s) and `tool_timeout_sec` (default 60 s) only for servers registered under `[mcp_servers]`. A cold first start takes longer than 10 s, and a retrieval call that waits for first-use indexing takes longer than 60 s. To set both, turn off the plugin's copy of the server and register it directly, keeping the plugin for its skill and session guidance:
+
+```toml
+[plugins."codebase-index@open-codebase-index".mcp_servers.codebase-index]
+enabled = false
+
+[mcp_servers.codebase-index]
+command = "npx"
+args = ["-y", "--package", "<release tarball>", "open-codebase-index-mcp", "--host", "codex"]
+startup_timeout_sec = 120
+tool_timeout_sec = 420
+default_tools_approval_mode = "approve"
+```
+
+Set `tool_timeout_sec` above `indexing.autoIndexWaitMs` (converted to seconds). A direct entry does not follow plugin updates: change its tarball URL when you upgrade.
+
+`--host codex` reads `~/.config/codebase-index/config.json` as its global config and `.codebase-index/` as project storage, so in a repository without a [repository config](configuration.md#repository-config-and-shared-store) it builds an index separate from Claude Code's `.claude/index/`. Its idle engine shuts down after 900 seconds and stops watching files; pass `--mcp-idle-timeout 0` to keep it running. To reuse Claude Code's global config and project indexes instead, register the direct entry with `--host claude`. That server has no idle shutdown and sends Claude Code's routing instructions. In a repository with a repository config both host modes use the shared store.
+
+If Codex reports `Transport closed`, inspect `index_status` from a new thread or client session. Server-side cancellation and durable diagnostics cannot make a client reuse a stdio transport that it has already closed.
+
+For local development from this checkout, run `npm run build:ts` and register `node /path/to/open-codebase-index/dist/cli.js --host codex` as the direct `[mcp_servers.codebase-index]` entry.
 
 ## Claude Code
 
 From Claude Code, add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add Helweg/open-codebase-index
-/plugin install codebase-index@helweg-plugins
+/plugin marketplace add filip-gooddata/open-codebase-index
+/plugin install codebase-index@open-codebase-index
 ```
 
-Restart or open a new session in the target workspace. The plugin includes MCP configuration and the `codebase-search` skill.
+or from a shell:
+
+```bash
+claude plugin marketplace add filip-gooddata/open-codebase-index
+claude plugin install codebase-index@open-codebase-index
+```
+
+Restart or open a new session in the target workspace. The plugin provides the MCP server, the `codebase-search` skill, and the `/codebase-index:` commands `index`, `status`, `search`, `find`, `peek`, `definition`, `call-graph` and `pr-impact`. It has no SessionStart hook: the server sends its routing guidance in the MCP `instructions` at initialize.
+
+The server runs `npx -y --package <release tarball> open-codebase-index-mcp --host claude` (see [Plugin launch through npx](#plugin-launch-through-npx)). The plugin version equals the package version, so `/plugin marketplace update open-codebase-index` followed by a plugin update moves the server to the new release. To stay on one release, add the marketplace at its tag, for example `filip-gooddata/open-codebase-index@v<version>`.
+
+### Plugin launch through npx
+
+The plugins in this fork of [Helweg/open-codebase-index](https://github.com/Helweg/open-codebase-index) start the server from the release tarball of their own version; nothing is installed from the npm registry under the package name. `npm run sync:plugin-manifests` (run by `npm version`) writes the tarball URL and version into `.claude-plugin/plugin.json`, `.mcp.json`, `.codex-plugin/plugin.json` and the marketplace manifests, and the release workflow refuses a tag whose manifests are stale.
+
+- `npx` and Node.js 22.22 or newer must be on the `PATH` the host passes to MCP servers. A host started from a desktop launcher may not see a shell-managed Node.js.
+- The tarball holds the native module for every release platform (macOS arm64 and Linux x64 glibc), so no build runs on install.
+- The first start downloads the tarball (about 35 MB) and its dependencies into the npm cache. That took about 50 s on a cold cache, past Claude Code's 30 s `MCP_TIMEOUT` and Codex's 10 s default `startup_timeout_sec`. Later starts reuse the cache and took 2 to 6 s.
+- `npx` revalidates the URL on each start, so a start needs network access to GitHub.
+
+After installing or upgrading, fill the cache once from a shell so the host's first start is fast:
+
+```bash
+npx -y --package <release tarball> ocbi --help
+```
+
+Alternatively raise the timeout, for example `MCP_TIMEOUT=120000 claude`, or reconnect the server from `/mcp` after the first download finishes.
 
 Claude uses:
 

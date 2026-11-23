@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import * as os from "node:os";
 import * as path from "node:path";
 import { checkPackedTypes } from "./check-packed-types.mjs";
+import { pluginServerArgs, releaseTarballUrl } from "./plugin-manifests.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -106,6 +107,59 @@ async function smokeMcpBinary(executable, projectRoot, configPath) {
     clearTimeout(timer);
     await client.close();
   }
+}
+
+// Starts the server exactly as a plugin manifest staged in the tarball does,
+// with the release URL swapped for the local tarball, and completes the MCP
+// handshake twice, from a fresh npm cache.
+async function smokePluginLaunch(stageRoot, tarballPath, projectConfig) {
+  const releaseUrl = releaseTarballUrl(catalog, manifest.version);
+  const npmCache = path.join(scratchRoot, "npx-cache");
+  mkdirSync(npmCache, { mode: 0o700 });
+  const launches = [];
+  for (const [host, manifestPath, projectConfigPath] of [
+    ["claude", path.join(".claude-plugin", "plugin.json"), path.join(".claude", "codebase-index.json")],
+    ["codex", ".mcp.json", path.join(".codebase-index", "config.json")],
+  ]) {
+    const server = JSON.parse(readFileSync(path.join(stageRoot, manifestPath), "utf8")).mcpServers["codebase-index"];
+    assert.equal(server.command, "npx", `${manifestPath} must launch through npx`);
+    assert.deepEqual(server.args, pluginServerArgs(catalog, manifest.version, host),
+      `${manifestPath} must launch the ${releaseUrl} release`);
+    const projectRoot = path.join(scratchRoot, `plugin-project-${host}`);
+    mkdirSync(path.join(projectRoot, path.dirname(projectConfigPath)), { recursive: true });
+    writeFileSync(path.join(projectRoot, projectConfigPath), JSON.stringify(projectConfig));
+    writeFileSync(path.join(projectRoot, "notes.txt"), "plugin launch smoke test\n");
+
+    for (const attempt of ["first", "second"]) {
+      const args = server.args.map((arg) => (arg === releaseUrl ? tarballPath : arg));
+      const transport = new StdioClientTransport({
+        command: server.command, args, cwd: projectRoot, stderr: "pipe",
+        env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "", npm_config_cache: npmCache, npm_config_update_notifier: "false" },
+      });
+      let stderr = "";
+      transport.stderr?.on("data", (chunk) => { stderr += chunk; });
+      const client = new Client({ name: "packed-plugin-smoke", version: "1.0.0" });
+      const started = Date.now();
+      const timer = setTimeout(() => { void transport.close(); }, 300_000);
+      try {
+        await client.connect(transport);
+        const initializeMs = Date.now() - started;
+        const listed = await client.listTools();
+        assert.ok(listed.tools.some((tool) => tool.name === "index_status"), `npx ${host} server lacks index_status`);
+        assert.match(client.getInstructions() ?? "", new RegExp(`host ${host}`), `npx ${host} server sent no host instructions`);
+        launches.push({ host, attempt, initializeMs, server: client.getServerVersion(), tools: listed.tools.length });
+      } catch (error) {
+        throw new Error(`npx ${host} ${attempt} launch failed: ${error instanceof Error ? error.message : String(error)}\n${stderr}`);
+      } finally {
+        clearTimeout(timer);
+        await client.close();
+      }
+    }
+  }
+  writeFileSync(path.join(scratchRoot, `command-${++commandNumber}.json`), JSON.stringify({ npxPluginLaunches: launches }, null, 2),
+    { flag: "wx", mode: 0o600 });
+  console.log(`npx plugin launches: ${launches.map((it) => `${it.host}/${it.attempt} ${it.initializeMs}ms`).join(", ")}`);
+  return launches;
 }
 
 function binaryPath(installRoot, binaryName) {
@@ -226,9 +280,12 @@ async function smokeIdentity(identity, expectedBinaries) {
     ], projectRoot);
     assert.ok(result.includes("Indexing Estimate"), `Missing indexing estimate for ${binaryName}`);
   }
+  const pluginLaunches = identity.packageName === catalog.product.future.packageName
+    ? await smokePluginLaunch(stageRoot, tarballPath, JSON.parse(readFileSync(configPath, "utf8")))
+    : undefined;
   return {
     name: packed.name, version: packed.version, tarball: tarballPath, integrity,
-    validation: { types, sdkInteropTypes, runtime: true, cliAliases: expectedBinaries },
+    validation: { types, sdkInteropTypes, runtime: true, cliAliases: expectedBinaries, pluginLaunches },
   };
 }
 

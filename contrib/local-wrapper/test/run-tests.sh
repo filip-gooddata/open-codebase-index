@@ -64,19 +64,23 @@ else
 fi
 while IFS= read -r j; do
   check "valid JSON ${j#"$here"/}" node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$j"
-done < <(find "$here/claude-plugin" "$here/repository-config.example.json" -name '*.json')
+done < <(find "$here/repository-config.example.json" -name '*.json')
 got="$(node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write([c.scope,c.indexing.allowForceRebuild,c.checkouts.secondary.watchFiles,c.checkouts.secondary.autoIndexOnStartup].join(" "))' "$here/repository-config.example.json")"
 expect_eq "the example repository config is project-scoped, refuses forced rebuilds and keeps secondaries quiet" "project false false false" "$got"
 
 # --- install.sh ----------------------------------------------------------------------------------
 H="$HOME/.local/share/ocbi"
-M="$HOME/.claude/local-marketplaces/ocbi-local"
 install_args=(--launch-agents-dir "$HOME/Library/LaunchAgents")
 check "install --help exits 0" bash "$here/install.sh" --help >/dev/null
 bash "$here/install.sh" --bogus >/dev/null 2>&1
 expect_eq "install rejects an unknown option" 2 "$?"
 bash "$here/install.sh" --pieces launcher >/dev/null 2>&1
 expect_eq "install rejects the removed launcher piece" 2 "$?"
+out="$(bash "$here/install.sh" --pieces plugin 2>&1)"
+expect_eq "install rejects the removed plugin piece" 2 "$?"
+expect_match "install points the plugin piece at the repository marketplace" "docs/installation.md" "$out"
+bash "$here/install.sh" --marketplace-dir "$T/mp" >/dev/null 2>&1
+expect_eq "install rejects the removed --marketplace-dir" "2 absent" "$? $([ -e "$T/mp" ] && echo present || echo absent)"
 bash "$here/install.sh" --pieces pkg >/dev/null 2>&1
 expect_eq "install rejects pkg without --package" 2 "$?"
 bash "$here/install.sh" --node "$T/no-node" >/dev/null 2>&1
@@ -90,9 +94,8 @@ if [ -z "$(find "$HOME" -mindepth 1 -not -name . 2>/dev/null)" ]; then ok "dry r
 out="$(bash "$here/install.sh" --dry-run --package ./x.tgz "${install_args[@]}" 2>&1)"
 expect_match "dry run prints the npm install of --package" "would run: npm install --prefix $H/pkg" "$out"
 
-# An earlier version's files: the plugin's session-hint hook is retired, OCBI_HOME files stay.
-mkdir -p "$M/plugins/codebase-index/hooks" "$H"
-printf '{}\n' >"$M/plugins/codebase-index/hooks/hooks.json"
+# An earlier version's files in OCBI_HOME stay.
+mkdir -p "$H"
 printf '#!/bin/sh\n' >"$H/ocbi-mcp.sh"
 printf '# mine\n' >"$H/projects.conf"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
@@ -101,14 +104,11 @@ for f in ocbi-post-checkout.sh ocbi-rebuild.sh ocbi-notify.sh; do
   check "installed executable $f" test -x "$H/$f"
 done
 check "installed ocbi-rebuild into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild"
-check "install removes the retired session-hint hook" test ! -e "$M/plugins/codebase-index/hooks/hooks.json"
 expect_eq "install leaves an earlier version's launcher and projects.conf alone" "#!/bin/sh # mine" "$(cat "$H/ocbi-mcp.sh") $(cat "$H/projects.conf")"
 rm -f "$H/ocbi-mcp.sh" "$H/projects.conf"
-check "installed the plugin commands and skill" test -f "$M/plugins/codebase-index/commands/search.md" -a -f "$M/plugins/codebase-index/skills/codebase-search/SKILL.md"
-check "plugin index.md is the shared-store override" grep -q 'force is never set' "$M/plugins/codebase-index/commands/index.md"
-if grep -rq '@[A-Z_]*@' "$M" "$HOME/.local/bin/ocbi-rebuild" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$M" "$HOME/.local/bin/ocbi-rebuild" "$H")"; else ok "no template placeholders left"; fi
-got="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).mcpServers["codebase-index"];process.stdout.write([s.command,...s.args].join(" "))' "$M/plugins/codebase-index/.claude-plugin/plugin.json")"
-expect_eq "plugin.json starts the installed package directly with --host claude" "$NODE $H/pkg/node_modules/open-codebase-index/dist/cli.js --host claude" "$got"
+if grep -rq '@[A-Z_]*@' "$HOME/.local/bin/ocbi-rebuild" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$HOME/.local/bin/ocbi-rebuild" "$H")"; else ok "no template placeholders left"; fi
+check "install places no plugin marketplace" test ! -e "$HOME/.claude"
+expect_match "install prints the repository marketplace for Claude Code" "claude plugin install codebase-index@open-codebase-index" "$out"
 if [ "$(uname -s)" = Darwin ]; then
   plist="$HOME/Library/LaunchAgents/io.github.open-codebase-index.rebuild.plist"
   check "installed the launchd plist" grep -q "<string>$H/ocbi-rebuild.sh</string>" "$plist"
@@ -126,9 +126,9 @@ bash "$here/install.sh" "${install_args[@]}" >/dev/null 2>&1
 check "reinstall restores the hook's executable bit" test -x "$H/ocbi-post-checkout.sh"
 BO="$T/bundle-only"
 mkdir -p "$BO" && cp -R "$here" "$BO/local-wrapper"
-bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --marketplace-dir "$BO/mp" --launch-agents-dir "$BO/la" >/dev/null 2>&1
+bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --launch-agents-dir "$BO/la" >/dev/null 2>&1
 expect_eq "install works from the bundle alone" 0 "$?"
-check "bundle-only install has the plugin commands and skill" test -f "$BO/mp/plugins/codebase-index/commands/search.md" -a -f "$BO/mp/plugins/codebase-index/skills/codebase-search/SKILL.md"
+check "bundle-only install has the hook" test -x "$BO/home/ocbi-post-checkout.sh"
 bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
 expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"
 P2="$T/preflight"

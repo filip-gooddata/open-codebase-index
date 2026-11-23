@@ -32,17 +32,18 @@ node <install dir>/node_modules/open-codebase-index/dist/cli.js --host claude
 Everything that linked worktrees to a store under `$OCBI_HOME` and picked their settings is gone:
 `projects.conf`, `profiles.conf`, primary confirmation, the bare-clone pin, profile generation and
 its lock, `ocbi-mcp.sh` with `--link-only` and `--cbi`, and running Codex with `--host claude`.
-What remains has a job the package does not do:
+What remains has a job the package does not do. The Claude Code and Codex plugin is not part of
+the bundle: install it from the repository's marketplace, which starts the release tarball of the
+plugin's version through `npx` ([Installation and host setup](installation.md#claude-code)).
 
 | Piece | Why it is still here |
 |---|---|
-| `plugin` | A Claude Code plugin that runs the server from `$OCBI_HOME/pkg` with `--host claude`, instead of the repository plugin's `npx` of the registry package. Its `/index` and `/status` commands never request `force` and point at `ocbi-rebuild`. The session-hint hook is gone: the server's MCP instructions carry the same guidance. |
 | `hook` | A git `post-checkout` hook that indexes a new branch or worktree in the background, so a secondary checkout (which skips the startup index) is warm before an agent asks. Once a day per repository it also counts the catalogs `ocbi prune` would remove and notifies past a threshold. |
 | `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. |
 | `notify` | Desktop notifications for the hook and the rebuild. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
-The hook, the rebuild and the plugin run the Node.js that `install.sh` found (or `--node`), with
+The hook and the rebuild run the Node.js that `install.sh` found (or `--node`), with
 `dist/cbi.js` or `dist/cli.js` from `$OCBI_HOME/pkg`. `install.sh` installs the package first and
 refuses to place these pieces next to a package without the repository config (gd.7) or
 `--allow-shared-rebuild` (gd.6). Pick a stable Node.js path: a per-shell path such as fnm's
@@ -56,17 +57,21 @@ index. The rebuild forces only in a checkout the package reports as primary. The
 
 ## Host registration
 
-**Claude Code.** Install the `plugin` piece and enable it:
+**Claude Code.** Install the plugin from the repository marketplace:
 
 ```bash
-claude plugin marketplace add "$HOME/.claude/local-marketplaces/ocbi-local"
-claude plugin install codebase-index@ocbi-local
+claude plugin marketplace add filip-gooddata/open-codebase-index
+claude plugin install codebase-index@open-codebase-index
 ```
 
-The plugin starts `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cli.js --host claude`
-in the session's directory.
+The plugin starts `npx -y --package <release tarball> open-codebase-index-mcp --host claude` in the
+session's directory. Fill the npm cache once after installing or upgrading (`npx -y --package
+<release tarball> ocbi --help`), because the first download takes longer than Claude Code's MCP
+start timeout.
 
-**Codex.** Register the server in `~/.codex/config.toml`; `install.sh` prints this with your paths:
+**Codex.** Install the plugin the same way (`codex plugin marketplace add`, see
+[Installation and host setup](installation.md#codex)), or register the server in
+`~/.codex/config.toml`; `install.sh` prints this entry with your paths:
 
 ```toml
 [mcp_servers.codebase-index]
@@ -107,9 +112,8 @@ profile. For each line `name|<git common dir>` of `$OCBI_HOME/projects.conf`:
 
    Servers older than gd.7 ignore this file, so it can be written while they run.
 2. Note the time, then upgrade the package and the pieces:
-   `install.sh --package <gd.7 or later spec>`. This repoints
-   the Claude Code plugin at `dist/cli.js` and removes its session-hint hook. If Claude Code keeps
-   starting `ocbi-mcp.sh`, update the `ocbi-local` marketplace and the plugin from `/plugin`.
+   `install.sh --package <gd.7 or later spec>`. Install the Claude Code plugin from the repository
+   marketplace and disable the plugin of the old local marketplace.
 3. Point the Codex registration at `dist/cli.js --host codex`, as `install.sh` prints it.
 4. Restart the agent sessions, so every server comes from the new package.
 5. Check the primary and a few other worktrees, with `--host claude` and `--host codex`:
@@ -192,7 +196,7 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
 
 ## Platforms
 
-The hook, plugin and installer run on macOS (bash 3.2, BSD tools) and Linux (bash 5, GNU tools);
+The hook and installer run on macOS (bash 3.2, BSD tools) and Linux (bash 5, GNU tools);
 `contrib/local-wrapper/test/run-tests.sh` runs on both. The `rebuild` and `notify` pieces are
 macOS-only for now: the rebuild uses a launchd job, and notifications with an action button use a
 small Swift app built from source. Linux support for both is planned.

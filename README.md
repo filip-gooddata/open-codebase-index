@@ -103,6 +103,8 @@ The first index creates embeddings. Later runs reuse unchanged content and proce
 
 See [Installation and host setup](docs/installation.md) for complete instructions.
 
+The Claude Code and Codex plugins install from this repository's marketplace (`/plugin marketplace add filip-gooddata/open-codebase-index`, then `/plugin install codebase-index@open-codebase-index`) and start the server from the GitHub release tarball of the plugin's version through `npx`.
+
 ## Recommended workflow
 
 1. **Check stored readiness when unknown** with `index_status` or `/status`; use `index_status({checkFreshness:true})` when source/HEAD freshness matters. Ordinary status does not scan source; index only when needed.

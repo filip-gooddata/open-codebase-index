@@ -1,7 +1,7 @@
 {
-  "name": "helweg-plugins",
+  "name": "open-codebase-index",
   "interface": {
-    "displayName": "Helweg Plugins"
+    "displayName": "open-codebase-index"
   },
   "plugins": [
     {

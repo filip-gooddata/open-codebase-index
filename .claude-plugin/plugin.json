@@ -19,14 +19,24 @@
     "mcp"
   ],
   "skills": "./skills/",
+  "commands": [
+    "./commands/call-graph.md",
+    "./commands/definition.md",
+    "./commands/find.md",
+    "./commands/index.md",
+    "./commands/peek.md",
+    "./commands/pr-impact.md",
+    "./commands/search.md",
+    "./commands/status.md"
+  ],
   "mcpServers": {
     "codebase-index": {
       "command": "npx",
       "args": [
         "-y",
         "--package",
-        "opencode-codebase-index",
-        "opencode-codebase-index-mcp",
+        "https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.7/open-codebase-index-0.38.2-gd.7.tgz",
+        "open-codebase-index-mcp",
         "--host",
         "claude"
       ]

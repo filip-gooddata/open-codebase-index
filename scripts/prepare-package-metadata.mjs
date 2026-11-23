@@ -1,13 +1,15 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "node:path";
 import { fileURLToPath } from "url";
+import { pluginServerArgs } from "./plugin-manifests.mjs";
 
 /**
  * @typedef {{
  *   product: {
  *     current: { packageName: string, mcpBinary: string },
  *     future: { packageName: string, mcpBinary: string }
- *   }
+ *   },
+ *   release: { repository: string, tagPrefix: string, marketplaceName: string }
  * }} IdentityCatalog
  */
 
@@ -159,7 +161,7 @@ function prepareManifest(manifestPath, host) {
   if (!server?.command || !Array.isArray(server.args)) {
     fail(`Missing codebase-index MCP server in ${manifestPath}`);
   }
-  server.args = ["-y", "--package", selectedIdentity.packageName, selectedIdentity.mcpBinary, "--host", host];
+  server.args = pluginServerArgs(catalog, packageJson.version, host);
   if (manifest.author?.url) {
     manifest.author.url = appliedRepositoryUrl;
   }
@@ -179,7 +181,7 @@ function prepareClaudePluginManifest(manifestPath) {
   if (!server?.command || !Array.isArray(server.args)) {
     fail(`Missing codebase-index MCP server in ${manifestPath}`);
   }
-  server.args = ["-y", "--package", selectedIdentity.packageName, selectedIdentity.mcpBinary, "--host", "claude"];
+  server.args = pluginServerArgs(catalog, packageJson.version, "claude");
 
   if (manifest.homepage) {
     manifest.homepage = appliedRepositoryUrl;

@@ -1,0 +1,19 @@
+contrib/local-wrapper/test/run-tests.sh
+  s_e3a8969c11e471::t_f8dc295efaef90 534-537
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "947bc758662fb11cd96cb9529a8355b9383ddfcc",
+  "prompts": {},
+  "sessions": {
+    "s_e3a8969c11e471": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23fe988b-6a89-4b9c-912f-70bdeaf10ced",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

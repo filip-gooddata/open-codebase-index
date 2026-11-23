@@ -9,6 +9,8 @@ import { rebasePathEntries, resolveInheritedKnowledgeBaseEntries } from "../conf
 import { resolveMatchedRepositoryRoute } from "../config/repository-route.js";
 import { parseConfig, type SearchConfig as ConfigSearchConfig } from "../config/schema.js";
 
+const EVAL_FORCE_REBUILD_DISABLED_CODE = "FORCE_REBUILD_DISABLED";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -196,17 +198,36 @@ export function loadParsedConfig(projectRoot: string, configPath?: string): Retu
 }
 
 /**
- * Project-scope eval reindex clears the index root before indexing. A routed
- * checkout's project index is the shared repository store, so refuse it there.
+ * Evaluation --reindex clears the index root before indexing, so it is a forced rebuild. A routed
+ * checkout's project index is the shared repository store, so project scope is refused there.
+ * indexing.allowForceRebuild=false refuses it in every scope, whether it comes from the config this
+ * evaluation loaded or from the merged config on disk (global, repository and project files), read
+ * strictly so an unreadable layer refuses rather than allows.
  */
-export function assertEvalReindexAllowed(projectRoot: string, scope: "project" | "global"): void {
-  if (scope !== "project") return;
-  const route = resolveMatchedRepositoryRoute(projectRoot, "opencode");
-  if (!route) return;
-  throw new Error(
-    `Refusing evaluation --reindex: this ${route.role ?? "unassigned"} checkout uses the shared repository store at ${route.indexPath ?? "(unresolved)"} (repository config ${route.configPath ?? "(unknown)"}). ` +
-    "Reindexing would clear the store every checkout of this repository shares. Run the evaluation without --reindex, or rebuild the shared store from the primary checkout.",
-  );
+export function assertEvalReindexAllowed(projectRoot: string, config: ReturnType<typeof parseConfig>): void {
+  if (config.scope === "project") {
+    const route = resolveMatchedRepositoryRoute(projectRoot, "opencode");
+    if (route) {
+      throw new Error(
+        `Refusing evaluation --reindex: this ${route.role ?? "unassigned"} checkout uses the shared repository store at ${route.indexPath ?? "(unresolved)"} (repository config ${route.configPath ?? "(unknown)"}). ` +
+        "Reindexing would clear the store every checkout of this repository shares. Run the evaluation without --reindex, or rebuild the shared store from the primary checkout.",
+      );
+    }
+  }
+
+  let allowedOnDisk: boolean;
+  try {
+    allowedOnDisk = parseConfig(loadMergedConfig(projectRoot, "opencode", { strict: true })).indexing.allowForceRebuild;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot confirm indexing.allowForceRebuild before evaluation --reindex: ${message}`, { cause: error });
+  }
+  if (!config.indexing.allowForceRebuild || !allowedOnDisk) {
+    throw new Error(
+      `${EVAL_FORCE_REBUILD_DISABLED_CODE}: refusing evaluation --reindex because indexing.allowForceRebuild is false for this project. ` +
+      "Run the evaluation without --reindex, or rebuild the index deliberately with `ocbi index --force --allow-shared-rebuild` first.",
+    );
+  }
 }
 
 export function resolveSearchConfig(

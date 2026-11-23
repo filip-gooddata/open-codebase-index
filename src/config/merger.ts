@@ -10,7 +10,7 @@ import {
 import type { HostMode } from "./host.js";
 import { validateConfigLayerShape } from "./layer-shape.js";
 import { resolveInheritedKnowledgeBaseEntries } from "./rebase.js";
-import { resolveMatchedRepositoryRoute, type RepositoryRoute } from "./repository-route.js";
+import { readRepositoryConfig, resolveRepositoryRoute, type RepositoryRoute } from "./repository-route.js";
 
 const PROJECT_OVERRIDE_KEYS = [
   "embeddingProvider",
@@ -202,7 +202,7 @@ export interface LoadMergedConfigOptions {
 }
 
 export function loadMergedConfig(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions = {}): unknown {
-  const route = resolveMatchedRepositoryRoute(projectRoot, host);
+  const route = resolveMergeRoute(projectRoot, host, options);
   if (route) {
     return loadRepositoryMergedConfig(projectRoot, host, route, options);
   }
@@ -327,6 +327,20 @@ function getRoleOverrideLayer(route: RepositoryRoute): Record<string, unknown> {
     }
   }
   return Object.keys(indexing).length > 0 ? { indexing } : {};
+}
+
+/**
+ * The route is fixed at its first resolution in a process. A strict load re-reads the repository
+ * config from disk so a forced rebuild sees the file's current settings, while keeping the role
+ * decided at start.
+ */
+function resolveMergeRoute(projectRoot: string, host: HostMode, options: LoadMergedConfigOptions): RepositoryRoute | null {
+  const route = resolveRepositoryRoute(projectRoot, host);
+  if (options.strict !== true || !route.configPath) {
+    return route.config === null ? null : route;
+  }
+  const current = readRepositoryConfig(route.configPath);
+  return current === null ? null : { ...route, config: current };
 }
 
 /**

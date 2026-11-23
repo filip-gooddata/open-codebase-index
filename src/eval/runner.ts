@@ -296,7 +296,7 @@ export async function runEvaluation(options: EvalRunOptions): Promise<EvalRunRes
   const effectiveConfig = resolveSearchConfig(parsedConfig, options.searchOverrides);
 
   if (options.reindex) {
-    assertEvalReindexAllowed(options.projectRoot, effectiveConfig.scope);
+    assertEvalReindexAllowed(options.projectRoot, effectiveConfig);
     clearIndexRoot(options.projectRoot, effectiveConfig.scope);
   }
 

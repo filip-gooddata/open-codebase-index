@@ -138,7 +138,7 @@ function isAbsentPath(filePath: string): boolean {
  * shape throws a config error naming the file (fail closed: never fall back
  * to a local store).
  */
-function readRepositoryConfig(configPath: string): Record<string, unknown> | null {
+export function readRepositoryConfig(configPath: string): Record<string, unknown> | null {
   let content: string;
   try {
     content = readFileSync(configPath, "utf-8");

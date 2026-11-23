@@ -23,6 +23,20 @@ import { getIndexStatus } from "../src/tools/operations.js";
 import { TOOL_NAME } from "../src/tools/tool-names.js";
 import { formatStatus } from "../src/tools/utils.js";
 
+// Default-config status resolves an embedding provider; stub it so these route
+// assertions do not depend on a reachable Ollama or provider credentials.
+vi.mock("../src/embeddings/detector.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/embeddings/detector.js")>();
+  return {
+    ...actual,
+    resolveConfiguredEmbeddingProvider: async () => actual.createCustomProviderInfo({
+      baseUrl: "http://127.0.0.1:9/v1",
+      model: "route-status-test",
+      dimensions: 8,
+    }),
+  };
+});
+
 const HOSTS: HostMode[] = ["claude", "codex", "pi", "opencode", "jcode"];
 
 interface StatusTool {

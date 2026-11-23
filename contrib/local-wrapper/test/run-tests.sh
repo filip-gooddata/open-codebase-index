@@ -612,11 +612,23 @@ expect_eq "schedule uninstall disables the timer, removes the units and keeps ch
 check "schedule uninstall called systemctl disable --now on the timer" grep -qx -- '--user disable --now ocbi-check.timer' "$T/systemctl.calls"
 sched install >/dev/null 2>&1
 expect_eq "schedule install without units fails and names install.sh" 1 "$?"
-fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'; [ \"\$1\" != bootout ] || [ ! -e '$FS/fail-bootout' ]"
+mkdir -p "$LX/units/timers.target.wants"
+ln -s "$LX/units/ocbi-check.timer" "$LX/units/timers.target.wants/ocbi-check.timer"
+: >"$T/systemctl.calls"
+sched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall without the timer file stops it and removes its enablement link" "0 absent --user stop ocbi-check.timer" \
+  "$? $([ -L "$LX/units/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $(head -n 1 "$T/systemctl.calls")"
+fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'
+if [ \"\$1\" = bootout ]; then
+  perl -MFcntl=:flock -e 'open(my \$f, \">>\", \$ARGV[0]) or exit 1; exit(flock(\$f, LOCK_EX | LOCK_NB) ? 0 : 1)' '$MX/home/rebuild.flock' &&
+    echo free >>'$T/bootout-lock' || echo held >>'$T/bootout-lock'
+  [ ! -e '$FS/fail-bootout' ]
+fi"
 : >"$T/launchctl.calls"
 msched() { PATH="$FS:$PATH" OCBI_UNAME=Darwin bash "$MX/bin/ocbi-schedule" "$@"; }
 msched install "$R" >/dev/null 2>&1
 uid="$(id -u)"
+expect_eq "schedule install on macOS holds the rebuild lock while it unloads the agents" "held held" "$(tr '\n' ' ' <"$T/bootout-lock" | sed 's/ $//')"
 expect_eq "schedule install on macOS reloads both agents" "0 bootout gui/$uid/org.example.ocbi.rebuild
 bootstrap gui/$uid $MX/agents/org.example.ocbi.rebuild.plist
 bootout gui/$uid/org.example.ocbi.check

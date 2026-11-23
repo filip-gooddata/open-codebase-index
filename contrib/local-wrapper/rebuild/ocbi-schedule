@@ -33,7 +33,29 @@ case "$os" in
   *) die "unsupported system $os; run ocbi-check.sh from cron and ocbi-rebuild by hand" 69 ;;
 esac
 
+# install and uninstall run in a copy of this script started by perl, which takes the rebuild lock
+# ($OCBI_HOME/rebuild.flock, the one ocbi-rebuild.sh holds for a whole run) when it is free and
+# keeps it open across exec, so no rebuild can start between the check below and a launchd or
+# systemd change. OCBI_SCHEDULE_LOCK is then "held", or "busy" while a rebuild runs.
+case "${1:-}" in
+  install | uninstall)
+    if [ -z "${OCBI_SCHEDULE_LOCK:-}" ]; then
+      mkdir -p "$OCBI_HOME" || exit 1
+      # shellcheck disable=SC2016 # a single-quoted Perl program
+      exec "$(command -v perl || echo /usr/bin/perl)" -MFcntl=:flock -e '
+        my ($lock, @cmd) = @ARGV;
+        $^F = 255;
+        open(my $fh, ">>", $lock) or die "cannot open $lock: $!\n";
+        $ENV{OCBI_SCHEDULE_LOCK} = flock($fh, LOCK_EX | LOCK_NB) ? "held" : "busy";
+        exec("bash", @cmd) or die "cannot run bash: $!\n";' "$OCBI_HOME/rebuild.flock" "$0" "$@"
+    fi
+    ;;
+esac
 rebuild_running() {
+  case "${OCBI_SCHEDULE_LOCK:-}" in
+    held) return 1 ;;
+    busy) return 0 ;;
+  esac
   [ -f "$OCBI_HOME/rebuild.flock" ] &&
     ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$OCBI_HOME/rebuild.flock"
 }
@@ -102,6 +124,14 @@ uninstall_jobs() {
       err="$(systemctl --user disable --now ocbi-check.timer 2>&1)" ||
         die "systemctl --user disable --now ocbi-check.timer failed (${err:-no output}); kept the units, rerun uninstall"
       echo "disabled ocbi-check.timer"
+    else
+      # Without its file, systemctl cannot disable the timer by name; stop a loaded one and drop
+      # the enablement link, which would enable the timer again as soon as the file is back.
+      systemctl --user stop ocbi-check.timer >/dev/null 2>&1
+    fi
+    if [ -L "$systemd_dir/timers.target.wants/ocbi-check.timer" ]; then
+      rm -f "$systemd_dir/timers.target.wants/ocbi-check.timer" &&
+        echo "removed $systemd_dir/timers.target.wants/ocbi-check.timer"
     fi
     for f in $units; do
       if [ -f "$systemd_dir/$f" ]; then rm -f "$systemd_dir/$f" && echo "removed $systemd_dir/$f"; fi

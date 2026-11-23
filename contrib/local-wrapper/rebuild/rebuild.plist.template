@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- On-demand launchd job (no schedule) started by `ocbi-rebuild PROJECT`. install.sh fills in
+<!-- On-demand launchd job (no schedule) started by `ocbi-rebuild [CHECKOUT]`. install.sh fills in
      @LABEL@, @OCBI_HOME@ and @PATH@ and writes it to ~/Library/LaunchAgents/@LABEL@.plist. -->
 <plist version="1.0">
 <dict>

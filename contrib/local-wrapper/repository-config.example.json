@@ -2,10 +2,13 @@
   "scope": "project",
   "embeddingProvider": "ollama",
   "embeddingModel": "qwen3-embedding:0.6b",
+  "checkouts": {
+    "primary": { "watchFiles": true, "autoIndexOnStartup": true },
+    "secondary": { "watchFiles": false, "autoIndexOnStartup": false }
+  },
   "indexing": {
     "mode": "hybrid",
     "autoIndex": true,
-    "watchFiles": true,
     "autoIndexWaitMs": 360000,
     "autoIndexMaxRetries": 10,
     "autoIndexRetryDelayMs": 1000,

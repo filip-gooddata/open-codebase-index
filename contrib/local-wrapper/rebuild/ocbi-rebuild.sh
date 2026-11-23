@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# Usage: ocbi-rebuild.sh PROJECT
-# Full rebuild of the shared index of PROJECT (a name in $OCBI_HOME/projects.conf). Started on
-# demand by `ocbi-rebuild PROJECT`, through a launchd job on macOS or detached with nohup
-# elsewhere. OCBI_HOME defaults to the directory this script is installed in. When PROJECT is
-# omitted, the name in $OCBI_HOME/rebuild.request (written by `ocbi-rebuild`) is used.
+# Usage: ocbi-rebuild.sh CHECKOUT
+# Full rebuild of the shared store of the repository CHECKOUT (an absolute path) belongs to. The
+# repository needs a repository config, <git common dir>/codebase-index/config.json. Started on
+# demand by `ocbi-rebuild [CHECKOUT]`, through a launchd job on macOS or detached with nohup
+# elsewhere. OCBI_HOME defaults to the directory this script is installed in. When CHECKOUT is
+# omitted, the path in $OCBI_HOME/rebuild.request (written by `ocbi-rebuild`) is used.
 #
-# A forced index drops every branch catalog. Before `cbi prune` existed this was the only way to
-# drop the catalogs of deleted branches and removed worktrees; prefer `cbi prune --apply` for
-# that now. Afterwards each worktree that still exists gets its catalog back with an incremental
-# index, which reuses the embeddings the primary checkout just produced. Notifies through
-# $OCBI_HOME/ocbi-notify.sh, when installed, when it starts and when it ends.
-#
-# The primary checkout is the profiles.conf entry for PROJECT, else the first worktree git lists
-# when that is not the bare common dir. Set OCBI_REBUILD_PREFLIGHT_URL to the embedding provider's
-# health URL (default: Ollama on localhost:11434), or to an empty value to skip the check.
+# A forced index drops every branch catalog. Before `ocbi prune` existed this was the only way to
+# drop the catalogs of deleted branches and removed worktrees; prefer `ocbi prune --apply` for
+# that now. Only the primary checkout may force-clear a shared store, so the forced index runs
+# there: checkouts.primary.path from the repository config, else the main worktree of a normal
+# clone (the directory holding the .git common dir). Afterwards each other worktree gets its
+# catalog back with an incremental index, which reuses the embeddings the primary just produced.
+# Notifies through $OCBI_HOME/ocbi-notify.sh, when installed, when it starts and when it ends.
+# The CLI runs with --host $OCBI_HOST (default claude). Set OCBI_REBUILD_PREFLIGHT_URL to the
+# embedding provider's health URL (default: Ollama on localhost:11434), or to an empty value to
+# skip the check.
 set -u
 
 if [ -z "${OCBI_HOME:-}" ]; then
   OCBI_HOME="$(cd "$(dirname "$0")" && pwd)" || exit 1
 fi
-LAUNCHER="$OCBI_HOME/ocbi-mcp.sh"
+NODE="${OCBI_NODE:-@NODE@}"
+CBI_JS="$OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js"
+HOST="${OCBI_HOST:-claude}"
 LOG_DIR="$OCBI_HOME/logs"
 LOG="$LOG_DIR/rebuild-$(date +%Y%m%d-%H%M%S).log"
 RUN_LOCK="$OCBI_HOME/rebuild.flock"
@@ -27,26 +31,41 @@ BUSY_WAIT_SECONDS="${OCBI_REBUILD_BUSY_WAIT:-1800}"
 BUSY_POLL_SECONDS="${OCBI_REBUILD_BUSY_POLL:-30}"
 RETRY_SECONDS="${OCBI_REBUILD_RETRY:-120}"
 PREFLIGHT_URL="${OCBI_REBUILD_PREFLIGHT_URL-http://localhost:11434/api/tags}"
+usage() { echo "usage: ocbi-rebuild.sh CHECKOUT (an absolute path in a repository with <git common dir>/codebase-index/config.json)" >&2; exit 64; }
 
-PROJECT="${1:-}"
-if [ -z "$PROJECT" ] && [ -f "$OCBI_HOME/rebuild.request" ]; then
-  PROJECT="$(head -n 1 "$OCBI_HOME/rebuild.request")"
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+CHECKOUT="${1:-}"
+if [ -z "$CHECKOUT" ] && [ -f "$OCBI_HOME/rebuild.request" ]; then
+  CHECKOUT="$(head -n 1 "$OCBI_HOME/rebuild.request")"
 fi
-if ! [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
-  echo "usage: ocbi-rebuild.sh PROJECT (a name from $OCBI_HOME/projects.conf)" >&2
-  exit 64
-fi
-COMMON_DIR="$(sed -n "s/^$PROJECT|\\([^|]*\\)\$/\\1/p" "$OCBI_HOME/projects.conf" 2>/dev/null | head -n 1)"
-[ -n "$COMMON_DIR" ] || { echo "$PROJECT is not listed in $OCBI_HOME/projects.conf" >&2; exit 64; }
-MAIN_WORKTREE="$(sed -n "s/^$PROJECT|\\([^|]*\\).*/\\1/p" "$OCBI_HOME/profiles.conf" 2>/dev/null | head -n 1)"
+case "$CHECKOUT" in /*) ;; *) usage ;; esac
+COMMON_DIR="$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || usage
+COMMON_DIR="$(cd "$COMMON_DIR" && pwd -P)" || usage
+CONFIG="$COMMON_DIR/codebase-index/config.json"
+[ -f "$CONFIG" ] || { echo "$CHECKOUT has no repository config $CONFIG; nothing to rebuild" >&2; exit 64; }
+# checkouts.primary.path is absolute, ~/..., or relative to the common dir, as the package reads it.
+MAIN_WORKTREE="$(cd "$COMMON_DIR" && "$NODE" -e '
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))?.checkouts?.primary?.path;
+  if (typeof p !== "string" || p.trim() === "") process.exit(0);
+  console.log(path.resolve(p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p));' -- "$CONFIG" 2>/dev/null)" ||
+  { echo "cannot read $CONFIG" >&2; exit 64; }
 if [ -z "$MAIN_WORKTREE" ]; then
-  MAIN_WORKTREE="$(git --git-dir="$COMMON_DIR" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
-  if [ -z "$MAIN_WORKTREE" ] || [ "$(cd "$MAIN_WORKTREE" 2>/dev/null && pwd -P)" = "$(cd "$COMMON_DIR" && pwd -P)" ]; then
-    echo "$COMMON_DIR is a bare clone; add $PROJECT to $OCBI_HOME/profiles.conf to name its primary checkout" >&2
+  if [ "$(basename "$COMMON_DIR")" != .git ] || [ "$(git --git-dir="$COMMON_DIR" config --bool core.bare 2>/dev/null)" = true ]; then
+    echo "$COMMON_DIR is a bare-base layout; set checkouts.primary.path in $CONFIG to name its primary checkout" >&2
     exit 64
   fi
+  MAIN_WORKTREE="$(dirname "$COMMON_DIR")"
 fi
-DB="$OCBI_HOME/$PROJECT/claude-index/codebase.db"
+[ -d "$MAIN_WORKTREE" ] || { echo "the primary checkout $MAIN_WORKTREE does not exist" >&2; exit 64; }
+# The primary must be the root of a checkout of this same repository.
+MAIN_WORKTREE="$(cd "$MAIN_WORKTREE" && pwd -P)" || exit 64
+if [ "$(git -C "$MAIN_WORKTREE" rev-parse --show-toplevel 2>/dev/null)" != "$MAIN_WORKTREE" ] ||
+  [ "$(cd "$(git -C "$MAIN_WORKTREE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" != "$COMMON_DIR" ]; then
+  echo "the primary checkout $MAIN_WORKTREE is not the root of a checkout of $COMMON_DIR" >&2
+  exit 64
+fi
+NAME="$(basename "$MAIN_WORKTREE")"
 
 mkdir -p "$LOG_DIR"
 CBI_OUT="$(mktemp "${TMPDIR:-/tmp}/ocbi-rebuild.XXXXXX")" || exit 1
@@ -64,34 +83,44 @@ notify() {
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG"; }
 fail() {
   log "FAILED: $1"
-  notify "Rebuild of $PROJECT failed" "$1" "Show log" "$OPEN '$LOG'"
+  notify "Rebuild of $NAME failed" "$1" "Show log" "$OPEN '$LOG'"
   exit 1
 }
 
 # The progress lines repeat every second; keep only the summary lines in the log. The output of
-# the last call is also left in $CBI_OUT. OCBI_REQUIRE_PROJECT makes the launcher check, in the
-# same call that indexes, that the checkout is linked to $PROJECT's shared store; otherwise it
-# refuses (exit 3, or exit 1 with "refusing to start:" for a listed checkout that cannot be
-# linked) and nothing is indexed, so a forced index never reaches a local or global index.
+# the last call is also left in $CBI_OUT. The repository config routes every checkout to the
+# shared store, so no checkout here indexes a local or global index.
 cbi() {
   local worktree="$1"
   shift
-  (cd "$worktree" && OCBI_HOME="$OCBI_HOME" OCBI_REQUIRE_PROJECT="$PROJECT" bash "$LAUNCHER" --cbi "$@" --host claude --project "$worktree") 2>&1 |
+  (cd "$worktree" && "$NODE" "$CBI_JS" "$@" --host "$HOST" --project "$worktree") 2>&1 |
     grep -v -E '^(Embedding|Parsing): ' | tee "$CBI_OUT" >>"$LOG"
   return "${PIPESTATUS[0]}"
 }
 
+# route WORKTREE: the Store and Checkout role lines the package reports for WORKTREE. A store that
+# is not the repository's (global scope, or no repository config) prints another Store line.
+route() {
+  (cd "$1" && "$NODE" "$CBI_JS" status --host "$HOST" --project "$1" 2>/dev/null) | grep -E '^(Store|Checkout role): '
+}
+repo_store() { printf '%s\n' "$1" | grep -E '^Store: .* \((repository config |repository default store\))'; }
+# on_store WORKTREE [primary]: WORKTREE still reports $STORE (and, with "primary", the primary role).
+# Checked before every index attempt, so a config edit between retries cannot redirect one.
+on_store() {
+  local r
+  r="$(route "$1")"
+  [ "$(repo_store "$r")" = "$STORE" ] || { log "$1 does not report the store $STORE (${r:-no status})"; return 1; }
+  [ "${2:-}" != primary ] || printf '%s\n' "$r" | grep -q '^Checkout role: primary - ' ||
+    { log "the package does not treat $1 as the primary checkout (${r:-no status})"; return 1; }
+}
+
 # The forced index drops every catalog, so agents in open sessions call index_codebase and their
 # MCP workers take the index lock for minutes at a time. Wait for them instead of skipping the
-# worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, a launcher refusal (exit 3, or
-# "refusing to start:" for a listed checkout that cannot be linked) never, any other failure once.
+# worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, any other failure once.
 index_worktree() {
   local worktree="$1" deadline=$(($(date +%s) + BUSY_WAIT_SECONDS)) retried=0
-  local rc
-  until cbi "$worktree" index; do
-    rc=$?
-    [ "$rc" = 3 ] && return 1
-    grep -q '^\[ocbi-mcp\] refusing to start: ' "$CBI_OUT" && return 1
+  until on_store "$worktree" && cbi "$worktree" index; do
+    on_store "$worktree" || return 1
     if grep -q '^INDEX_BUSY: another index operation is already in progress' "$CBI_OUT"; then
       [ "$(date +%s)" -lt "$deadline" ] || return 1
       sleep "$BUSY_POLL_SECONDS"
@@ -116,7 +145,7 @@ if [ -z "${OCBI_REBUILD_LOCKED:-}" ]; then
     $^F = 255;
     open(my $fh, ">>", $lock) or die "cannot open $lock: $!\n";
     flock($fh, LOCK_EX | LOCK_NB) or exit 75;
-    exec("bash", @cmd) or die "cannot run bash: $!\n";' "$RUN_LOCK" "$0" "$PROJECT"
+    exec("bash", @cmd) or die "cannot run bash: $!\n";' "$RUN_LOCK" "$0" "$CHECKOUT"
   rc=$?
   if [ "$rc" = 75 ]; then
     log "another rebuild is running; exiting"
@@ -134,21 +163,28 @@ if [ -n "$PREFLIGHT_URL" ] && ! curl -sf -m 5 "$PREFLIGHT_URL" >/dev/null; then
 fi
 
 started=$(date +%s)
-notify "Rebuild of $PROJECT started" "Search in agent sessions may wait or ask to retry until it ends."
+notify "Rebuild of $NAME started" "Search in agent sessions may wait or ask to retry until it ends."
 log "forced rebuild of $MAIN_WORKTREE"
+
+# Check the route right before forcing: the repository's store, project scope, primary role.
+main_route="$(route "$MAIN_WORKTREE")"
+STORE="$(repo_store "$main_route")"
+[ -n "$STORE" ] || fail "Nothing was rebuilt: $MAIN_WORKTREE does not use the repository's shared store (${main_route:-no status})."
+printf '%s\n' "$main_route" | grep -q '^Checkout role: primary - ' ||
+  fail "Nothing was rebuilt: the package does not treat $MAIN_WORKTREE as the primary checkout ($(printf '%s' "$main_route" | grep '^Checkout role: ' || echo 'no role'))."
+log "$STORE"
 
 # A session's auto-index can hold the index lock; give it a few chances to finish.
 rebuilt=0
 for attempt in 1 2 3; do
+  on_store "$MAIN_WORKTREE" primary || fail "Nothing more was rebuilt: the route of $MAIN_WORKTREE changed before attempt $attempt; see the log."
   if cbi "$MAIN_WORKTREE" index --force --allow-shared-rebuild; then
     rebuilt=1
     break
   fi
-  if grep -q '^\[ocbi-mcp\] refusing to start: ' "$CBI_OUT"; then
-    fail "Nothing was rebuilt: $(grep -m 1 '^\[ocbi-mcp\] refusing to start: ' "$CBI_OUT" | sed 's/^\[ocbi-mcp\] //')"
-  fi
-  if grep -q "refusing to run the CLI" "$CBI_OUT"; then
-    fail "$MAIN_WORKTREE is not linked to the shared store of $PROJECT, so nothing was rebuilt. Run ocbi-mcp.sh --link-only there to see why."
+  # A checkout the package treats as secondary can never force-clear the store; retrying is useless.
+  if grep -q 'limited to the primary checkout' "$CBI_OUT"; then
+    fail "Nothing was rebuilt: $(grep -m 1 -o 'Project-scoped force rebuild is limited to the primary checkout.*' "$CBI_OUT")"
   fi
   log "attempt $attempt failed; retrying in $RETRY_SECONDS s"
   sleep "$RETRY_SECONDS"
@@ -172,10 +208,9 @@ while IFS= read -r worktree; do
 done < <(git --git-dir="$COMMON_DIR" worktree list --porcelain | sed -n 's/^worktree //p')
 
 minutes=$((($(date +%s) - started + 59) / 60))
-chunks=$(sqlite3 -readonly "$DB" 'select count(*) from chunks' 2>/dev/null || echo "?")
-log "done in ${minutes} min: $worktrees worktrees, $chunks chunks${failed:+, failed:$failed}"
+log "done in ${minutes} min: $worktrees worktrees${failed:+, failed:$failed}"
 if [ -n "$failed" ]; then
-  notify "Rebuild of $PROJECT finished with errors" "Failed:$failed. $worktrees worktrees indexed in ${minutes} min." "Show log" "$OPEN '$LOG'"
+  notify "Rebuild of $NAME finished with errors" "Failed:$failed. $worktrees worktrees indexed in ${minutes} min." "Show log" "$OPEN '$LOG'"
   exit 1
 fi
-notify "Rebuild of $PROJECT finished" "$worktrees worktrees, $chunks chunks, ${minutes} min."
+notify "Rebuild of $NAME finished" "$worktrees worktrees, ${minutes} min."

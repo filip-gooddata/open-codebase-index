@@ -16,4 +16,4 @@ No arguments needed - just run `index_status`.
 If not indexed:
 - suggest running `/index` when no index exists yet
 - if status reports failed embedding batches, tell the user to fix the provider/auth issue and rerun `/index` normally
-- if status reports provider/model incompatibility, tell the user to run `ocbi-rebuild <project>` in a terminal, which rebuilds in the background
+- if status reports provider/model incompatibility, tell the user to run `ocbi-rebuild` in a terminal from any checkout of the repository, which rebuilds in the background

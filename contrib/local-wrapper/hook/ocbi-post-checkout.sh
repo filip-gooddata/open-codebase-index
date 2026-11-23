@@ -69,7 +69,7 @@ fi
 stale_check() {
   [ "${OCBI_STALE_CHECK:-1}" != 0 ] && [ -x "$home/ocbi-notify.sh" ] || return 0
   [ -f "$home/rebuild.flock" ] && ! perl -MFcntl=:flock -e 'open(my $f, "<", $ARGV[0]) or exit 0; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$home/rebuild.flock" && return 0
-  local stamp repo stale
+  local stamp repo stale cmd
   stamp=$state/$(key "$common").stale-check
   [ -n "$(find "$stamp" -mmin -1440 2>/dev/null)" ] && return 0
   repo=$(basename "$common")
@@ -81,8 +81,10 @@ stale_check() {
   touch "$stamp"
   [ -n "$stale" ] && [ "$stale" -ge "${OCBI_STALE_THRESHOLD:-15}" ] || return 0
   echo "== $stale catalogs of deleted branches or worktrees"
+  # The same host and project as the dry run, shell-quoted, so the command can be pasted.
+  cmd=$(printf '%q ' "$node" "$cbi" prune --apply --host "$host" --project "$root")
   "$home/ocbi-notify.sh" "Worth a cleanup: $repo" \
-    "$stale catalogs of deleted branches or worktrees. Run: $node $cbi prune --apply --project $root" >/dev/null 2>&1
+    "$stale catalogs of deleted branches or worktrees. Run: ${cmd% }" >/dev/null 2>&1
 }
 
 (

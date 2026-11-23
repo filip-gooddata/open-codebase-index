@@ -177,9 +177,13 @@ EOF
 OP="$T/oldpkg"
 mkdir -p "$OP/pkg/node_modules/open-codebase-index/dist"
 printf 'process.exit(0);\n' >"$OP/pkg/node_modules/open-codebase-index/dist/cbi.js"
+printf 'process.exit(0);\n' >"$OP/pkg/node_modules/open-codebase-index/dist/cli.js"
 bash "$here/install.sh" --pieces hook,rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
 expect_eq "install refuses a pre-gd.7 package and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-post-checkout.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
 expect_match "install names the package upgrade" "predates the repository config" "$(cat "$T/oldpkg.out")"
+rm -f "$OP/pkg/node_modules/open-codebase-index/dist/cbi.js"
+bash "$here/install.sh" --pieces hook,rebuild --home "$OP" --bin-dir "$OP/bin" "${install_args[@]}" >"$T/oldpkg.out" 2>&1
+expect_eq "install refuses a package without dist/cbi.js and places nothing" "2 absent" "$? $([ -e "$OP/ocbi-post-checkout.sh" ] || [ -e "$OP/bin" ] && echo present || echo absent)"
 stub_cbi "$OP"
 bash "$here/install.sh" --pieces hook --home "$OP" >/dev/null 2>&1
 expect_eq "install accepts a package with both markers" "0 present" "$? $([ -x "$OP/ocbi-post-checkout.sh" ] && echo present || echo absent)"
@@ -256,7 +260,11 @@ printf '2\n' >"$S/prune-count"
 (cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
 wait_unlocked
 expect_match "stale check runs a dry-run prune of the checkout" "^CBI prune --json --host claude --project $W " "$(cat "$S/calls")"
-expect_match "stale check notifies at the threshold" "^Worth a cleanup: demo\\|2 catalogs of deleted branches or worktrees\\. Run: $NODE $S/pkg/node_modules/open-codebase-index/dist/cbi.js prune --apply --project $W\\|$" "$(cat "$T/notified" 2>/dev/null)"
+expect_match "stale check notifies at the threshold" "^Worth a cleanup: demo\\|2 catalogs of deleted branches or worktrees\\. Run: $NODE $S/pkg/node_modules/open-codebase-index/dist/cbi.js prune --apply --host claude --project $W\\|$" "$(cat "$T/notified" 2>/dev/null)"
+notified="$(cat "$T/notified" 2>/dev/null)"
+notified="${notified#*Run: }"
+eval "set -- ${notified%|}"
+expect_eq "the notified prune command keeps host and project as separate shell words" "8 --host claude --project $W" "$# $5 $6 $7 $8"
 rm -f "$T/notified"
 (cd "$W" && OCBI_STALE_CHECK=1 OCBI_STALE_THRESHOLD=2 bash "$S/ocbi-post-checkout.sh" old new 1)
 wait_unlocked
@@ -392,6 +400,18 @@ printf 'Store: /other (repository default store)\nCheckout role: secondary - tes
 OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=0 bash "$RB/ocbi-rebuild.sh" "$R"
 expect_eq "rebuild skips a worktree on another store and fails" "1 1 0" "$? $(calls | grep -c -- '--force') $(calls | grep -c "cwd=$W ")"
 rm -f "$RB/status-demo-feature"
+# The route is checked again before every attempt: a scope change after a busy attempt stops it.
+stub_cbi "$RB" 'if (argv.includes("--force")) { fs.writeFileSync(path.join(home, "status"), "Store: /g (global scope)\n"); console.error("INDEX_BUSY: another index operation is already in progress"); process.exit(1); }'
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=0 bash "$RB/ocbi-rebuild.sh" "$R"
+expect_eq "rebuild stops when the route changes between forced attempts" "1 1" "$? $(calls | grep -c .)"
+rm -f "$RB/status"
+stub_cbi "$RB" 'if (argv[0] === "index" && !argv.includes("--force")) { fs.writeFileSync(path.join(home, "status-demo-feature"), "Store: /g (global scope)\n"); process.exit(1); }'
+: >"$RB/calls"
+OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=0 bash "$RB/ocbi-rebuild.sh" "$R"
+expect_eq "rebuild does not retry a worktree whose route changed" "1 1" "$? $(calls | grep -c "cwd=$W ")"
+rm -f "$RB/status-demo-feature"
+stub_cbi "$RB"
 # The configured primary must be a checkout root of this repository.
 printf '{ "checkouts": { "primary": { "path": "%s" } } }\n' "$NR" >"$R/.git/codebase-index/config.json"
 : >"$RB/calls"

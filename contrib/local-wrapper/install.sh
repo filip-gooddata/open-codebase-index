@@ -225,7 +225,9 @@ install_pkg() {
 check_pkg() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist"
   has_piece hook || has_piece plugin || has_piece rebuild || return 0
-  [ -f "$dist/cbi.js" ] || return 0
+  [ -e "$home/pkg/node_modules/open-codebase-index" ] || return 0
+  [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] ||
+    die "the package in $home/pkg has no dist/cbi.js or dist/cli.js; rerun with --package <gd.7 or later spec>; nothing else was installed"
   grep -qs -- --allow-shared-rebuild "$dist/cbi.js" && grep -rqs --include='*.js' 'checkouts.primary.path' "$dist" ||
     die "the package in $home/pkg predates the repository config (gd.7) or --allow-shared-rebuild (gd.6); rerun with --package <gd.7 or later spec>; nothing else was installed"
 }

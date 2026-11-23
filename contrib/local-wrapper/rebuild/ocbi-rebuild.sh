@@ -104,17 +104,23 @@ route() {
   (cd "$1" && "$NODE" "$CBI_JS" status --host "$HOST" --project "$1" 2>/dev/null) | grep -E '^(Store|Checkout role): '
 }
 repo_store() { printf '%s\n' "$1" | grep -E '^Store: .* \((repository config |repository default store\))'; }
+# on_store WORKTREE [primary]: WORKTREE still reports $STORE (and, with "primary", the primary role).
+# Checked before every index attempt, so a config edit between retries cannot redirect one.
+on_store() {
+  local r
+  r="$(route "$1")"
+  [ "$(repo_store "$r")" = "$STORE" ] || { log "$1 does not report the store $STORE (${r:-no status})"; return 1; }
+  [ "${2:-}" != primary ] || printf '%s\n' "$r" | grep -q '^Checkout role: primary - ' ||
+    { log "the package does not treat $1 as the primary checkout (${r:-no status})"; return 1; }
+}
 
 # The forced index drops every catalog, so agents in open sessions call index_codebase and their
 # MCP workers take the index lock for minutes at a time. Wait for them instead of skipping the
 # worktree: INDEX_BUSY is retried for up to $BUSY_WAIT_SECONDS, any other failure once.
 index_worktree() {
   local worktree="$1" deadline=$(($(date +%s) + BUSY_WAIT_SECONDS)) retried=0
-  if [ "$(repo_store "$(route "$worktree")")" != "$STORE" ]; then
-    log "skipped $worktree: it does not report the store $STORE"
-    return 1
-  fi
-  until cbi "$worktree" index; do
+  until on_store "$worktree" && cbi "$worktree" index; do
+    on_store "$worktree" || return 1
     if grep -q '^INDEX_BUSY: another index operation is already in progress' "$CBI_OUT"; then
       [ "$(date +%s)" -lt "$deadline" ] || return 1
       sleep "$BUSY_POLL_SECONDS"
@@ -171,6 +177,7 @@ log "$STORE"
 # A session's auto-index can hold the index lock; give it a few chances to finish.
 rebuilt=0
 for attempt in 1 2 3; do
+  on_store "$MAIN_WORKTREE" primary || fail "Nothing more was rebuilt: the route of $MAIN_WORKTREE changed before attempt $attempt; see the log."
   if cbi "$MAIN_WORKTREE" index --force --allow-shared-rebuild; then
     rebuilt=1
     break

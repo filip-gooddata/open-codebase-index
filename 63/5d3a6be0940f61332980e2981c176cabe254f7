@@ -1,0 +1,29 @@
+.claude-plugin/marketplace.json
+  s_a8bb8f932cad3d::t_11bd34a429c5ac 13
+.claude-plugin/plugin.json
+  s_a8bb8f932cad3d::t_b691954e976cd8 3
+.codex-plugin/plugin.json
+  s_a8bb8f932cad3d::t_4ff12b1560d315 3
+CHANGELOG.md
+  s_a8bb8f932cad3d::t_4fbbb951c9be79 10-13,23-26
+package-lock.json
+  s_a8bb8f932cad3d::t_d732e263b8d681 3,9
+package.json
+  s_a8bb8f932cad3d::t_0651d7993fb5f3 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "635d3a6be0940f61332980e2981c176cabe254f7",
+  "prompts": {},
+  "sessions": {
+    "s_a8bb8f932cad3d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a207aa-05f1-76e3-b4fd-11e81bb8fa44",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

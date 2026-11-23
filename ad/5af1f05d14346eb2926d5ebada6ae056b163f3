@@ -1,0 +1,21 @@
+src/eval/runner.ts
+  s_daca32480d7852::t_63fa100ffebaec 293-294,296
+tests/repository-route-force-rebuild.test.ts
+  s_daca32480d7852::t_4fb02fa5e52c30 237-248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ad5af1f05d14346eb2926d5ebada6ae056b163f3",
+  "prompts": {},
+  "sessions": {
+    "s_daca32480d7852": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74c12c6e-c1b5-4c7a-bd6b-a37883e411d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

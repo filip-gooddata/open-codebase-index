@@ -1,0 +1,61 @@
+.claude-plugin/marketplace.json
+  s_914b483ffe6f50::t_a78256628ed018 13
+.claude-plugin/plugin.json
+  s_914b483ffe6f50::t_8a9ead4a3fd817 3
+.codex-plugin/plugin.json
+  s_914b483ffe6f50::t_654aec2f136da1 3
+CHANGELOG.md
+  s_914b483ffe6f50::t_ea664cb98c0f43 14-26
+contrib/local-wrapper/README.md
+  s_914b483ffe6f50::t_041420edc2ccd4 7-8,41,46,54,65-66,69-71,88-89
+contrib/local-wrapper/install.sh
+  s_914b483ffe6f50::t_447eea4b45b5bf 5,22,29,40,100-104,241,246,302,304-307
+contrib/local-wrapper/test/run-tests.sh
+  s_b2b2c96e28bdb1::t_fdfffce3c9f3c9 52,81-83,91,104,128-129,132,134,143-144,195-196,199-200,202-203,213-214
+docs/configuration.md
+  s_914b483ffe6f50::t_d5f9f749c9c45c 87-111
+docs/installation.md
+  s_914b483ffe6f50::t_784a9fc347e09c 253-254
+docs/local-wrapper.md
+  s_b2b2c96e28bdb1::t_ea37be4df6c48d 41,44,50-58,87-88,91-92,95-115,182-183,211-213,258-262
+package-lock.json
+  s_914b483ffe6f50::t_6ad6abf367f7d3 3,9
+package.json
+  s_914b483ffe6f50::t_22453a884ec03c 3
+src/adapters/cbi.ts
+  s_914b483ffe6f50::t_1aa0eee79c959c 20,82-85,231-232
+src/adapters/hooks-cli.ts
+  s_914b483ffe6f50::t_d453e6b03dbdf7 1-172
+src/git/hook-install.ts
+  s_914b483ffe6f50::t_69f69808c3995e 1-523
+src/git/post-checkout-hook.ts
+  s_914b483ffe6f50::t_147c3a59ee9584 1-635
+tests/hooks-install.test.ts
+  s_914b483ffe6f50::t_e6fb16b8b0c97f 1-421
+tests/post-checkout-hook.test.ts
+  s_914b483ffe6f50::t_dc7365bf13179d 1-419
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "884e1182f0f5296394d4b1a6811346fde722395d",
+  "prompts": {},
+  "sessions": {
+    "s_914b483ffe6f50": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a111e16b-e7a9-40a2-86df-d8b2f9004b80",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    },
+    "s_b2b2c96e28bdb1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "439576b6-509a-4dad-a119-8b4a422db60d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

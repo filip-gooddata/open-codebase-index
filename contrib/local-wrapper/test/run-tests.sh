@@ -168,6 +168,49 @@ expect_match "install says it removed the shim" "removed $BO/bin/ocbi-mcp, whose
 printf '#!/bin/sh\necho mine\n' >"$BO/bin/ocbi-mcp" && chmod 755 "$BO/bin/ocbi-mcp"
 bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
 expect_eq "a refused install leaves an unrelated ocbi-mcp alone" "mine" "$("$BO/bin/ocbi-mcp")"
+# Shim lifecycle across refusal paths, in a separate bin dir shared by two OCBI_HOMEs.
+SH="$T/shim"; SB="$SH/bin"; mkdir -p "$SB"
+fake_pkg() { # fake_pkg HOME [cli-marker|nocli|old]
+  local d="$1/pkg/node_modules/open-codebase-index/dist"
+  rm -rf "$1/pkg"; mkdir -p "$d"
+  case "${2:-cli}" in
+    old) printf 'process.exit(0);\n' >"$d/cbi.js"; printf 'process.exit(0);\n' >"$d/cli.js" ;;
+    *) printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$d/cbi.js"
+       [ "${2:-cli}" = nocli ] || printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nprocess.exit(0);\n' >"$d/cli.js" ;;
+  esac
+}
+fake_pkg "$SH/a"; fake_pkg "$SH/b"
+bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+check "home A's shim is placed" test -x "$SB/ocbi-mcp"
+fake_pkg "$SH/b" nocli
+bash "$here/install.sh" --pieces mcp --home "$SH/b" --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a refused install for home B keeps home A's working shim" "2 present" "$? $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+# A destination that fails preflight stops the install before the package check touches the shim.
+fake_pkg "$SH/a" nocli
+mkdir -p "$SH/a/ocbi-notify.sh"
+bash "$here/install.sh" --pieces mcp,notify --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a blocked destination stops the install before the shim is retired" "2 present" "$? $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+rmdir "$SH/a/ocbi-notify.sh"
+# A package that loses the gd.7 markers is refused and takes its shim down.
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+fake_pkg "$SH/a" old
+bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a package predating gd.7 is refused and its shim retired" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
+# --package that installs a package without dist/cli.js is refused and takes the shim down.
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+check "home A's shim is back" test -x "$SB/ocbi-mcp"
+mkdir -p "$SH/npm-bin"
+cat >"$SH/npm-bin/npm" <<'NPM'
+#!/bin/sh
+# npm stub: "npm install --prefix DIR ..." leaves a package without dist/cli.js.
+while [ $# -gt 0 ]; do [ "$1" = --prefix ] && prefix="$2"; shift; done
+d="$prefix/node_modules/open-codebase-index/dist"; rm -rf "$d"; mkdir -p "$d"
+printf '// --allow-shared-rebuild\n' >"$d/cbi.js"
+NPM
+chmod 755 "$SH/npm-bin/npm"
+out="$(PATH="$SH/npm-bin:$PATH" bash "$here/install.sh" --pieces mcp --package ./broken.tgz --home "$SH/a" --bin-dir "$SB" 2>&1)"
+expect_eq "--package without dist/cli.js is refused and the shim retired" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
+expect_match "the refusal names the missing cli.js" "did not install open-codebase-index with dist/cli.js" "$out"
 # The destination is checked before anything is written, even when --package would make the shim eligible.
 mkdir -p "$T/dir-bin/ocbi-mcp"
 out="$(bash "$here/install.sh" --pieces mcp --package ./x.tgz --home "$T/dir-home" --bin-dir "$T/dir-bin" 2>&1)"

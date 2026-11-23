@@ -180,6 +180,11 @@ install_hook() {
 # OCBI_PLUGIN_VERSION). Otherwise retire a shim this installer placed earlier, so the plugins reach
 # npx again, and leave any other file at the destination alone.
 mcp_shim_marker='# ocbi-mcp of the package in '
+# is_own_mcp_shim DEST: DEST is a shim this installer rendered for this OCBI_HOME's package.
+is_own_mcp_shim() {
+  [ -f "$1" ] && [ ! -L "$1" ] && grep -qF -- "$mcp_shim_marker" "$1" &&
+    grep -qF -- "\"$home/pkg/node_modules/open-codebase-index/dist/cli.js\"" "$1"
+}
 install_mcp() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist" dest="$bin_dir/ocbi-mcp"
   if [ "$preflight" = 1 ]; then
@@ -200,7 +205,7 @@ install_mcp() {
   fi
   if [ -n "$reason" ]; then
     say "  skipped: $reason"
-    if [ -f "$dest" ] && [ ! -L "$dest" ] && grep -qF -- "$mcp_shim_marker" "$dest"; then retire "$dest"; fi
+    if is_own_mcp_shim "$dest"; then retire "$dest"; fi
     return 0
   fi
   place 755 "$here/mcp/ocbi-mcp" "$dest" render
@@ -235,8 +240,10 @@ install_pkg() {
   [ "$dry_run" = 1 ] && return 0
   local js
   for js in cli.js cbi.js; do
-    [ -f "$home/pkg/node_modules/open-codebase-index/dist/$js" ] ||
+    [ -f "$home/pkg/node_modules/open-codebase-index/dist/$js" ] || {
+      retire_stale_mcp_shim
       die "$package did not install open-codebase-index with dist/$js; the servers run cli.js, the hook and rebuild cbi.js"
+    }
   done
 }
 
@@ -248,7 +255,7 @@ install_pkg() {
 retire_stale_mcp_shim() {
   local dest="$bin_dir/ocbi-mcp"
   has_piece mcp && [ "$dry_run" = 0 ] || return 0
-  [ -f "$dest" ] && [ ! -L "$dest" ] && grep -qF -- "$mcp_shim_marker" "$dest" || return 0
+  is_own_mcp_shim "$dest" || return 0
   rm -f "$dest" && printf 'install.sh: removed %s, whose package is unusable, so the plugins fall back to npx\n' "$dest" >&2
 }
 
@@ -268,11 +275,18 @@ check_pkg() {
 
 install_selected() {
   if [ "$preflight" = 1 ]; then
+    # Destinations first: a package check that fails may retire this installer's ocbi-mcp shim,
+    # which must not happen when another destination would stop the install anyway.
+    install_pieces
     if has_piece pkg; then install_pkg; else check_pkg; fi
-  else
-    has_piece pkg && install_pkg
-    [ "$dry_run" = 1 ] || check_pkg
+    return 0
   fi
+  has_piece pkg && install_pkg
+  [ "$dry_run" = 1 ] || check_pkg
+  install_pieces
+}
+
+install_pieces() {
   has_piece hook && install_hook
   has_piece mcp && install_mcp
   has_piece rebuild && install_rebuild

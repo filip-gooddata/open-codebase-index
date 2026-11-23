@@ -655,17 +655,23 @@ if [ "$(id -u)" != 0 ]; then
 else
   skip "schedule uninstall keeps the units when an enablement link cannot be removed" "root ignores directory permissions"
 fi
+# The failure cases above may have removed the link in the unit directory before stopping at the
+# other one; put both back so this run has to remove both.
+for d in "$LX/units" "$XC/systemd/user"; do
+  mkdir -p "$d/timers.target.wants"
+  ln -sf "$LX/units/ocbi-check.timer" "$d/timers.target.wants/ocbi-check.timer"
+done
+check "both enablement links exist before the paired uninstall" test -L "$LX/units/timers.target.wants/ocbi-check.timer" -a -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer"
+: >"$T/systemctl.calls"
+XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall without the timer file stops it and removes both enablement links" "0 absent absent absent --user stop ocbi-check.timer" \
+  "$? $([ -L "$LX/units/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent) $(head -n 1 "$T/systemctl.calls")"
 # A configuration path that starts with a dash is data, not an option to perl or rm.
 mkdir -p "$T/dash/-zexample/systemd/user/timers.target.wants"
 ln -s "$LX/units/ocbi-check.timer" "$T/dash/-zexample/systemd/user/timers.target.wants/ocbi-check.timer"
 (cd "$T/dash" && XDG_CONFIG_HOME=-zexample sched uninstall >/dev/null 2>&1)
 expect_eq "schedule uninstall treats a configuration path with a leading dash as a path" "0 absent" \
   "$? $([ -L "$T/dash/-zexample/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent)"
-printf '[Service]\n' >"$LX/units/ocbi-check.service"
-: >"$T/systemctl.calls"
-XDG_CONFIG_HOME="$XC" sched uninstall >/dev/null 2>&1
-expect_eq "schedule uninstall without the timer file stops it and removes both enablement links" "0 absent absent absent --user stop ocbi-check.timer" \
-  "$? $([ -L "$LX/units/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -L "$XC/systemd/user/timers.target.wants/ocbi-check.timer" ] && echo present || echo absent) $([ -f "$LX/units/ocbi-check.service" ] && echo present || echo absent) $(head -n 1 "$T/systemctl.calls")"
 fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'
 if [ \"\$1\" = bootout ]; then
   perl -MFcntl=:flock -e 'open(my \$f, \">>\", \$ARGV[0]) or exit 1; exit(flock(\$f, LOCK_EX | LOCK_NB) ? 0 : 1)' '$MX/home/rebuild.flock' &&

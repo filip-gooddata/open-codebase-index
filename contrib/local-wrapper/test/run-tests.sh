@@ -422,6 +422,20 @@ OCBI_REBUILD_PREFLIGHT_URL='' OCBI_REBUILD_RETRY=0 bash "$RB/ocbi-rebuild.sh" "$
 expect_eq "rebuild does not retry a worktree whose route changed" "1 1" "$? $(calls | grep -c "cwd=$W ")"
 rm -f "$RB/status-demo-feature"
 stub_cbi "$RB"
+# The preflight follows the provider the primary reports: none for another provider, Ollama's API
+# at OLLAMA_HOST for ollama.
+printf '{ "provider": "openai" }' >"$RB/status-json"
+: >"$RB/calls"
+(unset OCBI_REBUILD_PREFLIGHT_URL; OLLAMA_HOST=http://127.0.0.1:9 bash "$RB/ocbi-rebuild.sh" "$R")
+# shellcheck disable=SC2012 # names are rebuild-<timestamp>.log
+expect_eq "rebuild with another provider skips the Ollama check" "0 1 1" "$? $(calls | grep -c -- '--force') $(grep -c 'embedding provider openai: no preflight check' "$(ls -1t "$RB"/logs/rebuild-*.log | head -n 1)")"
+printf '{ "provider": "ollama" }' >"$RB/status-json"
+: >"$RB/calls"
+(unset OCBI_REBUILD_PREFLIGHT_URL; OLLAMA_HOST=http://127.0.0.1:9 bash "$RB/ocbi-rebuild.sh" "$R")
+expect_eq "rebuild with ollama checks OLLAMA_HOST and forces nothing when it is down" "1 0" "$? $(calls | grep -c .)"
+# shellcheck disable=SC2012 # names are rebuild-<timestamp>.log
+expect_match "rebuild names the Ollama URL it checked" "not responding on http://127.0.0.1:9/api/tags" "$(cat "$(ls -1t "$RB"/logs/rebuild-*.log | head -n 1)")"
+rm -f "$RB/status-json"
 # The configured primary must be a checkout root of this repository.
 printf '{ "checkouts": { "primary": { "path": "%s" } } }\n' "$NR" >"$R/.git/codebase-index/config.json"
 : >"$RB/calls"
@@ -510,7 +524,8 @@ rm -f "$CK/status-json" "$CK/prune-count"
 
 # --- ocbi-rebuild through systemd ----------------------------------------------------------------
 FS="$T/fake-systemd"
-fake "$FS" systemctl "printf '%s\\n' \"\$*\" >>'$T/systemctl.calls'; [ \"\$2\" != cat ] || [ -e '$FS/unit-present' ]"
+fake "$FS" systemctl "printf '%s\\n' \"\$*\" >>'$T/systemctl.calls'; [ \"\$2\" != cat ] || [ -e '$FS/unit-present' ] || exit 1
+[ \"\$2\" != disable ] || [ ! -e '$FS/fail-disable' ] || { echo 'Failed to connect to bus' >&2; exit 1; }"
 : >"$T/systemctl.calls"
 touch "$FS/unit-present"
 rm -f "$H/rebuild.request"
@@ -526,8 +541,8 @@ OCBI_UNAME=Linux bash "$here/install.sh" --pieces rebuild,notify --home "$LX/hom
   --systemd-dir "$LX/units" --launch-agents-dir "$LX/agents" >"$T/lx.out" 2>&1
 expect_eq "Linux install exits 0" 0 "$?"
 check "Linux install places the three units and no plist" test -f "$LX/units/ocbi-rebuild.service" -a -f "$LX/units/ocbi-check.service" -a -f "$LX/units/ocbi-check.timer" -a ! -e "$LX/agents"
-check "the check unit runs the installed ocbi-check.sh" grep -qx "ExecStart=/bin/bash $LX/home/ocbi-check.sh" "$LX/units/ocbi-check.service"
-check "the rebuild unit runs the installed ocbi-rebuild.sh and has no [Install]" eval "grep -qx 'ExecStart=/bin/bash $LX/home/ocbi-rebuild.sh' '$LX/units/ocbi-rebuild.service' && ! grep -q '^\\[Install\\]' '$LX/units/ocbi-rebuild.service'"
+check "the check unit runs the installed ocbi-check.sh" grep -qx "ExecStart=/bin/bash \"$LX/home/ocbi-check.sh\"" "$LX/units/ocbi-check.service"
+check "the rebuild unit runs the installed ocbi-rebuild.sh and has no [Install]" eval "grep -qx 'ExecStart=/bin/bash \"$LX/home/ocbi-rebuild.sh\"' '$LX/units/ocbi-rebuild.service' && ! grep -q '^\\[Install\\]' '$LX/units/ocbi-rebuild.service'"
 if grep -rq '@[A-Z_]*@' "$LX"; then not_ok "Linux install leaves no placeholders" "$(grep -rl '@[A-Z_]*@' "$LX")"; else ok "Linux install leaves no placeholders"; fi
 expect_match "Linux install prints ocbi-schedule install" "ocbi-schedule install <checkout>" "$(cat "$T/lx.out")"
 if command -v systemd-analyze >/dev/null 2>&1; then
@@ -541,6 +556,20 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   fi
 else
   skip "systemd-analyze verify accepts the units" "systemd-analyze not found"
+fi
+SP="$T/spaced install"
+OCBI_UNAME=Linux bash "$here/install.sh" --pieces rebuild --home "$SP/home" --bin-dir "$SP/bin" --systemd-dir "$SP/units" >/dev/null 2>&1
+expect_eq "Linux install into a path with a space exits 0" 0 "$?"
+check "the units quote a spaced script path" grep -qx "ExecStart=/bin/bash \"$SP/home/ocbi-check.sh\"" "$SP/units/ocbi-check.service"
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if out="$(cd "$SP/units" && XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$T/xdg-runtime}" \
+    systemd-analyze --user verify ocbi-rebuild.service ocbi-check.service ocbi-check.timer 2>&1)"; then
+    ok "systemd-analyze verify accepts the units under a spaced path"
+  else
+    not_ok "systemd-analyze verify accepts the units under a spaced path" "$out"
+  fi
+else
+  skip "systemd-analyze verify accepts the units under a spaced path" "systemd-analyze not found"
 fi
 MX="$T/mac-install"
 OCBI_UNAME=Darwin bash "$here/install.sh" --pieces rebuild --home "$MX/home" --bin-dir "$MX/bin" \
@@ -571,13 +600,19 @@ sched uninstall >/dev/null 2>&1
 expect_eq "schedule uninstall refuses while a rebuild runs and keeps the units" "75 present" "$? $([ -f "$LX/units/ocbi-check.timer" ] && echo present || echo absent)"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 : >"$T/systemctl.calls"
+touch "$FS/fail-disable"
+err="$(sched uninstall 2>&1)"
+expect_eq "schedule uninstall keeps the units when the timer cannot be disabled" "1 present" "$? $([ -f "$LX/units/ocbi-check.timer" ] && echo present || echo absent)"
+expect_match "schedule uninstall reports the systemctl failure" "Failed to connect to bus.*kept the units" "$err"
+rm -f "$FS/fail-disable"
+: >"$T/systemctl.calls"
 sched uninstall >/dev/null 2>&1
 expect_eq "schedule uninstall disables the timer, removes the units and keeps check.conf" "0 absent $W" \
   "$? $([ -e "$LX/units/ocbi-check.timer" ] || [ -e "$LX/units/ocbi-rebuild.service" ] && echo present || echo absent) $(cat "$LX/home/check.conf")"
 check "schedule uninstall called systemctl disable --now on the timer" grep -qx -- '--user disable --now ocbi-check.timer' "$T/systemctl.calls"
 sched install >/dev/null 2>&1
 expect_eq "schedule install without units fails and names install.sh" 1 "$?"
-fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'"
+fake "$FS" launchctl "printf '%s\\n' \"\$*\" >>'$T/launchctl.calls'; [ \"\$1\" != bootout ] || [ ! -e '$FS/fail-bootout' ]"
 : >"$T/launchctl.calls"
 msched() { PATH="$FS:$PATH" OCBI_UNAME=Darwin bash "$MX/bin/ocbi-schedule" "$@"; }
 msched install "$R" >/dev/null 2>&1
@@ -586,6 +621,21 @@ expect_eq "schedule install on macOS reloads both agents" "0 bootout gui/$uid/or
 bootstrap gui/$uid $MX/agents/org.example.ocbi.rebuild.plist
 bootout gui/$uid/org.example.ocbi.check
 bootstrap gui/$uid $MX/agents/org.example.ocbi.check.plist" "$? $(cat "$T/launchctl.calls")"
+perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; open(my $m, ">", $ARGV[1]); print $m "held\n"; close $m; sleep 3' \
+  "$MX/home/rebuild.flock" "$T/msched-held" &
+holder=$!
+wait_for "$T/msched-held" held
+: >"$T/launchctl.calls"
+out="$(msched install 2>&1)"
+expect_eq "schedule install on macOS leaves a running rebuild's agent loaded and reloads the check" "0 print gui/$uid/org.example.ocbi.rebuild
+bootout gui/$uid/org.example.ocbi.check
+bootstrap gui/$uid $MX/agents/org.example.ocbi.check.plist" "$? $(cat "$T/launchctl.calls")"
+expect_match "schedule install says why it kept the rebuild agent" "kept org.example.ocbi.rebuild loaded: a rebuild is running" "$out"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+touch "$FS/fail-bootout"
+msched uninstall >/dev/null 2>&1
+expect_eq "schedule uninstall on macOS keeps a plist it could not unload" "1 present" "$? $([ -f "$MX/agents/org.example.ocbi.check.plist" ] && echo present || echo absent)"
+rm -f "$FS/fail-bootout"
 msched uninstall >/dev/null 2>&1
 expect_eq "schedule uninstall on macOS boots both agents out and removes the plists" "0 absent" \
   "$? $([ -e "$MX/agents/org.example.ocbi.check.plist" ] || [ -e "$MX/agents/org.example.ocbi.rebuild.plist" ] && echo present || echo absent)"
@@ -602,7 +652,7 @@ FN="$T/fake-notify"
 fake "$FN" notify-send "if [ \"\$1\" = --help ]; then [ -e '$FN/old' ] && echo '-u, --urgency' || echo '-A, --action=[NAME=]Text'; exit 0; fi
 printf '%s|' \"\$@\" >>'$T/notify-send.calls'; printf '\\n' >>'$T/notify-send.calls'
 [ ! -e '$FN/fail' ] || exit 1
-case \" \$* \" in *' --wait '*) echo run ;; esac"
+case \" \$* \" in *' --wait '*) [ ! -e '$FN/slow' ] || sleep 3; echo run ;; esac"
 fake "$FN" gdbus "[ -e '$FN/caps' ] || exit 1; cat '$FN/caps'"
 fake "$FN" systemd-run "printf '%s|' \"\$@\" >'$T/systemd-run.calls'"
 nrun() {
@@ -637,10 +687,25 @@ rm -f "$FN/old"
 nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x bash "$NH/ocbi-notify.sh" "T" "B"
 expect_eq "notify without an action sends a plain notification" "--app-name=Codebase index|T|B|" "$(cat "$T/notify-send.calls")"
 # Inside a systemd unit the waiter gets a transient unit of its own.
-nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x INVOCATION_ID=test bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo hi"
-expect_match "notify inside a systemd unit starts the waiter with systemd-run" \
-  "^--user\\|--quiet\\|--collect\\|--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/x\\|--setenv=OCBI_HOME=$NH\\|--setenv=PATH=.*\\|--\\|bash\\|$NH/ocbi-notify.sh\\|--wait-action\\|T\\|B\\|Rebuild\\|echo hi\\|$" \
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x INVOCATION_ID=test bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "cd '/src/\${HOME}' && echo hi"
+expect_match "notify inside a systemd unit starts the waiter with systemd-run, its text in variables" \
+  "^--user\\|--quiet\\|--collect\\|--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/x\\|--setenv=OCBI_HOME=$NH\\|--setenv=PATH=.*\\|--setenv=OCBI_WAIT_TITLE=T\\|--setenv=OCBI_WAIT_BODY=B\\|--setenv=OCBI_WAIT_LABEL=Rebuild\\|--setenv=OCBI_WAIT_COMMAND=cd '/src/\\\$\\{HOME\\}' && echo hi\\|--\\|bash\\|$NH/ocbi-notify.sh\\|--wait-action\\|$" \
   "$(cat "$T/systemd-run.calls" 2>/dev/null)"
+# The detached waiter must not keep a descriptor of its caller, such as the rebuild's lock, open.
+touch "$FN/slow"
+rm -f "$T/clicked" "$T/fd-lock"
+nrun DBUS_SESSION_BUS_ADDRESS=unix:path=/x perl -MFcntl=:flock -e '
+  my ($lock, @cmd) = @ARGV; $^F = 255;
+  open(my $fh, ">>", $lock) or die; flock($fh, LOCK_EX | LOCK_NB) or die; exec(@cmd) or die;' \
+  "$T/fd-lock" bash "$NH/ocbi-notify.sh" "T" "B" Rebuild "echo clicked >'$T/clicked'"
+if perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$T/fd-lock" &&
+  [ ! -e "$T/clicked" ]; then
+  ok "the waiter does not hold its caller's lock while the notification is open"
+else
+  not_ok "the waiter does not hold its caller's lock while the notification is open"
+fi
+wait_for "$T/clicked" clicked
+rm -f "$FN/slow"
 if command -v notify-send >/dev/null 2>&1; then
   skip "notify without notify-send prints the notification" "notify-send is installed here"
 else

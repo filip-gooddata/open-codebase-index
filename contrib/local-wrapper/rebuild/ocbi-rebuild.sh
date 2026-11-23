@@ -14,9 +14,10 @@
 # clone (the directory holding the .git common dir). Afterwards each other worktree gets its
 # catalog back with an incremental index, which reuses the embeddings the primary just produced.
 # Notifies through $OCBI_HOME/ocbi-notify.sh, when installed, when it starts and when it ends.
-# The CLI runs with --host $OCBI_HOST (default claude). Set OCBI_REBUILD_PREFLIGHT_URL to the
-# embedding provider's health URL (default: Ollama on localhost:11434), or to an empty value to
-# skip the check.
+# The CLI runs with --host $OCBI_HOST (default claude). Before forcing, it checks that the
+# embedding provider answers: for the ollama provider (what `ocbi status` reports for the primary)
+# Ollama's API at $OLLAMA_HOST (default localhost:11434), as the package reaches it; no check for
+# other providers. OCBI_REBUILD_PREFLIGHT_URL replaces that URL; an empty value skips the check.
 set -u
 
 if [ -z "${OCBI_HOME:-}" ]; then
@@ -31,7 +32,6 @@ RUN_LOCK="$OCBI_HOME/rebuild.flock"
 BUSY_WAIT_SECONDS="${OCBI_REBUILD_BUSY_WAIT:-1800}"
 BUSY_POLL_SECONDS="${OCBI_REBUILD_BUSY_POLL:-30}"
 RETRY_SECONDS="${OCBI_REBUILD_RETRY:-120}"
-PREFLIGHT_URL="${OCBI_REBUILD_PREFLIGHT_URL-http://localhost:11434/api/tags}"
 usage() { echo "usage: ocbi-rebuild.sh CHECKOUT (an absolute path in a repository with <git common dir>/codebase-index/config.json)" >&2; exit 64; }
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
@@ -159,6 +159,18 @@ trap 'rm -f "$CBI_OUT"' EXIT
 # Keep the machine awake while this runs (macOS). A closed lid still suspends the run.
 command -v caffeinate >/dev/null 2>&1 && caffeinate -i -w $$ &
 
+if [ -n "${OCBI_REBUILD_PREFLIGHT_URL+set}" ]; then
+  PREFLIGHT_URL="$OCBI_REBUILD_PREFLIGHT_URL"
+else
+  provider="$( (cd "$MAIN_WORKTREE" && "$NODE" "$CBI_JS" status --json --host "$HOST" --project "$MAIN_WORKTREE") 2>/dev/null |
+    "$NODE" -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      try { const p = JSON.parse(s).provider; if (typeof p === "string") console.log(p); } catch {} });')"
+  case "$provider" in
+    # Unknown when status fails; the Ollama default is what earlier versions always checked.
+    ollama | "") PREFLIGHT_URL="${OLLAMA_HOST:-http://localhost:11434}"; PREFLIGHT_URL="${PREFLIGHT_URL%/}/api/tags" ;;
+    *) PREFLIGHT_URL=""; log "embedding provider $provider: no preflight check" ;;
+  esac
+fi
 if [ -n "$PREFLIGHT_URL" ] && ! curl -sf -m 5 "$PREFLIGHT_URL" >/dev/null; then
   fail "The embedding provider is not responding on $PREFLIGHT_URL, so nothing was rebuilt."
 fi

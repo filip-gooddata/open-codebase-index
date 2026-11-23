@@ -7,9 +7,11 @@
 #          ocbi-check.timer (daily check), from @SYSTEMD_USER_DIR@
 # install adds each CHECKOUT (the root of a checkout of a repository with a repository config) to
 # $OCBI_HOME/check.conf, the list the daily check reads, then loads the jobs; rerunning it is
-# harmless. uninstall unloads the jobs and removes their files (rerun install.sh to place them
-# again); it keeps check.conf, and refuses while a rebuild runs. status prints the registration,
-# the checked checkouts and the last lines of the check log.
+# harmless, and on macOS it leaves a running rebuild's agent loaded (rerun it once the rebuild ends
+# to reload that agent). uninstall unloads the jobs and removes their files (rerun install.sh to
+# place them again); it keeps check.conf, refuses while a rebuild runs, and keeps the files of a
+# job it could not unload. status prints the registration, the checked checkouts and the last
+# lines of the check log.
 set -u
 OCBI_HOME="${OCBI_HOME:-@OCBI_HOME@}"
 label="${OCBI_REBUILD_LABEL:-@LABEL@}"
@@ -60,6 +62,11 @@ install_jobs() {
       [ -f "$agents_dir/$f.plist" ] || die "$agents_dir/$f.plist is missing; run install.sh first"
     done
     for f in "$label" "$check_label"; do
+      # Unloading the rebuild agent would kill a running rebuild halfway through refilling the store.
+      if [ "$f" = "$label" ] && rebuild_running && launchctl print "$gui/$f" >/dev/null 2>&1; then
+        echo "kept $f loaded: a rebuild is running; rerun ocbi-schedule install after it ends to reload it"
+        continue
+      fi
       # bootstrap fails on a loaded job; reload it so a changed plist takes effect.
       launchctl bootout "$gui/$f" >/dev/null 2>&1
       launchctl bootstrap "$gui" "$agents_dir/$f.plist" || die "launchctl bootstrap $agents_dir/$f.plist failed"
@@ -79,19 +86,27 @@ install_jobs() {
 }
 
 uninstall_jobs() {
-  local f
+  local f err
   rebuild_running && die "a rebuild is running; uninstall stops it, so wait for it to finish" 75
   if [ "$os" = Darwin ]; then
     for f in "$check_label" "$label"; do
-      launchctl bootout "$gui/$f" >/dev/null 2>&1 && echo "unloaded $f"
+      if launchctl print "$gui/$f" >/dev/null 2>&1; then
+        launchctl bootout "$gui/$f" >/dev/null 2>&1 ||
+          die "launchctl bootout $gui/$f failed; kept $agents_dir/$f.plist, rerun uninstall"
+        echo "unloaded $f"
+      fi
       if [ -f "$agents_dir/$f.plist" ]; then rm -f "$agents_dir/$f.plist" && echo "removed $agents_dir/$f.plist"; fi
     done
   else
-    systemctl --user disable --now ocbi-check.timer >/dev/null 2>&1 && echo "disabled ocbi-check.timer"
+    if [ -f "$systemd_dir/ocbi-check.timer" ]; then
+      err="$(systemctl --user disable --now ocbi-check.timer 2>&1)" ||
+        die "systemctl --user disable --now ocbi-check.timer failed (${err:-no output}); kept the units, rerun uninstall"
+      echo "disabled ocbi-check.timer"
+    fi
     for f in $units; do
       if [ -f "$systemd_dir/$f" ]; then rm -f "$systemd_dir/$f" && echo "removed $systemd_dir/$f"; fi
     done
-    systemctl --user daemon-reload >/dev/null 2>&1
+    systemctl --user daemon-reload >/dev/null 2>&1 || echo "note: systemctl --user daemon-reload failed; it runs at the next login"
   fi
   echo "kept $conf"
 }

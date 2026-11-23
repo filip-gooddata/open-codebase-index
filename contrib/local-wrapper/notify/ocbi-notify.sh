@@ -15,13 +15,16 @@ set -u
 home="${OCBI_HOME:-$(cd "$(dirname "$0")" && pwd)}"
 app_name="Codebase index"
 
-# The detached waiter: show the notification with its button and run the command on a click.
-if [ "${1:-}" = --wait-action ] && [ $# -eq 5 ]; then
-  choice="$(notify-send --app-name="$app_name" --wait --action=run="$4" "$2" "$3" 2>/dev/null)"
-  if [ "$choice" = run ]; then
+# The detached waiter: show the notification with its button and run the command on a click. Its
+# text comes in OCBI_WAIT_* variables, which systemd-run passes verbatim; it would expand $VAR and
+# ${VAR} in command-line arguments.
+if [ "${1:-}" = --wait-action ]; then
+  choice="$(notify-send --app-name="$app_name" --wait --action=run="${OCBI_WAIT_LABEL:-}" \
+    "${OCBI_WAIT_TITLE:-}" "${OCBI_WAIT_BODY:-}" 2>/dev/null)"
+  if [ "$choice" = run ] && [ -n "${OCBI_WAIT_COMMAND:-}" ]; then
     mkdir -p "$home/logs" 2>/dev/null
-    printf '%s action %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$4" "$5" >>"$home/logs/notify.log" 2>/dev/null
-    bash -c "$5" >>"$home/logs/notify.log" 2>&1 </dev/null
+    printf '%s action %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$OCBI_WAIT_LABEL" "$OCBI_WAIT_COMMAND" >>"$home/logs/notify.log" 2>/dev/null
+    bash -c "$OCBI_WAIT_COMMAND" >>"$home/logs/notify.log" 2>&1 </dev/null
   fi
   exit 0
 fi
@@ -79,12 +82,22 @@ if [ -n "$action_command" ] && capabilities | grep -Eq "['\"]actions['\"]" &&
   # child would be stopped with the unit, so the waiter gets a transient unit of its own.
   if [ -n "${INVOCATION_ID:-}" ] && command -v systemd-run >/dev/null 2>&1 &&
     systemd-run --user --quiet --collect --setenv=DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
-      --setenv=OCBI_HOME="$home" --setenv=PATH="$PATH" -- \
-      bash "$0" --wait-action "$title" "$body" "$action_label" "$action_command" >/dev/null 2>&1; then
+      --setenv=OCBI_HOME="$home" --setenv=PATH="$PATH" --setenv=OCBI_WAIT_TITLE="$title" \
+      --setenv=OCBI_WAIT_BODY="$body" --setenv=OCBI_WAIT_LABEL="$action_label" \
+      --setenv=OCBI_WAIT_COMMAND="$action_command" -- bash "$0" --wait-action >/dev/null 2>&1; then
     exit 0
   fi
-  OCBI_HOME="$home" nohup bash "$0" --wait-action "$title" "$body" "$action_label" "$action_command" \
-    </dev/null >/dev/null 2>&1 &
+  # Close every descriptor above stderr first: the rebuild's lock is one (it stays open across exec
+  # so the kernel drops the lock only when the run ends), and a waiter left open for hours would
+  # otherwise keep the next rebuild and the daily check out.
+  (
+    for fd in /dev/fd/*; do
+      fd="${fd##*/}"
+      case "$fd" in 0 | 1 | 2 | *[!0-9]*) ;; *) eval "exec $fd>&-" 2>/dev/null ;; esac
+    done
+    OCBI_HOME="$home" OCBI_WAIT_TITLE="$title" OCBI_WAIT_BODY="$body" OCBI_WAIT_LABEL="$action_label" \
+      OCBI_WAIT_COMMAND="$action_command" nohup bash "$0" --wait-action </dev/null >/dev/null 2>&1 &
+  )
   exit 0
 fi
 

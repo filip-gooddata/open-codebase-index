@@ -6,6 +6,6 @@ Description=Codebase index: full rebuild of a shared store
 
 [Service]
 Type=exec
-ExecStart=/bin/bash @OCBI_HOME@/ocbi-rebuild.sh
-Environment=PATH=@PATH@
+ExecStart=/bin/bash "@OCBI_HOME@/ocbi-rebuild.sh"
+Environment="PATH=@PATH@"
 Nice=10

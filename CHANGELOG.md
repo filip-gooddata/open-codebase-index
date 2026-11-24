@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2-gd.9] - 2026-11-24
+
+Fork release on top of 0.38.2-gd.8. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.
+
 ### Changed
 
 - **Claude Code and Codex plugins launch the installed fork release**: `.claude-plugin/plugin.json` and `.mcp.json` run a POSIX `sh` launcher that starts the `ocbi-mcp` on `PATH` (a new bin for `dist/cli.js` that only releases with plugin version checks declare, so older releases and the registry package fall through) (install it with `npm install -g <release tarball>` or the local wrapper's new `mcp` piece) and falls back to `npx -y --package <release tarball> open-codebase-index-mcp`, where the tarball is this repository's GitHub release asset for the plugin's own version, instead of the npm registry package. On Windows the launcher stops with directions (or fails to spawn without `sh`); register the server directly there. `npm run sync:plugin-manifests`, run by `npm version`, writes the URL and version into every plugin and marketplace manifest and into the terminal rebuild command of `/index` and `/status`; the release workflow and the tests refuse stale manifests, and `npm run smoke:package` starts both hosts' servers through the launcher from the packed tarball, once through `npx` and once from the installed binary, and completes the MCP handshake.

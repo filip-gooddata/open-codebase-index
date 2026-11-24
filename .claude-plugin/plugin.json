@@ -1,6 +1,6 @@
 {
   "name": "codebase-index",
-  "version": "0.38.2-gd.8",
+  "version": "0.38.2-gd.9",
   "description": "Semantic code search and codebase graph tools for Claude Code",
   "displayName": "Codebase Index",
   "author": {
@@ -34,13 +34,13 @@
       "command": "sh",
       "args": [
         "-c",
-        "if [ \"$OS\" = Windows_NT ]; then echo \"codebase-index: this plugin's launcher does not support Windows; register open-codebase-index-mcp directly in the host's MCP settings (docs/installation.md)\" >&2; exit 1; fi; if command -v ocbi-mcp >/dev/null 2>&1; then exec ocbi-mcp \"$@\"; fi; exec npx -y --package 'https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.8/open-codebase-index-0.38.2-gd.8.tgz' open-codebase-index-mcp \"$@\"",
+        "if [ \"$OS\" = Windows_NT ]; then echo \"codebase-index: this plugin's launcher does not support Windows; register open-codebase-index-mcp directly in the host's MCP settings (docs/installation.md)\" >&2; exit 1; fi; if command -v ocbi-mcp >/dev/null 2>&1; then exec ocbi-mcp \"$@\"; fi; exec npx -y --package 'https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.9/open-codebase-index-0.38.2-gd.9.tgz' open-codebase-index-mcp \"$@\"",
         "ocbi-mcp",
         "--host",
         "claude"
       ],
       "env": {
-        "OCBI_PLUGIN_VERSION": "0.38.2-gd.8"
+        "OCBI_PLUGIN_VERSION": "0.38.2-gd.9"
       }
     }
   }

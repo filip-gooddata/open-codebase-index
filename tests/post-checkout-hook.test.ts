@@ -611,6 +611,28 @@ describe("post-checkout hook", () => {
       await Promise.all([first.passes, second.passes]);
       expect(checks).toBe(1);
       expect([...first.notifications, ...second.notifications].map((n) => n.title)).toEqual(["Rebuild needed: dead-claim"]);
+      // The worker took the claim through the generation lock: one generation past the dead one.
+      expect(fs.existsSync(path.join(paths.stateDir, "daily-check.lock.2"))).toBe(true);
+      expect(fs.existsSync(path.join(paths.stateDir, "daily-check.lock.1"))).toBe(false);
+    });
+
+    it("recovers a daily claim left under another hostname once it is an hour old", async () => {
+      const { repo, commonDir, paths } = setup("foreign-claim");
+      const generation = path.join(paths.stateDir, "daily-check.lock.1");
+      const writeOwner = (startedAt: string): void => {
+        fs.writeFileSync(generation, `${JSON.stringify({ pid: process.pid, hostname: "previous-hostname", startedAt })}\n`);
+      };
+      let checks = 0;
+      const checkCompatibility = (): CompatibilityVerdict => { checks += 1; return { compatible: true }; };
+
+      writeOwner(new Date().toISOString());
+      await runWorker(repo, commonDir, { checkCompatibility }).passes;
+      expect(checks).toBe(0);
+
+      writeOwner(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
+      await runWorker(repo, commonDir, { checkCompatibility }).passes;
+      expect(checks).toBe(1);
+      expect(isRefreshLockHeld(path.join(paths.stateDir, "daily-check.lock"))).toBe(false);
     });
 
     it("does not offer a prune later that day while the store still needs a rebuild", async () => {

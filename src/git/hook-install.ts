@@ -78,8 +78,12 @@ export function resolveHookRepository(repo: string): HookRepository {
   if (!fs.existsSync(absolute)) throw new Error(`Repository path does not exist: ${absolute}`);
   const commonDir = stripNewline(gitOk(absolute, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
   const bare = gitOk(absolute, ["rev-parse", "--is-bare-repository"]).trim() === "true";
-  const inWorkTree = !bare && gitOk(absolute, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
-  const workTree = inWorkTree ? realpathOrResolve(stripNewline(gitOk(absolute, ["rev-parse", "--show-toplevel"]))) : null;
+  // A git dir can name its working tree (core.worktree) without being inside it, and a common dir
+  // whose checkouts are all linked worktrees has none: git then refuses --show-toplevel.
+  const topLevel = bare ? null : git(absolute, ["rev-parse", "--show-toplevel"]);
+  const workTree = topLevel !== null && topLevel.status === 0 && stripNewline(topLevel.stdout) !== ""
+    ? realpathOrResolve(stripNewline(topLevel.stdout))
+    : null;
   return { repo: absolute, commonDir: realpathOrResolve(commonDir), bare, workTree };
 }
 

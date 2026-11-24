@@ -151,6 +151,24 @@ describe.runIf(CONFIG_HOOKS)("config-based install", () => {
     expect(await runHooksCli(["status", "--repo", common, "--host", "claude"], tempDir, cli.deps)).toBe(0);
   });
 
+  it("keeps the working tree a git dir names through core.worktree", async () => {
+    const checkout = createRepository(path.join(tempDir, "checkout"));
+    const gitDir = path.join(tempDir, "external.git");
+    fs.renameSync(path.join(checkout, ".git"), gitDir);
+    git(gitDir, "config", "core.worktree", checkout);
+    git(gitDir, "config", "core.hooksPath", path.join(checkout, ".githooks"));
+    // git reports the git dir as outside the working tree but still names it.
+    expect(git(gitDir, "rev-parse", "--is-inside-work-tree").trim()).toBe("false");
+    const repo = resolveHookRepository(gitDir);
+    expect(repo).toMatchObject({ commonDir: fs.realpathSync(gitDir), bare: false, workTree: checkout });
+
+    const cli = captureCli();
+    expect(await runHooksCli(["install", "--repo", gitDir, "--host", "claude", "--method", "file"], tempDir, cli.deps)).toBe(0);
+    expect(fs.existsSync(path.join(checkout, ".githooks", "post-checkout"))).toBe(true);
+    expect(getPostCheckoutHookStatus(resolveHookRepository(gitDir), CBI, true).installed).toBe(true);
+    expect(await runHooksCli(["status", "--repo", gitDir, "--host", "claude"], tempDir, cli.deps)).toBe(0);
+  });
+
   it("writes the bare repository's config and is seen from its worktrees", () => {
     const { bare, worktree } = createBareLayout(tempDir);
     const fromBare = resolveHookRepository(bare);

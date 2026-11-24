@@ -33,5 +33,5 @@ A full rebuild clears the whole store. Choose how to start it, using the `Store:
 3. Otherwise run `index_codebase` with force (`/index force`). The server merges every config layer for `indexing.allowForceRebuild` and, when forced rebuilds are disabled, returns `FORCE_REBUILD_DISABLED` before it changes anything. On that refusal do not retry; give the user the terminal rebuild below with the current checkout.
 
 Terminal rebuild: this release's CLI, with this server's host and the checkout chosen above:
-`npx -y --package https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.9/open-codebase-index-0.38.2-gd.9.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <checkout>`
+`npx -y --package https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.10/open-codebase-index-0.38.2-gd.10.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <checkout>`
 Where the local wrapper's rebuild piece is installed, `ocbi-rebuild` from any checkout of the repository does the same in the background.

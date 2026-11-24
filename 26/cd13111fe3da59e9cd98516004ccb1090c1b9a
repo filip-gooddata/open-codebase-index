@@ -1,0 +1,21 @@
+src/git/hook-install.ts
+  s_e3a8969c11e471::t_08acada8343eb7 81-86
+tests/hooks-install.test.ts
+  s_e3a8969c11e471::t_cebf91e0438da2 154-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "26cd13111fe3da59e9cd98516004ccb1090c1b9a",
+  "prompts": {},
+  "sessions": {
+    "s_e3a8969c11e471": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23fe988b-6a89-4b9c-912f-70bdeaf10ced",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

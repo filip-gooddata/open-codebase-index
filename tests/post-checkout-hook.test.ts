@@ -616,22 +616,33 @@ describe("post-checkout hook", () => {
       expect(fs.existsSync(path.join(paths.stateDir, "daily-check.lock.1"))).toBe(false);
     });
 
-    it("recovers a daily claim left under another hostname once it is an hour old", async () => {
+    it("keeps a live daily claim however old, and recovers a dead or reused one under another hostname", async () => {
       const { repo, commonDir, paths } = setup("foreign-claim");
       const generation = path.join(paths.stateDir, "daily-check.lock.1");
-      const writeOwner = (startedAt: string): void => {
-        fs.writeFileSync(generation, `${JSON.stringify({ pid: process.pid, hostname: "previous-hostname", startedAt })}\n`);
+      const writeOwner = (pid: number, startedAt: Date): void => {
+        fs.writeFileSync(generation, `${JSON.stringify({ pid, hostname: "previous-hostname", startedAt: startedAt.toISOString() })}\n`);
       };
       let checks = 0;
       const checkCompatibility = (): CompatibilityVerdict => { checks += 1; return { compatible: true }; };
+      const run = (now: number) => runWorker(repo, commonDir, { checkCompatibility, now: () => now }).passes;
 
-      writeOwner(new Date().toISOString());
-      await runWorker(repo, commonDir, { checkCompatibility }).passes;
+      // A live owner that took the claim after it started: held, even with the clock days ahead.
+      writeOwner(process.pid, new Date());
+      await run(Date.now() + 3 * 24 * 60 * 60 * 1000);
       expect(checks).toBe(0);
 
-      writeOwner(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
-      await runWorker(repo, commonDir, { checkCompatibility }).passes;
+      // The same pid, but its process started after the claim was taken: a reused pid.
+      writeOwner(process.pid, new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
+      await run(Date.now());
       expect(checks).toBe(1);
+
+      fs.rmSync(path.join(paths.stateDir, "compat-check.stamp"));
+      for (const name of fs.readdirSync(paths.stateDir)) {
+        if (name.startsWith("daily-check.lock.")) fs.rmSync(path.join(paths.stateDir, name));
+      }
+      writeOwner(deadPid(), new Date());
+      await run(Date.now());
+      expect(checks).toBe(2);
       expect(isRefreshLockHeld(path.join(paths.stateDir, "daily-check.lock"))).toBe(false);
     });
 

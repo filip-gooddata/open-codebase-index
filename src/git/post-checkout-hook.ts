@@ -203,27 +203,41 @@ function readGenerationOwner(lockPrefix: string, generation: number): LockOwner 
  * free: link(2) creates generations complete and rename(2) replaces them whole, so it is
  * corruption, not a writer mid-write. `gone` means the generation vanished since it was listed.
  */
-function inspectGeneration(lockPrefix: string, generation: number, maxHoldMs?: number): "held" | "free" | "gone" {
+function inspectGeneration(lockPrefix: string, generation: number, localOwners = false): "held" | "free" | "gone" {
   const state = readGeneration(lockPrefix, generation);
   if (state.kind === "gone") return "gone";
   if (state.kind === "unknown") return "held";
   const { owner } = state;
   if (!owner || owner.released) return "free";
-  if (maxHoldMs !== undefined) {
-    const startedAt = Date.parse(owner.startedAt);
-    if (!Number.isFinite(startedAt) || Date.now() - startedAt > maxHoldMs) return "free";
-  }
+  if (localOwners) return isProcessAlive(owner.pid) && !isReusedPid(owner) ? "held" : "free";
   return owner.hostname !== os.hostname() || isProcessAlive(owner.pid) ? "held" : "free";
+}
+
+/**
+ * True when the live process with the owner's pid started after the owner took the lock, so it is
+ * another process that reused the pid. Unknown start times count as the owner.
+ */
+function isReusedPid(owner: LockOwner): boolean {
+  const takenAt = Date.parse(owner.startedAt);
+  if (!Number.isFinite(takenAt)) return false;
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(owner.pid)], {
+    encoding: "utf-8",
+    env: { ...process.env, LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5_000,
+  });
+  const startedAt = result.status === 0 ? Date.parse(result.stdout.trim()) : Number.NaN;
+  return Number.isFinite(startedAt) && startedAt > takenAt;
 }
 
 const ACQUIRE_ATTEMPTS = 8;
 
 /** The highest generation and whether it is held, rescanning when it vanishes while read. */
-function inspectLock(lockPrefix: string, maxHoldMs?: number): { highest: number; held: boolean } {
+function inspectLock(lockPrefix: string, localOwners = false): { highest: number; held: boolean } {
   for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
     const highest = highestLockGeneration(lockPrefix);
     if (highest === 0) return { highest, held: false };
-    const state = inspectGeneration(lockPrefix, highest, maxHoldMs);
+    const state = inspectGeneration(lockPrefix, highest, localOwners);
     if (state !== "gone") return { highest, held: state === "held" };
   }
   // The highest kept vanishing: other processes are taking the lock right now.
@@ -269,10 +283,10 @@ export interface AcquireRefreshLockOptions {
   /** Test seam: runs after the free generation was read and before the next one is created. */
   beforeLink?: (generation: number) => void;
   /**
-   * Treats a holder older than this as gone, whatever its host or pid says. For a lock held only
-   * briefly, so a holder recorded under a since-changed hostname, or a reused pid, cannot keep it.
+   * The lock lives on this machine only: a holder is judged by its pid whatever hostname it
+   * recorded (the hostname may have changed since), and a pid a later process reused is gone.
    */
-  maxHoldMs?: number;
+  localOwners?: boolean;
 }
 
 /**
@@ -282,7 +296,7 @@ export interface AcquireRefreshLockOptions {
 export function tryAcquireRefreshLock(lockPrefix: string, pid: number = process.pid, options: AcquireRefreshLockOptions = {}): boolean {
   fs.mkdirSync(path.dirname(lockPrefix), { recursive: true });
   for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
-    const { highest, held } = inspectLock(lockPrefix, options.maxHoldMs);
+    const { highest, held } = inspectLock(lockPrefix, options.localOwners);
     if (held) return false;
     const next = highest + 1;
     options.beforeLink?.(next);
@@ -692,9 +706,6 @@ function readStampVerdict(stamp: string): string | null {
   }
 }
 
-/** Far beyond a daily check's status read and prune count, which take seconds. */
-const DAILY_CLAIM_MAX_HOLD_MS = 60 * 60 * 1000;
-
 function isDue(stamp: string, now: number): boolean {
   try {
     return now - fs.statSync(stamp).mtimeMs >= STALE_CHECK_INTERVAL_MS;
@@ -725,8 +736,9 @@ async function runDailyCheck(
   const staleDue = env.OCBI_STALE_CHECK !== "0" && isDue(staleStamp, deps.now());
   if (!compatDue && !staleDue) return;
   // One worker per repository: the generation lock hands a dead holder's claim to exactly one taker.
+  // A shared git dir on another machine's worker is judged as local: at worst it notifies twice.
   const claim = path.join(paths.stateDir, "daily-check.lock");
-  if (!tryAcquireRefreshLock(claim, pid, { maxHoldMs: DAILY_CLAIM_MAX_HOLD_MS })) return;
+  if (!tryAcquireRefreshLock(claim, pid, { localOwners: true })) return;
   try {
     // Another worker may have finished a check between the look above and the claim.
     let incompatible = false;

@@ -1,0 +1,85 @@
+.agents/plugins/marketplace.json
+  s_ea2b68ac6a2fe4::t_2305355ceb33aa 2,4
+.claude-plugin/marketplace.json
+  s_ea2b68ac6a2fe4::t_b32355a72f79a0 2,4-5,7,13
+.claude-plugin/plugin.json
+  s_ea2b68ac6a2fe4::t_2a4337bca195e1 3,22-31,34,36-38,41-44
+.codex-plugin/plugin.json
+  s_ea2b68ac6a2fe4::t_677a558b77a5a5 3,21
+.github/workflows/fork-release.yml
+  s_ea2b68ac6a2fe4::t_da4fcd99edc4b2 121-131
+.mcp.json
+  s_ea2b68ac6a2fe4::t_5eed8a983caa5b 4-16
+CHANGELOG.md
+  s_ea2b68ac6a2fe4::t_3c40020e1c77bb 14-36
+README.md
+  s_ea2b68ac6a2fe4::t_2306a037435609 106-111
+commands/index.md
+  s_ea2b68ac6a2fe4::t_c9101944265cc8 28-37
+commands/status.md
+  s_ea2b68ac6a2fe4::t_f09699146dc0cf 19-27
+contrib/local-wrapper/README.md
+  s_ea2b68ac6a2fe4::t_b7a06665bd65bf 7-10,18,43,47-48,52
+contrib/local-wrapper/install.sh
+  s_ea2b68ac6a2fe4::t_0a0a7961559dc3 5-8,23,33,41,60,88,94,102-103,151-155,191-230,270-271,273,277,280-288,291,293-294,296-298,300,305-307,309,311-317,343-348
+contrib/local-wrapper/mcp/ocbi-mcp
+  s_ea2b68ac6a2fe4::t_72fc9b12427202 1-5
+contrib/local-wrapper/test/run-tests.sh
+  s_ea2b68ac6a2fe4::t_4fa3f13fe031df 55,68,80-84,101-102,111-112,115-117,139,141-266
+docs/installation.md
+  s_ea2b68ac6a2fe4::t_858fdd06bb5e4f 127-128,161-181,184,187-188,193,195,197-199,202,204,207-209,211-215,218-224,228,231-239,242-244
+docs/local-wrapper.md
+  s_ea2b68ac6a2fe4::t_7c9ffe781150df 35-39,45,48,66-67,70-71,74-78,80-82,143-144,273
+package-lock.json
+  s_ea2b68ac6a2fe4::t_3a5f8d931547bd 3,9,26-27
+package.json
+  s_ea2b68ac6a2fe4::t_ac3c873ea5f8c5 3,23-24,80-82,94
+scripts/plugin-manifests.mjs
+  s_ea2b68ac6a2fe4::t_9569094d160a68 1-203
+scripts/prepare-package-metadata.mjs
+  s_ea2b68ac6a2fe4::t_a66b7048f3936f 4,11-12,109-112,168,188,243,247
+scripts/smoke-test-packed-cli.mjs
+  s_ea2b68ac6a2fe4::t_ebaa1c06f42ba0 4,8,112-202,321-324,327,332-334
+src/cli.ts
+  s_ea2b68ac6a2fe4::t_d0596a0ec0d5de 8,59-65
+src/git/hook-install.ts
+  s_ea2b68ac6a2fe4::t_e64c031593c1b8 31-35,72-75,81-87,224
+src/identity-catalog.json
+  s_ea2b68ac6a2fe4::t_c52ad0d62c728b 20-25
+src/identity-catalog.ts
+  s_ea2b68ac6a2fe4::t_fd18aa1a7a0755 20-28,32
+src/plugin-version.ts
+  s_ea2b68ac6a2fe4::t_f986f96d52c5f2 1-129
+src/tools/execute-common.ts
+  s_ea2b68ac6a2fe4::t_2cf2fb045d4c9b 30,113-118
+tests/claude-plugin.test.ts
+  s_ea2b68ac6a2fe4::t_1a3bf9d53a6564 5-6,14,24-26,28-34,38-106,117
+tests/codex-plugin.test.ts
+  s_ea2b68ac6a2fe4::t_73443f7fa357a2 5,44,51-53,56,58-64,68
+tests/hooks-install.test.ts
+  s_ea2b68ac6a2fe4::t_be8370454663b3 53-66,134-171
+tests/identity-phase0.test.ts
+  s_ea2b68ac6a2fe4::t_aebdf19bb1884f 8,18,86-87,148,151,156-158,170,172-173,175-177,181,196-201,230,233,244,250-252,260-261,300,303,327-329
+tests/plugin-manifests.test.ts
+  s_ea2b68ac6a2fe4::t_553e9b35aa962d 1-237
+tests/plugin-version.test.ts
+  s_ea2b68ac6a2fe4::t_fa37e137535884 1-121
+tests/setup/isolated-home.ts
+  s_ea2b68ac6a2fe4::t_639831b77780ba 11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c47adb6e4bff3ecb8361d0244ed5d0ff702562bd",
+  "prompts": {},
+  "sessions": {
+    "s_ea2b68ac6a2fe4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36db324f-34e7-47fa-8564-4fbe844b0d6f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+src/git/post-checkout-hook.ts
+  s_28b9ab6f248fde::t_3a1f920e0c5252 206,212,216-232,236,240,286-287,289,299,739,741
+tests/post-checkout-hook.test.ts
+  s_28b9ab6f248fde::t_c0f19394b532df 619,622-623,627,629-631,634-636,638-645
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "03597e3c0c7e9e065500b06b7514f682f5885717",
+  "prompts": {},
+  "sessions": {
+    "s_28b9ab6f248fde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3554c35-d1cf-4f8f-82bd-056593855fff",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

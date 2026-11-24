@@ -648,6 +648,24 @@ describe("post-checkout hook", () => {
       expect(isRefreshLockHeld(claim)).toBe(false);
     });
 
+    it("reads the same holder identity whatever TZ each worker runs with", async () => {
+      const { repo, commonDir, paths } = setup("tz-claim");
+      const claim = path.join(paths.stateDir, "daily-check.lock");
+      vi.stubEnv("TZ", "America/Los_Angeles");
+      expect(tryAcquireRefreshLock(claim, process.pid, { localOwners: true })).toBe(true);
+      vi.stubEnv("TZ", "Asia/Tokyo");
+      let checks = 0;
+      const { notifications, passes } = runWorker(repo, commonDir, {
+        checkCompatibility: () => { checks += 1; return { compatible: false, reason: MISMATCH }; },
+      });
+      await passes;
+      vi.unstubAllEnvs();
+      expect(checks).toBe(0);
+      expect(notifications).toEqual([]);
+      expect(isRefreshLockHeld(claim)).toBe(true);
+      releaseRefreshLock(claim, process.pid);
+    });
+
     it("does not offer a prune later that day while the store still needs a rebuild", async () => {
       const { repo, commonDir } = setup("still-incompat");
       const linked = path.join(tempDir, "still-incompat-linked");

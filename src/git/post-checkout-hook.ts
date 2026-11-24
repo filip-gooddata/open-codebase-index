@@ -232,7 +232,8 @@ function processIdentity(pid: number): string | null {
   }
   const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf-8",
-    env: { ...process.env, LC_ALL: "C" },
+    // Fixed locale and zone: workers with different TZ or LANG must read the same identity.
+    env: { ...process.env, LC_ALL: "C", TZ: "UTC0" },
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 5_000,
   });

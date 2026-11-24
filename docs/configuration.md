@@ -111,7 +111,7 @@ The hook, `ocbi hook post-checkout <prev> <new> <flag>`, returns at once and ref
 
   These checks need no timer. The [local wrapper](local-wrapper.md#scheduled-check)'s scheduled check (`ocbi-schedule`) runs the same two on a clock and is optional.
 
-  The notifier runs as `<command> <title> <body> [<action label> <action command>]`, the contract of the local wrapper's `ocbi-notify.sh`, which shows the action as a button. A notifier that accepts only a title and a body, such as bare `notify-send`, needs a wrapper script. Each check runs at most once a day per repository, by one worker at a time. A check that could not run (an unreadable store, say), or a pass skipped because the refresh found the store busy, is retried after the next checkout without repeating a check that already ran that day.
+  The notifier runs as `<command> <title> <body> [<action label> <action command>]`, the contract of the local wrapper's `ocbi-notify.sh`, which shows the action as a button. A notifier that accepts only a title and a body, such as bare `notify-send`, needs a wrapper script. Each check runs at most once a day per repository, by one worker at a time when the git directory is used from one machine; workers on several machines sharing a git directory can send duplicate notices. While the day's compatibility verdict is incompatible, later checkouts that day skip the stale count too. A check that could not run (an unreadable store, say), or a pass skipped because the refresh found the store busy, is retried after the next checkout without repeating a check that already ran that day.
 
 Windows is not supported: `ocbi hooks` exits with an error and the hook does nothing.
 

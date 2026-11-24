@@ -13,12 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Marketplace**: The repository is a Claude Code and Codex marketplace named `open-codebase-index` (`/plugin marketplace add filip-gooddata/open-codebase-index`, `codex plugin marketplace add filip-gooddata/open-codebase-index`), listing `codebase-index`.
 - **Claude Code plugin contents**: The plugin lists the `index`, `status`, `search`, `find`, `peek`, `definition`, `call-graph` and `pr-impact` commands; `reindex` and the OpenCode-only `visualize` are no longer offered to Claude Code. When a forced rebuild is refused (`FORCE_REBUILD_DISABLED`) or the checkout is secondary, `/index` and `/status` give the terminal rebuild with this release's `ocbi` against the primary checkout instead of retrying. The Codex plugin server sets `startup_timeout_sec = 300` and `tool_timeout_sec = 420`. The Codex SessionStart hook moved to `.codex-plugin/hooks.json`, because Claude Code also loads a root `hooks/hooks.json`; Claude Code gets its routing guidance from the server's MCP instructions only.
 
+### Added
+
 - **Plugin version skew warning**: The plugins pass their version in `OCBI_PLUGIN_VERSION`; the server records it next to the host's global config (`codebase-index-plugin-launch.<host>.json`), and `index_status` and `ocbi status` print a `Warning: Version skew: ...` line with the install command when the installed package's version differs. Status JSON gains `versionWarning` in that case.
 - **Local wrapper `mcp` piece**: `install.sh` places `ocbi-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the chosen Node.js, so the plugins start the pinned package without `npx`; it is placed only in front of a package that reports plugin version skew.
 
 ### Removed
 
 - **Local wrapper plugin**: `contrib/local-wrapper/claude-plugin` and the `plugin` piece of `install.sh` (with `--marketplace-dir`) are gone; install the repository's marketplace instead.
+
+## [0.38.2-gd.8] - 2026-11-23
+
+Fork release on top of 0.38.2-gd.7. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.
+
+### Added
+
+- **Post-checkout hook in the package**: `ocbi hook post-checkout` refreshes a checkout's index in a detached, low-priority `ocbi index` after a branch checkout or a new worktree, in repositories with a repository config. It skips file checkouts, rebases and `OCBI_PREWARM=0`, never forces, runs one refresh per checkout with at most one queued follow-up, and logs under `<git common dir>/codebase-index/logs/post-checkout/`. Lock names hash the checkout's real path, so worktrees with the same directory name no longer collide, and the refresh no longer inherits git's `GIT_DIR`-style variables. A daily stale-catalog count replaces the shell hook's check, with an optional `--stale-notify` command. macOS and Linux; Windows reports it as unsupported.
+- **`ocbi hooks install|uninstall|status [--repo]`**: Registers the hook as `hook.ocbi-post-checkout.*` in the local git config where git has config-based hooks, else as a managed `post-checkout` script that chains to an existing hook and restores it on uninstall. Works for normal and bare clones, is idempotent, and `status` says whether the installed command still runs this package.
+
+### Removed
+
+- **Local wrapper hook piece**: `contrib/local-wrapper/hook/ocbi-post-checkout.sh` and its tests. `install.sh` rejects `--pieces hook` and prints the `ocbi hooks install` command instead. `docs/local-wrapper.md` describes replacing the shell hook's `hook.ocbi-prewarm` registration.
 
 ## [0.38.2-gd.7] - 2026-11-23
 

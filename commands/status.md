@@ -23,5 +23,5 @@ Whenever status reports provider/model incompatibility, indexed or not, a full r
 3. Otherwise tell the user to run `/index force`. Never call `index_codebase` with force from `/status`: a forced run clears the store. `/index force` handles a `FORCE_REBUILD_DISABLED` refusal, which the server returns before it changes anything when the merged config disables forced rebuilds.
 
 Terminal rebuild: this release's CLI, with this server's host and the checkout chosen above:
-`npx -y --package https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.7/open-codebase-index-0.38.2-gd.7.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <checkout>`
+`npx -y --package https://github.com/filip-gooddata/open-codebase-index/releases/download/v0.38.2-gd.8/open-codebase-index-0.38.2-gd.8.tgz ocbi index --force --allow-shared-rebuild --host <host> --project <checkout>`
 Where the local wrapper's rebuild piece is installed, `ocbi-rebuild` from any checkout of the repository does the same in the background.

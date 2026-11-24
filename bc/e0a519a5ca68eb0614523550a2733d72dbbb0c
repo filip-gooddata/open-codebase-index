@@ -1,0 +1,35 @@
+.claude-plugin/marketplace.json
+  s_ea2b68ac6a2fe4::t_9c297a2a8e4f01 13
+.claude-plugin/plugin.json
+  s_ea2b68ac6a2fe4::t_82c199c0c41df1 3,37,43
+.codex-plugin/plugin.json
+  s_ea2b68ac6a2fe4::t_48b285949f3d13 3
+.mcp.json
+  s_ea2b68ac6a2fe4::t_02bb31594317bc 7,15
+CHANGELOG.md
+  s_ea2b68ac6a2fe4::t_43eccc664eeacd 10-13
+commands/index.md
+  s_ea2b68ac6a2fe4::t_f2d5de039b47cf 36
+commands/status.md
+  s_ea2b68ac6a2fe4::t_a881beb80aefdc 26
+package-lock.json
+  s_ea2b68ac6a2fe4::t_1995dbfa49e197 3,9
+package.json
+  s_ea2b68ac6a2fe4::t_728c049c2fd5fb 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bce0a519a5ca68eb0614523550a2733d72dbbb0c",
+  "prompts": {},
+  "sessions": {
+    "s_ea2b68ac6a2fe4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36db324f-34e7-47fa-8564-4fbe844b0d6f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Filip Kalný <filip.kalny@gooddata.com>"
+    }
+  }
+}

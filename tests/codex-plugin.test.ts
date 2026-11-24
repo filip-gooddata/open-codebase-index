@@ -2,6 +2,7 @@ import * as fs from "fs";
 
 import { describe, expect, it } from "vitest";
 import { parseHostMode } from "../src/config/host.js";
+import { IDENTITY_CATALOG } from "../src/identity-catalog.js";
 
 describe("Codex plugin host mode", () => {
   it("ships MCP CLI runtime dependencies for clean npx installs", () => {
@@ -40,26 +41,30 @@ describe("Codex plugin host mode", () => {
       name: string;
     };
     const mcpManifest = JSON.parse(fs.readFileSync(".mcp.json", "utf-8")) as {
-      mcpServers: Record<string, { command: string; args: string[] }>;
+      mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
     };
 
     expect(pluginManifest.name).toBe("codebase-index");
     const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf-8")) as { version: string };
     expect(pluginManifest.version).toBe(packageManifest.version);
     expect(pluginManifest.mcpServers).toBe("./.mcp.json");
-    expect(pluginManifest.hooks).toBe("./hooks/hooks.json");
-    expect(fs.existsSync("hooks/hooks.json")).toBe(true);
+    // Outside hooks/, which Claude Code would also load from the shared root.
+    expect(pluginManifest.hooks).toBe("./.codex-plugin/hooks.json");
+    expect(fs.existsSync(".codex-plugin/hooks.json")).toBe(true);
 
     const codebaseMcp = mcpManifest.mcpServers["codebase-index"];
-    expect(codebaseMcp.command).toBe("npx");
+    expect(codebaseMcp.command).toBe("sh");
     expect(codebaseMcp.args).toEqual([
-      "-y",
-      "--package",
-      "opencode-codebase-index",
-      "opencode-codebase-index-mcp",
+      "-c",
+      "if [ \"$OS\" = Windows_NT ]; then echo \"codebase-index: this plugin's launcher does not support Windows; "
+        + "register open-codebase-index-mcp directly in the host's MCP settings (docs/installation.md)\" >&2; exit 1; fi; "
+        + "if command -v ocbi-mcp >/dev/null 2>&1; then exec ocbi-mcp \"$@\"; fi; "
+        + `exec npx -y --package '${IDENTITY_CATALOG.release.repository}/releases/download/v${packageManifest.version}/`
+        + `open-codebase-index-${packageManifest.version}.tgz' open-codebase-index-mcp "$@"`,
+      "ocbi-mcp",
       "--host",
       "codex",
     ]);
-
+    expect(codebaseMcp.env).toEqual({ OCBI_PLUGIN_VERSION: packageManifest.version });
   });
 });

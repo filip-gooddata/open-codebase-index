@@ -52,7 +52,7 @@ export OCBI_NODE="$NODE"
 scripts=("$here/install.sh"
   "$here/rebuild/ocbi-rebuild.sh" "$here/rebuild/ocbi-rebuild" "$here/rebuild/ocbi-check.sh"
   "$here/rebuild/ocbi-schedule" "$here/notify/ocbi-notify.sh"
-  "$here/notify/notifier/build.sh" "$here/test/run-tests.sh")
+  "$here/notify/notifier/build.sh" "$here/mcp/ocbi-mcp" "$here/test/run-tests.sh")
 for s in "${scripts[@]}"; do
   check "bash -n ${s#"$here"/}" bash -n "$s"
 done
@@ -65,19 +65,23 @@ else
 fi
 while IFS= read -r j; do
   check "valid JSON ${j#"$here"/}" node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$j"
-done < <(find "$here/claude-plugin" "$here/repository-config.example.json" -name '*.json')
+done < <(find "$here/repository-config.example.json" -name '*.json')
 got="$(node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write([c.scope,c.indexing.allowForceRebuild,c.checkouts.secondary.watchFiles,c.checkouts.secondary.autoIndexOnStartup].join(" "))' "$here/repository-config.example.json")"
 expect_eq "the example repository config is project-scoped, refuses forced rebuilds and keeps secondaries quiet" "project false false false" "$got"
 
 # --- install.sh ----------------------------------------------------------------------------------
 H="$HOME/.local/share/ocbi"
-M="$HOME/.claude/local-marketplaces/ocbi-local"
 install_args=(--launch-agents-dir "$HOME/Library/LaunchAgents")
 check "install --help exits 0" bash "$here/install.sh" --help >/dev/null
 bash "$here/install.sh" --bogus >/dev/null 2>&1
 expect_eq "install rejects an unknown option" 2 "$?"
 bash "$here/install.sh" --pieces launcher >/dev/null 2>&1
 expect_eq "install rejects the removed launcher piece" 2 "$?"
+out="$(bash "$here/install.sh" --pieces plugin 2>&1)"
+expect_eq "install rejects the removed plugin piece" 2 "$?"
+expect_match "install points the plugin piece at the repository marketplace" "docs/installation.md" "$out"
+bash "$here/install.sh" --marketplace-dir "$T/mp" >/dev/null 2>&1
+expect_eq "install rejects the removed --marketplace-dir" "2 absent" "$? $([ -e "$T/mp" ] && echo present || echo absent)"
 out="$(bash "$here/install.sh" --pieces hook 2>&1)"
 expect_eq "install rejects the removed hook piece" 2 "$?"
 expect_match "install points the hook piece at ocbi hooks install" "run ocbi hooks install --repo <repo>" "$out"
@@ -94,9 +98,8 @@ if [ -z "$(find "$HOME" -mindepth 1 -not -name . 2>/dev/null)" ]; then ok "dry r
 out="$(bash "$here/install.sh" --dry-run --package ./x.tgz "${install_args[@]}" 2>&1)"
 expect_match "dry run prints the npm install of --package" "would run: npm install --prefix $H/pkg" "$out"
 
-# An earlier version's files: the plugin's session-hint hook is retired, OCBI_HOME files stay.
-mkdir -p "$M/plugins/codebase-index/hooks" "$H"
-printf '{}\n' >"$M/plugins/codebase-index/hooks/hooks.json"
+# An earlier version's files in OCBI_HOME stay.
+mkdir -p "$H"
 printf '#!/bin/sh\n' >"$H/ocbi-mcp.sh"
 printf '# mine\n' >"$H/projects.conf"
 out="$(bash "$here/install.sh" "${install_args[@]}" 2>&1)"
@@ -105,14 +108,13 @@ for f in ocbi-rebuild.sh ocbi-check.sh ocbi-notify.sh; do
   check "installed executable $f" test -x "$H/$f"
 done
 check "installed ocbi-rebuild and ocbi-schedule into the bin dir" test -x "$HOME/.local/bin/ocbi-rebuild" -a -x "$HOME/.local/bin/ocbi-schedule"
-check "install removes the retired session-hint hook" test ! -e "$M/plugins/codebase-index/hooks/hooks.json"
+check "install places no ocbi-mcp without a package" test ! -e "$HOME/.local/bin/ocbi-mcp"
+expect_match "install says why it skipped the mcp piece" "skipped: no package in $H/pkg" "$out"
 expect_eq "install leaves an earlier version's launcher and projects.conf alone" "#!/bin/sh # mine" "$(cat "$H/ocbi-mcp.sh") $(cat "$H/projects.conf")"
 rm -f "$H/ocbi-mcp.sh" "$H/projects.conf"
-check "installed the plugin commands and skill" test -f "$M/plugins/codebase-index/commands/search.md" -a -f "$M/plugins/codebase-index/skills/codebase-search/SKILL.md"
-check "plugin index.md is the shared-store override" grep -q 'force is never set' "$M/plugins/codebase-index/commands/index.md"
-if grep -rq '@[A-Z_]*@' "$M" "$HOME/.local/bin" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$M" "$HOME/.local/bin" "$H")"; else ok "no template placeholders left"; fi
-got="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).mcpServers["codebase-index"];process.stdout.write([s.command,...s.args].join(" "))' "$M/plugins/codebase-index/.claude-plugin/plugin.json")"
-expect_eq "plugin.json starts the installed package directly with --host claude" "$NODE $H/pkg/node_modules/open-codebase-index/dist/cli.js --host claude" "$got"
+if grep -rq '@[A-Z_]*@' "$HOME/.local/bin" "$H"; then not_ok "no template placeholders left" "$(grep -rl '@[A-Z_]*@' "$HOME/.local/bin" "$H")"; else ok "no template placeholders left"; fi
+check "install places no plugin marketplace" test ! -e "$HOME/.claude"
+expect_match "install prints the repository marketplace for Claude Code" "claude plugin install codebase-index@open-codebase-index" "$out"
 if [ "$(uname -s)" = Darwin ]; then
   plist="$HOME/Library/LaunchAgents/io.github.open-codebase-index.rebuild.plist"
   check "installed the launchd plist" grep -q "<string>$H/ocbi-rebuild.sh</string>" "$plist"
@@ -134,9 +136,134 @@ bash "$here/install.sh" "${install_args[@]}" >/dev/null 2>&1
 check "reinstall restores the executable bit" test -x "$H/ocbi-notify.sh"
 BO="$T/bundle-only"
 mkdir -p "$BO" && cp -R "$here" "$BO/local-wrapper"
-bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --marketplace-dir "$BO/mp" --launch-agents-dir "$BO/la" >/dev/null 2>&1
+bash "$BO/local-wrapper/install.sh" --home "$BO/home" --bin-dir "$BO/bin" --launch-agents-dir "$BO/la" >/dev/null 2>&1
 expect_eq "install works from the bundle alone" 0 "$?"
-check "bundle-only install has the plugin commands and skill" test -f "$BO/mp/plugins/codebase-index/commands/search.md" -a -f "$BO/mp/plugins/codebase-index/skills/codebase-search/SKILL.md"
+check "bundle-only install has the rebuild script" test -x "$BO/home/ocbi-rebuild.sh"
+# The mcp piece goes only in front of a package that runs and reports plugin version skew.
+BD="$BO/home/pkg/node_modules/open-codebase-index/dist"
+mkdir -p "$BD"
+printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$BD/cbi.js"
+printf '// checkouts.primary.path\nconsole.log(process.argv.slice(2).join(" "));\n' >"$BD/cli.js"
+printf '#!/bin/sh\necho mine\n' >"$BO/bin/ocbi-mcp" && chmod 755 "$BO/bin/ocbi-mcp"
+out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
+expect_match "install skips the mcp piece for a package without plugin version checks" "predates plugin version checks" "$out"
+expect_eq "a skipped mcp piece leaves the existing executable alone" "mine" "$("$BO/bin/ocbi-mcp")"
+printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log(process.argv.slice(2).join(" "));\n' >"$BD/cli.js"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+check "ocbi-mcp runs the package with the chosen node" grep -qF "exec \"$NODE\" \"$BD/cli.js\" \"\$@\"" "$BO/bin/ocbi-mcp"
+expect_eq "ocbi-mcp passes its arguments to the package's cli.js" "--host claude" "$(env PATH=/usr/bin:/bin "$BO/bin/ocbi-mcp" --host claude)"
+# A shim this installer placed is retired once its package no longer qualifies, so the plugins reach npx.
+printf '// checkouts.primary.path\nconsole.log("old");\n' >"$BD/cli.js"
+out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
+check "install retires its shim in front of a package without plugin version checks" test ! -e "$BO/bin/ocbi-mcp"
+expect_match "install reports the retired shim" "removed  $BO/bin/ocbi-mcp" "$out"
+printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log("new");\n' >"$BD/cli.js"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+rm -rf "$BO/home/pkg"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+check "install retires its shim when the package is gone" test ! -e "$BO/bin/ocbi-mcp"
+# A package directory left without dist/cli.js stops the install, and still takes down the shim.
+mkdir -p "$BD"
+printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$BD/cbi.js"
+printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nconsole.log("new");\n' >"$BD/cli.js"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+check "the shim is back in front of a usable package" test -x "$BO/bin/ocbi-mcp"
+rm -f "$BD/cli.js"
+out="$(bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" 2>&1)"
+expect_eq "install refuses a package without dist/cli.js" 2 "$?"
+check "install retires its shim in front of a package without dist/cli.js" test ! -e "$BO/bin/ocbi-mcp"
+expect_match "install says it removed the shim" "removed $BO/bin/ocbi-mcp, whose package is unusable" "$out"
+printf '#!/bin/sh\necho mine\n' >"$BO/bin/ocbi-mcp" && chmod 755 "$BO/bin/ocbi-mcp"
+bash "$BO/local-wrapper/install.sh" --pieces mcp --home "$BO/home" --bin-dir "$BO/bin" >/dev/null 2>&1
+expect_eq "a refused install leaves an unrelated ocbi-mcp alone" "mine" "$("$BO/bin/ocbi-mcp")"
+# Shim lifecycle across refusal paths, in a separate bin dir shared by two OCBI_HOMEs.
+SH="$T/shim"; SB="$SH/bin"; mkdir -p "$SB"
+fake_pkg() { # fake_pkg HOME [cli-marker|nocli|old]
+  local d="$1/pkg/node_modules/open-codebase-index/dist"
+  rm -rf "$1/pkg"; mkdir -p "$d"
+  case "${2:-cli}" in
+    old) printf 'process.exit(0);\n' >"$d/cbi.js"; printf 'process.exit(0);\n' >"$d/cli.js" ;;
+    *) printf '// --allow-shared-rebuild\nprocess.exit(0);\n' >"$d/cbi.js"
+       [ "${2:-cli}" = nocli ] || printf '// checkouts.primary.path OCBI_PLUGIN_VERSION\nprocess.exit(0);\n' >"$d/cli.js" ;;
+  esac
+}
+fake_pkg "$SH/a"; fake_pkg "$SH/b"
+bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+check "home A's shim is placed" test -x "$SB/ocbi-mcp"
+fake_pkg "$SH/b" nocli
+bash "$here/install.sh" --pieces mcp --home "$SH/b" --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a refused install for home B keeps home A's working shim" "2 present" "$? $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+# A destination that fails preflight stops the install before the package check touches the shim.
+fake_pkg "$SH/a" nocli
+mkdir -p "$SH/a/ocbi-notify.sh"
+bash "$here/install.sh" --pieces mcp,notify --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a blocked destination stops the install before the shim is retired" "2 present" "$? $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+rmdir "$SH/a/ocbi-notify.sh"
+# A package that loses the gd.7 markers is refused and takes its shim down.
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+fake_pkg "$SH/a" old
+bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a package predating gd.7 is refused and its shim retired" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
+# --package that installs a package without dist/cli.js is refused and takes the shim down.
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+check "home A's shim is back" test -x "$SB/ocbi-mcp"
+mkdir -p "$SH/npm-bin"
+cat >"$SH/npm-bin/npm" <<'NPM'
+#!/bin/sh
+# npm stub: "npm install --prefix DIR ..." leaves a package without dist/cli.js.
+while [ $# -gt 0 ]; do [ "$1" = --prefix ] && prefix="$2"; shift; done
+d="$prefix/node_modules/open-codebase-index/dist"; rm -rf "$d"; mkdir -p "$d"
+printf '// --allow-shared-rebuild\n' >"$d/cbi.js"
+NPM
+chmod 755 "$SH/npm-bin/npm"
+out="$(PATH="$SH/npm-bin:$PATH" bash "$here/install.sh" --pieces mcp --package ./broken.tgz --home "$SH/a" --bin-dir "$SB" 2>&1)"
+expect_eq "--package without dist/cli.js is refused and the shim retired" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
+expect_match "the refusal names the missing cli.js" "did not install open-codebase-index with dist/cli.js" "$out"
+# The same home spelled with a trailing slash or through a symlink still owns its shim.
+for alias in "$SH/a/" "$SH/a-link"; do
+  ln -sfn "$SH/a" "$SH/a-link"
+  fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+  fake_pkg "$SH/a" nocli
+  bash "$here/install.sh" --pieces mcp --home "$alias" --bin-dir "$SB" >/dev/null 2>&1
+  expect_eq "a refused install for $alias retires the shim of the same home" "2 absent" "$? $([ -e "$SB/ocbi-mcp" ] && echo present || echo absent)"
+done
+# A regular file in the way of a destination's parent stops the install before anything changes.
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+fake_pkg "$SH/a" nocli
+printf 'x\n' >"$SH/not-a-dir"
+bash "$here/install.sh" --pieces mcp,rebuild --home "$SH/a" --bin-dir "$SB" --launch-agents-dir "$SH/not-a-dir/la" >/dev/null 2>&1
+rc=$?
+if [ "$(uname -s)" = Darwin ]; then
+  expect_eq "a file blocking the plist's parent stops the install before the shim is retired" "2 present" "$rc $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+fi
+fake_pkg "$SH/a"
+rm -f "$SH/a/ocbi-rebuild.sh"
+out="$(bash "$here/install.sh" --pieces mcp,rebuild --home "$SH/a" --bin-dir "$SH/not-a-dir/bin" 2>&1)"
+expect_eq "a file blocking the bin dir is refused before any write" "2 absent" "$? $([ -e "$SH/a/ocbi-rebuild.sh" ] && echo present || echo absent)"
+expect_match "the refusal names the blocking file" "$SH/not-a-dir is not a directory" "$out"
+# A home spelled through symlink/.. is the directory the kernel resolves, not the logical parent.
+mkdir -p "$SH/hb/x"; ln -sfn "$SH/hb/x" "$SH/a/lb"
+fake_pkg "$SH/a"; bash "$here/install.sh" --pieces mcp --home "$SH/a" --bin-dir "$SB" >/dev/null 2>&1
+fake_pkg "$SH/hb" nocli
+bash "$here/install.sh" --pieces mcp --home "$SH/a/lb/.." --bin-dir "$SB" >/dev/null 2>&1
+expect_eq "a refused install for another home spelled through symlink/.. keeps this home's shim" "2 present" "$? $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+# A dangling symlink among a destination's parents blocks like a file.
+ln -sfn "$SH/nowhere" "$SH/dangling"
+fake_pkg "$SH/a" nocli
+bash "$here/install.sh" --pieces mcp,rebuild --home "$SH/a" --bin-dir "$SB" --launch-agents-dir "$SH/dangling/la" >/dev/null 2>&1
+rc=$?
+if [ "$(uname -s)" = Darwin ]; then
+  expect_eq "a dangling link above the plist stops the install before the shim is retired" "2 present" "$rc $([ -x "$SB/ocbi-mcp" ] && echo present || echo absent)"
+fi
+fake_pkg "$SH/a"; rm -f "$SH/a/ocbi-rebuild.sh"
+out="$(bash "$here/install.sh" --pieces rebuild,mcp --home "$SH/a" --bin-dir "$SH/dangling/bin" 2>&1)"
+expect_eq "a dangling link above the bin dir is refused before the rebuild script is written" "2 absent" "$? $([ -e "$SH/a/ocbi-rebuild.sh" ] && echo present || echo absent)"
+expect_match "the refusal names the dangling link" "$SH/dangling is not a directory" "$out"
+# The destination is checked before anything is written, even when --package would make the shim eligible.
+mkdir -p "$T/dir-bin/ocbi-mcp"
+out="$(bash "$here/install.sh" --pieces mcp --package ./x.tgz --home "$T/dir-home" --bin-dir "$T/dir-bin" 2>&1)"
+expect_eq "install refuses a directory at the shim destination before installing the package" "2 absent" "$? $([ -e "$T/dir-home/pkg" ] && echo present || echo absent)"
+expect_match "install names the directory in the way" "ocbi-mcp is a directory; nothing was installed" "$out"
 bash "$here/install.sh" --home "$T/a&b" >/dev/null 2>&1
 expect_eq "install rejects a path with &" "2 absent" "$? $([ -e "$T/a&b" ] && echo present || echo absent)"
 P2="$T/preflight"

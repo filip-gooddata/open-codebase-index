@@ -118,6 +118,17 @@ jobs:
             exit 1
           fi
 
+      # The plugin manifests launch this release's tarball by URL; a stale
+      # manifest would ship a plugin that starts the previous release.
+      - name: Check plugin manifests launch this release
+        run: |
+          node scripts/plugin-manifests.mjs --check
+          release_repository="$(node -p 'require("./src/identity-catalog.json").release.repository')"
+          if [ "${{ github.event_name }}" = push ] && [ "${release_repository}" != "https://github.com/${GITHUB_REPOSITORY}" ]; then
+            echo "::error::identity catalog release.repository ${release_repository} is not this repository"
+            exit 1
+          fi
+
       - name: Build TypeScript
         run: npm run build:ts
 

@@ -1,6 +1,6 @@
 {
   "name": "opencode-codebase-index",
-  "version": "0.38.2-gd.8",
+  "version": "0.38.2-gd.9",
   "description": "Host-neutral semantic codebase search with embeddings, symbol discovery, and call-graph tooling",
   "type": "module",
   "main": "dist/index.js",
@@ -20,7 +20,8 @@
   "bin": {
     "opencode-codebase-index-mcp": "dist/cli.js",
     "ocbi": "dist/cbi.js",
-    "cbi": "dist/cbi.js"
+    "cbi": "dist/cbi.js",
+    "ocbi-mcp": "dist/cli.js"
   },
   "license": "MIT",
   "author": "Kenneth",
@@ -76,7 +77,9 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "sync:plugin-manifests": "node scripts/plugin-manifests.mjs",
+    "version": "node scripts/plugin-manifests.mjs && git add .mcp.json .claude-plugin .codex-plugin .agents/plugins commands/index.md commands/status.md"
   },
   "files": [
     "dist",
@@ -88,8 +91,7 @@
     ".claude-plugin",
     ".codex-plugin",
     ".mcp.json",
-    "skills",
-    "hooks"
+    "skills"
   ],
   "napi": {
     "binaryName": "codebase-index-native",

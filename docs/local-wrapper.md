@@ -32,16 +32,20 @@ node <install dir>/node_modules/open-codebase-index/dist/cli.js --host claude
 Everything that linked worktrees to a store under `$OCBI_HOME` and picked their settings is gone:
 `projects.conf`, `profiles.conf`, primary confirmation, the bare-clone pin, profile generation and
 its lock, `ocbi-mcp.sh` with `--link-only` and `--cbi`, and running Codex with `--host claude`.
-What remains has a job the package does not do:
+What remains has a job the package does not do. The Claude Code and Codex plugin is not part of
+the bundle. Install the server first, here with `install.sh --package <release tarball>` and the
+`mcp` piece below, then the plugin from the repository's marketplace. The plugin starts the
+`ocbi-mcp` on `PATH` and falls back to `npx` of its release tarball only when there
+is none ([the plugin server](installation.md#server-for-the-claude-code-and-codex-plugins)).
 
 | Piece | Why it is still here |
 |---|---|
-| `plugin` | A Claude Code plugin that runs the server from `$OCBI_HOME/pkg` with `--host claude`, instead of the repository plugin's `npx` of the registry package. Its `/index` and `/status` commands never request `force` and point at `ocbi-rebuild`. The session-hint hook is gone: the server's MCP instructions carry the same guidance. |
 | `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job or systemd user unit that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. A daily check (`ocbi-check.sh`) notifies when the store needs a full rebuild or a prune; see [Scheduled check](#scheduled-check). |
 | `notify` | Desktop notifications for the rebuild, the daily check and, through `ocbi hooks install --stale-notify`, the post-checkout hook's daily stale-catalog check, on macOS and Linux. |
+| `mcp` | `ocbi-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the Node.js `install.sh` found. The Claude Code and Codex plugins start the first `ocbi-mcp` on `PATH`, so this gives them the pinned package, with no `npx` download and no network. It is placed only in front of an installed package that reports plugin version skew (0.38.2-gd.9 or later); otherwise the installer says why it skipped it and leaves the bin dir alone. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
-The rebuild and the plugin run the Node.js that `install.sh` found (or `--node`), with
+`ocbi-mcp` and the rebuild run the Node.js that `install.sh` found (or `--node`), with
 `dist/cbi.js` or `dist/cli.js` from `$OCBI_HOME/pkg`. `install.sh` installs the package first and
 refuses to place these pieces next to a package without the repository config (gd.7) or
 `--allow-shared-rebuild` (gd.6). Pick a stable Node.js path: a per-shell path such as fnm's
@@ -59,17 +63,23 @@ ships it as `ocbi hook post-checkout` with `ocbi hooks install`; see
 
 ## Host registration
 
-**Claude Code.** Install the `plugin` piece and enable it:
+**Claude Code.** With the package and the `mcp` piece installed, install the plugin from the
+repository marketplace:
 
 ```bash
-claude plugin marketplace add "$HOME/.claude/local-marketplaces/ocbi-local"
-claude plugin install codebase-index@ocbi-local
+claude plugin marketplace add filip-gooddata/open-codebase-index
+claude plugin install codebase-index@open-codebase-index
 ```
 
-The plugin starts `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cli.js --host claude`
-in the session's directory.
+The plugin starts the first `ocbi-mcp` on the host's `PATH` with `--host claude` in
+the session's directory, and falls back to `npx` of its release tarball only when there is none.
+With the `mcp` piece that is `<bin dir>/ocbi-mcp`, which runs `$OCBI_HOME/pkg` with
+a fixed Node.js; keep the bin dir on the `PATH` the host starts with. Install the package at the
+plugin's version (`install.sh --package <release tarball>`); `index_status` warns when they differ.
 
-**Codex.** Register the server in `~/.codex/config.toml`; `install.sh` prints this with your paths:
+**Codex.** Install the plugin the same way (`codex plugin marketplace add`, see
+[Installation and host setup](installation.md#codex)), or register the server in
+`~/.codex/config.toml`; `install.sh` prints this entry with your paths:
 
 ```toml
 [mcp_servers.codebase-index]
@@ -130,9 +140,8 @@ profile. For each line `name|<git common dir>` of `$OCBI_HOME/projects.conf`:
 
    Servers older than gd.7 ignore this file, so it can be written while they run.
 2. Note the time, then upgrade the package and the pieces:
-   `install.sh --package <gd.7 or later spec>`. This repoints
-   the Claude Code plugin at `dist/cli.js` and removes its session-hint hook. If Claude Code keeps
-   starting `ocbi-mcp.sh`, update the `ocbi-local` marketplace and the plugin from `/plugin`.
+   `install.sh --package <gd.7 or later spec>`. Install the Claude Code plugin from the repository
+   marketplace and disable the plugin of the old local marketplace.
 3. Point the Codex registration at `dist/cli.js --host codex`, as `install.sh` prints it.
 4. Restart the agent sessions, so every server comes from the new package.
 5. Check the primary and a few other worktrees, with `--host claude` and `--host codex`:
@@ -261,7 +270,7 @@ stderr, which the journal or `launchd.log` keeps. Every notification is also app
 
 ## Platforms
 
-The plugin, installer, rebuild, check and notifications run on macOS (bash 3.2, BSD tools) and
+The mcp piece, installer, rebuild, check and notifications run on macOS (bash 3.2, BSD tools) and
 Linux (bash 5, GNU tools), and the package's post-checkout hook is Node code that runs on both;
 `contrib/local-wrapper/test/run-tests.sh` runs on both and covers the other system's job and
 notification paths with stand-ins for `launchctl`, `systemctl` and `notify-send`. On Linux it also

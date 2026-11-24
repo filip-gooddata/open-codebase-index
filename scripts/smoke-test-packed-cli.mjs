@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { checkPackedTypes } from "./check-packed-types.mjs";
+import { pluginServerEntry, releaseTarballUrl } from "./plugin-manifests.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -106,6 +107,97 @@ async function smokeMcpBinary(executable, projectRoot, configPath) {
     clearTimeout(timer);
     await client.close();
   }
+}
+
+// Starts the server exactly as a plugin manifest staged in the tarball does, with the release URL
+// swapped for the local tarball, and completes the MCP handshake: once with no binary on PATH (the
+// npx fallback, fresh npm cache) and once with the packed binary installed on PATH and an npx that
+// fails, so the launcher must take the installed binary. A plugin pin that differs from the
+// installed version must show up as a status warning.
+async function smokePluginLaunch(stageRoot, tarballPath, projectConfig, installedBinDir) {
+  const releaseUrl = releaseTarballUrl(catalog, manifest.version);
+  const npmCache = path.join(scratchRoot, "npx-cache");
+  mkdirSync(npmCache, { mode: 0o700 });
+  // node and npx only: a global open-codebase-index-mcp on the developer's PATH must not answer.
+  const fallbackBin = path.join(scratchRoot, "fallback-bin");
+  mkdirSync(fallbackBin);
+  const npxPath = spawnSync("sh", ["-c", "command -v npx"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(npxPath, "npx is not on PATH");
+  symlinkSync(process.execPath, path.join(fallbackBin, "node"));
+  symlinkSync(realpathSync(npxPath), path.join(fallbackBin, "npx"));
+  const failingNpxBin = path.join(scratchRoot, "failing-npx-bin");
+  mkdirSync(failingNpxBin);
+  writeFileSync(path.join(failingNpxBin, "npx"), "#!/bin/sh\necho 'npx must not run' >&2\nexit 3\n", { mode: 0o755 });
+  const systemPath = "/usr/bin:/bin";
+  const launches = [];
+  for (const [host, manifestPath, projectConfigPath] of [
+    ["claude", path.join(".claude-plugin", "plugin.json"), path.join(".claude", "codebase-index.json")],
+    ["codex", ".mcp.json", path.join(".codebase-index", "config.json")],
+  ]) {
+    const server = JSON.parse(readFileSync(path.join(stageRoot, manifestPath), "utf8")).mcpServers["codebase-index"];
+    const expected = pluginServerEntry(catalog, manifest.version, host);
+    assert.equal(server.command, expected.command, `${manifestPath} must launch through the sh launcher`);
+    assert.deepEqual(server.args, expected.args, `${manifestPath} must fall back to the ${releaseUrl} release`);
+    assert.deepEqual(server.env, expected.env, `${manifestPath} must pass the plugin version`);
+    const projectRoot = path.join(scratchRoot, `plugin-project-${host}`);
+    mkdirSync(path.join(projectRoot, path.dirname(projectConfigPath)), { recursive: true });
+    writeFileSync(path.join(projectRoot, projectConfigPath), JSON.stringify(projectConfig));
+    writeFileSync(path.join(projectRoot, "notes.txt"), "plugin launch smoke test\n");
+
+    for (const [mode, pathValue, pluginVersion] of [
+      ["npx fallback", `${fallbackBin}:${systemPath}`, manifest.version],
+      ["installed binary", `${installedBinDir}:${failingNpxBin}:${path.dirname(process.execPath)}:${systemPath}`, manifest.version],
+      ["installed binary, other plugin pin", `${installedBinDir}:${failingNpxBin}:${path.dirname(process.execPath)}:${systemPath}`, "0.0.0-skew"],
+    ]) {
+      const args = server.args.map((arg) => arg.split(releaseUrl).join(tarballPath));
+      const transport = new StdioClientTransport({
+        command: server.command, args, cwd: projectRoot, stderr: "pipe",
+        env: {
+          ...process.env, ...server.env, OCBI_PLUGIN_VERSION: pluginVersion, PATH: pathValue,
+          NODE_PATH: "", NODE_OPTIONS: "", npm_config_cache: npmCache, npm_config_update_notifier: "false",
+          HOME: path.join(scratchRoot, `plugin-home-${host}`),
+        },
+      });
+      let stderr = "";
+      transport.stderr?.on("data", (chunk) => { stderr += chunk; });
+      const client = new Client({ name: "packed-plugin-smoke", version: "1.0.0" });
+      const started = Date.now();
+      const timer = setTimeout(() => { void transport.close(); }, 300_000);
+      try {
+        await client.connect(transport);
+        const initializeMs = Date.now() - started;
+        const listed = await client.listTools();
+        assert.ok(listed.tools.some((tool) => tool.name === "index_status"), `${host} ${mode} server lacks index_status`);
+        assert.match(client.getInstructions() ?? "", new RegExp(`host ${host}`), `${host} ${mode} server sent no host instructions`);
+        assert.equal(client.getServerVersion()?.version, manifest.version, `${host} ${mode} server version`);
+        const status = await client.callTool({ name: "index_status", arguments: {} });
+        const statusText = status.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+        const skew = pluginVersion !== manifest.version;
+        assert.equal(statusText.includes(`Warning: Version skew:`), skew, `${host} ${mode} status skew warning:\n${statusText}`);
+        launches.push({ host, mode, initializeMs, server: client.getServerVersion(), tools: listed.tools.length, skewWarning: skew });
+        if (skew) {
+          // The server recorded the plugin's pin; a terminal `ocbi status` for the host reports it.
+          const terminal = spawnSync(path.join(installedBinDir, "ocbi"), ["status", "--host", host, "--project", projectRoot], {
+            cwd: projectRoot, encoding: "utf8",
+            env: { ...process.env, PATH: `${path.dirname(process.execPath)}:${systemPath}`, HOME: path.join(scratchRoot, `plugin-home-${host}`),
+              OCBI_PLUGIN_VERSION: "", NODE_PATH: "", NODE_OPTIONS: "" },
+          });
+          assert.equal(terminal.status, 0, `ocbi status --host ${host} failed:\n${terminal.stdout}\n${terminal.stderr}`);
+          assert.ok(terminal.stdout.includes(`Warning: Version skew: the codebase-index plugin last started a ${host} server`),
+            `ocbi status --host ${host} lacks the skew warning:\n${terminal.stdout}`);
+        }
+      } catch (error) {
+        throw new Error(`${host} ${mode} launch failed: ${error instanceof Error ? error.message : String(error)}\n${stderr}`);
+      } finally {
+        clearTimeout(timer);
+        await client.close();
+      }
+    }
+  }
+  writeFileSync(path.join(scratchRoot, `command-${++commandNumber}.json`), JSON.stringify({ pluginLaunches: launches }, null, 2),
+    { flag: "wx", mode: 0o600 });
+  console.log(`plugin launches: ${launches.map((it) => `${it.host}/${it.mode} ${it.initializeMs}ms`).join(", ")}`);
+  return launches;
 }
 
 function binaryPath(installRoot, binaryName) {
@@ -226,15 +318,20 @@ async function smokeIdentity(identity, expectedBinaries) {
     ], projectRoot);
     assert.ok(result.includes("Indexing Estimate"), `Missing indexing estimate for ${binaryName}`);
   }
+  const pluginLaunches = identity.packageName === catalog.product.future.packageName
+    ? await smokePluginLaunch(stageRoot, tarballPath, JSON.parse(readFileSync(configPath, "utf8")),
+      path.join(installRoot, "node_modules", ".bin"))
+    : undefined;
   return {
     name: packed.name, version: packed.version, tarball: tarballPath, integrity,
-    validation: { types, sdkInteropTypes, runtime: true, cliAliases: expectedBinaries },
+    validation: { types, sdkInteropTypes, runtime: true, cliAliases: expectedBinaries, pluginLaunches },
   };
 }
 
 const packages = [
-  await smokeIdentity(catalog.product.current, [catalog.product.current.mcpBinary, "ocbi", "cbi"]),
-  await smokeIdentity(catalog.product.future, [catalog.product.future.mcpBinary, catalog.product.current.mcpBinary, "ocbi", "cbi"]),
+  await smokeIdentity(catalog.product.current, [catalog.product.current.mcpBinary, catalog.release.pluginBinary, "ocbi", "cbi"]),
+  await smokeIdentity(catalog.product.future,
+    [catalog.product.future.mcpBinary, catalog.product.current.mcpBinary, catalog.release.pluginBinary, "ocbi", "cbi"]),
 ];
 writeFileSync(path.join(scratchRoot, "validated-packages.json"), JSON.stringify({
   schemaVersion: 1, version: manifest.version, packages,

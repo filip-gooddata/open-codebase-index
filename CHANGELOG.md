@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Local wrapper rebuild and notifications on Linux**: `contrib/local-wrapper` gains a daily check (`ocbi-check.sh`) that notifies when a store needs a full rebuild after an embedding provider or model change, or when `ocbi prune` would remove 15 or more catalogs, with a Rebuild or Prune action; it never rebuilds or prunes by itself. `ocbi-schedule install|uninstall|status` loads, removes and reports the jobs: launchd agents on macOS, systemd user units (`ocbi-rebuild.service`, `ocbi-check.service`, `ocbi-check.timer`) on Linux, where `ocbi-rebuild` now starts the rebuild through its unit. `ocbi-notify.sh` uses `notify-send` on Linux with an action button where the notification server supports actions, and prints the notification and its command where there is no desktop session.
 
+## [0.38.2-gd.9] - 2026-11-24
+
+Fork release on top of 0.38.2-gd.8. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.
+
+### Changed
+
+- **Claude Code and Codex plugins launch the installed fork release**: `.claude-plugin/plugin.json` and `.mcp.json` run a POSIX `sh` launcher that starts the `ocbi-mcp` on `PATH` (a new bin for `dist/cli.js` that only releases with plugin version checks declare, so older releases and the registry package fall through) (install it with `npm install -g <release tarball>` or the local wrapper's new `mcp` piece) and falls back to `npx -y --package <release tarball> open-codebase-index-mcp`, where the tarball is this repository's GitHub release asset for the plugin's own version, instead of the npm registry package. On Windows the launcher stops with directions (or fails to spawn without `sh`); register the server directly there. `npm run sync:plugin-manifests`, run by `npm version`, writes the URL and version into every plugin and marketplace manifest and into the terminal rebuild command of `/index` and `/status`; the release workflow and the tests refuse stale manifests, and `npm run smoke:package` starts both hosts' servers through the launcher from the packed tarball, once through `npx` and once from the installed binary, and completes the MCP handshake.
+- **Marketplace**: The repository is a Claude Code and Codex marketplace named `open-codebase-index` (`/plugin marketplace add filip-gooddata/open-codebase-index`, `codex plugin marketplace add filip-gooddata/open-codebase-index`), listing `codebase-index`.
+- **Claude Code plugin contents**: The plugin lists the `index`, `status`, `search`, `find`, `peek`, `definition`, `call-graph` and `pr-impact` commands; `reindex` and the OpenCode-only `visualize` are no longer offered to Claude Code. When a forced rebuild is refused (`FORCE_REBUILD_DISABLED`) or the checkout is secondary, `/index` and `/status` give the terminal rebuild with this release's `ocbi` against the primary checkout instead of retrying. The Codex plugin server sets `startup_timeout_sec = 300` and `tool_timeout_sec = 420`. The Codex SessionStart hook moved to `.codex-plugin/hooks.json`, because Claude Code also loads a root `hooks/hooks.json`; Claude Code gets its routing guidance from the server's MCP instructions only.
+
+### Added
+
+- **Plugin version skew warning**: The plugins pass their version in `OCBI_PLUGIN_VERSION`; the server records it next to the host's global config (`codebase-index-plugin-launch.<host>.json`), and `index_status` and `ocbi status` print a `Warning: Version skew: ...` line with the install command when the installed package's version differs. Status JSON gains `versionWarning` in that case.
+- **Local wrapper `mcp` piece**: `install.sh` places `ocbi-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the chosen Node.js, so the plugins start the pinned package without `npx`; it is placed only in front of a package that reports plugin version skew.
+
+### Fixed
+
+- **`ocbi hooks` in a common dir without a working tree**: `ocbi hooks install|status --repo <path>` no longer fails with "must be run in a work tree" when `<path>` is a non-bare git dir whose checkouts are all linked worktrees and `core.hooksPath` is set; the hook is installed in its config without a checkout.
+
+### Removed
+
+- **Local wrapper plugin**: `contrib/local-wrapper/claude-plugin` and the `plugin` piece of `install.sh` (with `--marketplace-dir`) are gone; install the repository's marketplace instead.
+
 ## [0.38.2-gd.8] - 2026-11-23
 
 Fork release on top of 0.38.2-gd.7. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.

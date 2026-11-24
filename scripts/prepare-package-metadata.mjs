@@ -1,13 +1,15 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "node:path";
 import { fileURLToPath } from "url";
+import { pluginServerEntry } from "./plugin-manifests.mjs";
 
 /**
  * @typedef {{
  *   product: {
  *     current: { packageName: string, mcpBinary: string },
  *     future: { packageName: string, mcpBinary: string }
- *   }
+ *   },
+ *   release: { repository: string, tagPrefix: string, marketplaceName: string, pluginBinary: string }
  * }} IdentityCatalog
  */
 
@@ -104,6 +106,10 @@ if (typeof cbiTarget !== "string") {
   fail("Missing ocbi binary entry");
 }
 
+if (packageJson.bin?.[catalog.release.pluginBinary] !== cliTarget) {
+  fail(`${catalog.release.pluginBinary} binary must match ${catalog.product.current.mcpBinary}`);
+}
+
 if (packageJson.bin?.cbi !== cbiTarget) {
   fail("cbi binary alias must match ocbi");
 }
@@ -159,7 +165,7 @@ function prepareManifest(manifestPath, host) {
   if (!server?.command || !Array.isArray(server.args)) {
     fail(`Missing codebase-index MCP server in ${manifestPath}`);
   }
-  server.args = ["-y", "--package", selectedIdentity.packageName, selectedIdentity.mcpBinary, "--host", host];
+  Object.assign(server, pluginServerEntry(catalog, packageJson.version, host));
   if (manifest.author?.url) {
     manifest.author.url = appliedRepositoryUrl;
   }
@@ -179,7 +185,7 @@ function prepareClaudePluginManifest(manifestPath) {
   if (!server?.command || !Array.isArray(server.args)) {
     fail(`Missing codebase-index MCP server in ${manifestPath}`);
   }
-  server.args = ["-y", "--package", selectedIdentity.packageName, selectedIdentity.mcpBinary, "--host", "claude"];
+  Object.assign(server, pluginServerEntry(catalog, packageJson.version, "claude"));
 
   if (manifest.homepage) {
     manifest.homepage = appliedRepositoryUrl;
@@ -234,10 +240,11 @@ function prepareClaudeMarketplace(manifestPath) {
 }
 
 const preparedBins = isCurrentIdentity()
-  ? { [catalog.product.current.mcpBinary]: cliTarget, ocbi: cbiTarget, cbi: cbiTarget }
+  ? { [catalog.product.current.mcpBinary]: cliTarget, [catalog.release.pluginBinary]: cliTarget, ocbi: cbiTarget, cbi: cbiTarget }
   : {
       [catalog.product.future.mcpBinary]: cliTarget,
       [catalog.product.current.mcpBinary]: cliTarget,
+      [catalog.release.pluginBinary]: cliTarget,
       ocbi: cbiTarget,
       cbi: cbiTarget,
     };

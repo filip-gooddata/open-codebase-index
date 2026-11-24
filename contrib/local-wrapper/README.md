@@ -4,8 +4,10 @@ Scripts around a machine-local install of open-codebase-index. They live outside
 nothing in `src/` or `native/` depends on them. Sharing one index across the worktrees of a
 repository is the package's job now, through a
 [repository config](../../docs/configuration.md#repository-config-and-shared-store); these pieces
-add a pinned Claude Code plugin, a detached full rebuild and notifications. Background indexing
-after checkouts ships in the package (`ocbi hooks install`). For why each piece exists, the settings it relies on and the migration from the
+add a detached full rebuild and notifications, and an `ocbi-mcp` for the Claude Code and Codex
+plugins. Background indexing after checkouts ships in the package (`ocbi hooks install`), and the
+plugin comes from the repository's own marketplace
+([installation](../../docs/installation.md#claude-code)). For why each piece exists, the settings it relies on and the migration from the
 `projects.conf` launcher of earlier versions, read [docs/local-wrapper.md](../../docs/local-wrapper.md).
 
 Each piece is self-contained. Install any subset with `install.sh --pieces`, and delete a piece's
@@ -13,7 +15,7 @@ directory once the package does its job natively.
 
 | Piece | Files | Installs to | What it does | Platforms |
 |---|---|---|---|---|
-| `plugin` | `claude-plugin/` (copies of the repository's commands and skill; `index.md` and `status.md` differ) | local marketplace dir | Claude Code plugin that starts `dist/cli.js --host claude` from `$OCBI_HOME/pkg`; a Codex skill plugin in the same marketplace. | macOS, Linux |
+| `mcp` | `mcp/ocbi-mcp` | bin dir | `ocbi-mcp` running `$OCBI_HOME/pkg` with the chosen Node.js; the Claude Code and Codex plugins start the first `ocbi-mcp` on `PATH`, so this serves them without `npx`. Placed only in front of a package that reports plugin version skew (gd.9 or later). | macOS, Linux |
 | `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-check.sh`, `rebuild/ocbi-rebuild`, `rebuild/ocbi-schedule`, `rebuild/*.plist.template`, `rebuild/systemd/` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` (macOS) or `~/.config/systemd/user` (Linux) | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job or systemd user unit. `ocbi-check.sh`: a daily check that notifies when a full rebuild (provider or model change) or a prune is worth doing, and never runs either by itself. `ocbi-schedule install [checkout...]`, `uninstall`, `status`: loads, removes and reports the jobs. | macOS, Linux |
 | `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the checks and the rebuild, with an action button: on macOS when the notifier app is built, on Linux when the notification server supports actions. Without a desktop the notification and its command are printed and logged. | macOS, Linux |
 | `pkg` | none | `$OCBI_HOME/pkg` | `npm install` of the package spec you pass with `--package`. | macOS, Linux |
@@ -38,17 +40,16 @@ them notifications are printed and the rebuild runs detached.
 ```bash
 contrib/local-wrapper/install.sh --dry-run                       # see what would change
 contrib/local-wrapper/install.sh --package <release tarball URL>  # all pieces plus the package
-contrib/local-wrapper/install.sh --pieces plugin,rebuild         # a subset
+contrib/local-wrapper/install.sh --pieces mcp,rebuild            # a subset
 ```
 
 `OCBI_HOME` defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/ocbi`; `--home`, `--bin-dir`,
-`--marketplace-dir`, `--launch-agents-dir`, `--label` and `--node` override the destinations and
-the Node.js the pieces run. The package is installed first, and the plugin and rebuild are
+`--launch-agents-dir`, `--label` and `--node` override the destinations and the Node.js the
+pieces run. The package is installed first, and the mcp and rebuild pieces are
 placed only next to a package with the repository config (gd.7) and `--allow-shared-rebuild`
 (gd.6). Reruns are idempotent. The installer never writes a repository config,
 and never registers anything with Claude Code, Codex, git or launchd: it prints those commands for
-you to run. It removes only the plugin's session-hint hook of earlier versions; their other files
-in `$OCBI_HOME` stay until you remove them as the migration describes. `install.sh --help` lists
+you to run. Files of earlier versions in `$OCBI_HOME` and their local plugin marketplace stay until you remove them as the migration describes. `install.sh --help` lists
 every option.
 
 `ocbi-rebuild.sh` finds `OCBI_HOME` from their own location, so it needs no

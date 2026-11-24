@@ -2,8 +2,10 @@
 # Installs the local-wrapper pieces. See README.md next to this script.
 #
 # Usage: install.sh [options]
-#   --pieces LIST        comma-separated pieces to install (default: plugin,rebuild,notify)
-#                        plugin    Claude Code / Codex local marketplace into --marketplace-dir
+#   --pieces LIST        comma-separated pieces to install (default: mcp,rebuild,notify)
+#                        mcp       ocbi-mcp into --bin-dir: the package in OCBI_HOME/pkg
+#                                  run by --node, which the Claude Code and Codex plugins start
+#                                  from PATH
 #                        rebuild   ocbi-rebuild.sh and ocbi-check.sh into OCBI_HOME, ocbi-rebuild
 #                                  and ocbi-schedule into --bin-dir, and the jobs: on macOS two
 #                                  launchd plists into --launch-agents-dir, on Linux three systemd
@@ -13,13 +15,12 @@
 #                        pkg       npm install of --package into OCBI_HOME/pkg
 #   --home DIR           OCBI_HOME (default: $OCBI_HOME, else ${XDG_DATA_HOME:-$HOME/.local/share}/ocbi)
 #   --bin-dir DIR        default: $HOME/.local/bin
-#   --marketplace-dir D  default: $HOME/.claude/local-marketplaces/ocbi-local
 #   --launch-agents-dir D  default: $HOME/Library/LaunchAgents (macOS only)
 #   --systemd-dir D      default: ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user (Linux only)
 #   --label LABEL        launchd label of the rebuild job (default:
 #                        io.github.open-codebase-index.rebuild); the daily check's label is LABEL
 #                        with .rebuild replaced by .check (else LABEL.check)
-#   --node PATH          Node.js >= 22 the plugin and rebuild run (default: $OCBI_NODE, else
+#   --node PATH          Node.js >= 22 the mcp and rebuild run (default: $OCBI_NODE, else
 #                        the first node >= 22 of the fnm default alias, Homebrew, /usr/local,
 #                        /usr/bin and PATH; a per-shell fnm path is never chosen, it goes away)
 #   --package SPEC       npm spec for the pkg piece: a release tarball URL, a local .tgz, or a
@@ -29,7 +30,7 @@
 # The git post-checkout hook ships in the package (`ocbi hooks install`, printed at the end).
 # Every run is idempotent: unchanged files are left alone, and repository configs are never
 # written. Host registration (Claude Code, Codex, git hooks, launchd, systemd) is printed, never
-# applied.
+# applied. The Claude Code and Codex plugin comes from the repository's marketplace, not from here.
 # Files of earlier wrapper versions in OCBI_HOME (ocbi-mcp.sh, projects.conf, profiles.conf, store
 # directories) are left alone; docs/local-wrapper.md says when to remove them.
 set -u
@@ -37,10 +38,9 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 
-pieces="plugin,rebuild,notify"
+pieces="mcp,rebuild,notify"
 home="${OCBI_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ocbi}"
 bin_dir="$HOME/.local/bin"
-marketplace_dir="$HOME/.claude/local-marketplaces/ocbi-local"
 agents_dir="$HOME/Library/LaunchAgents"
 systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 label="io.github.open-codebase-index.rebuild"
@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
     --pieces) need_arg "$@"; pieces="$2"; shift 2 ;;
     --home) need_arg "$@"; home="$2"; shift 2 ;;
     --bin-dir) need_arg "$@"; bin_dir="$2"; shift 2 ;;
-    --marketplace-dir) need_arg "$@"; marketplace_dir="$2"; shift 2 ;;
+    --marketplace-dir) die "--marketplace-dir went with the plugin piece; see docs/installation.md for the plugin" ;;
     --launch-agents-dir) need_arg "$@"; agents_dir="$2"; shift 2 ;;
     --systemd-dir) need_arg "$@"; systemd_dir="$2"; shift 2 ;;
     --label) need_arg "$@"; label="$2"; shift 2 ;;
@@ -85,12 +85,13 @@ else
   [ -x "$node" ] && [ "$(node_major "$node" || echo 0)" -ge 22 ] || die "--node $node is not a Node.js >= 22"
 fi
 
-for path in "$home" "$bin_dir" "$marketplace_dir" "$agents_dir" "$systemd_dir" "$node"; do
+for path in "$home" "$bin_dir" "$agents_dir" "$systemd_dir" "$node"; do
   case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
   case "$path" in
     *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
   esac
 done
+while [ "${home%/}" != "$home" ] && [ "$home" != / ]; do home="${home%/}"; done
 [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid --label $label"
 case "$label" in *.rebuild) check_label="${label%.rebuild}.check" ;; *) check_label="$label.check" ;; esac
 [ -n "$package" ] && pieces="$pieces,pkg"
@@ -98,7 +99,8 @@ case "$label" in *.rebuild) check_label="${label%.rebuild}.check" ;; *) check_la
 has_piece() { case ",$pieces," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 for p in $(printf '%s' "$pieces" | tr ',' ' '); do
   case "$p" in
-    plugin | rebuild | notify | pkg) ;;
+    mcp | rebuild | notify | pkg) ;;
+    plugin) die "the plugin piece is gone; install the repository's plugin marketplace (docs/installation.md)" ;;
     hook) die "the hook piece is gone: the package ships the hook, run ocbi hooks install --repo <repo> (docs/local-wrapper.md)" ;;
     *) die "unknown piece $p" ;;
   esac
@@ -146,6 +148,11 @@ place() {
   if [ "$preflight" = 1 ]; then
     [ -f "$src" ] && [ -r "$src" ] || die "cannot read $src; nothing was installed"
     [ ! -d "$dest" ] || [ -L "$dest" ] || die "$dest is a directory; nothing was installed"
+    local parent
+    parent="$(dirname "$dest")"
+    # Stop at the nearest path that exists or is a symlink; a dangling link blocks like a file.
+    while [ ! -e "$parent" ] && [ ! -L "$parent" ] && [ "$parent" != / ]; do parent="$(dirname "$parent")"; done
+    [ -d "$parent" ] || die "$parent is not a directory, so $dest cannot be installed; nothing was installed"
     return 0
   fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/ocbi-install.XXXXXX")" || die "mktemp failed"
@@ -181,19 +188,46 @@ retire() {
   say "  removed  $1"
 }
 
-install_plugin() {
-  local m="$marketplace_dir" p="$here/claude-plugin" name
-  say "plugin -> $m"
-  place 644 "$p/.claude-plugin/marketplace.json" "$m/.claude-plugin/marketplace.json" render
-  place 644 "$p/.agents/plugins/marketplace.json" "$m/.agents/plugins/marketplace.json"
-  place 644 "$p/plugins/codebase-index/.claude-plugin/plugin.json" "$m/plugins/codebase-index/.claude-plugin/plugin.json" render
-  place 644 "$p/plugins/codebase-index/.codex-plugin/plugin.json" "$m/plugins/codebase-index/.codex-plugin/plugin.json" render
-  # The session hint of earlier versions; the server's own MCP instructions carry that guidance.
-  retire "$m/plugins/codebase-index/hooks/hooks.json"
-  for name in call-graph definition find index peek pr-impact search status; do
-    place 644 "$p/plugins/codebase-index/commands/$name.md" "$m/plugins/codebase-index/commands/$name.md"
-  done
-  place 644 "$p/plugins/codebase-index/skills/codebase-search/SKILL.md" "$m/plugins/codebase-index/skills/codebase-search/SKILL.md"
+# The plugins prefer an ocbi-mcp on PATH to their pinned npx fallback, so place one
+# only in front of a package that can run and that reports a plugin version skew (it reads
+# OCBI_PLUGIN_VERSION). Otherwise retire a shim this installer placed earlier, so the plugins reach
+# npx again, and leave any other file at the destination alone.
+mcp_shim_marker='# ocbi-mcp of the package in '
+# is_own_mcp_shim DEST: DEST is a shim this installer rendered for this OCBI_HOME's package, also
+# when it was rendered with another spelling of the same directory (a symlink alias).
+is_own_mcp_shim() {
+  local target shim_home
+  [ -f "$1" ] && [ ! -L "$1" ] && grep -qF -- "$mcp_shim_marker" "$1" || return 1
+  target="$(sed -n 's/^exec "[^"]*" "\(.*\)" "\$@"$/\1/p' "$1")"
+  shim_home="${target%/pkg/node_modules/open-codebase-index/dist/cli.js}"
+  [ -n "$target" ] && [ "$shim_home" != "$target" ] || return 1
+  # -ef compares the directories the kernel resolves (device and inode), not logical spellings.
+  [ "$shim_home" = "$home" ] || [ "$shim_home" -ef "$home" ]
+}
+install_mcp() {
+  local dist="$home/pkg/node_modules/open-codebase-index/dist" dest="$bin_dir/ocbi-mcp"
+  if [ "$preflight" = 1 ]; then
+    # --package may make the shim eligible, so check the destination whatever is installed now.
+    place 755 "$here/mcp/ocbi-mcp" "$dest" render
+    return 0
+  fi
+  say "mcp -> $bin_dir"
+  if [ "$dry_run" = 1 ] && has_piece pkg; then
+    say "  would place  $dest if $package reports plugin version skew"
+    return 0
+  fi
+  local reason=""
+  if [ ! -f "$dist/cli.js" ]; then
+    reason="no package in $home/pkg; the plugins fall back to npx until you rerun with --package"
+  elif ! grep -rqs --include='*.js' OCBI_PLUGIN_VERSION "$dist"; then
+    reason="the package in $home/pkg predates plugin version checks; rerun with --package <gd.9 or later spec>"
+  fi
+  if [ -n "$reason" ]; then
+    say "  skipped: $reason"
+    if is_own_mcp_shim "$dest"; then retire "$dest"; fi
+    return 0
+  fi
+  place 755 "$here/mcp/ocbi-mcp" "$dest" render
 }
 
 install_rebuild() {
@@ -233,32 +267,54 @@ install_pkg() {
   [ "$dry_run" = 1 ] && return 0
   local js
   for js in cli.js cbi.js; do
-    [ -f "$home/pkg/node_modules/open-codebase-index/dist/$js" ] ||
+    [ -f "$home/pkg/node_modules/open-codebase-index/dist/$js" ] || {
+      retire_stale_mcp_shim
       die "$package did not install open-codebase-index with dist/$js; the servers run cli.js, the hook and rebuild cbi.js"
+    }
   done
 }
 
-# The plugin and rebuild need a package with the repository config (gd.7) and the shared
+# The mcp and rebuild need a package with the repository config (gd.7) and the shared
 # rebuild override (gd.6). Checked before any of them is placed; a package that is not installed
 # yet only gets the reminder at the end.
+# An unusable package also takes down a shim this installer placed in front of it, so the plugins
+# reach their npx fallback while the install stops; any other file at the destination stays.
+retire_stale_mcp_shim() {
+  local dest="$bin_dir/ocbi-mcp"
+  has_piece mcp && [ "$dry_run" = 0 ] || return 0
+  is_own_mcp_shim "$dest" || return 0
+  rm -f "$dest" && printf 'install.sh: removed %s, whose package is unusable, so the plugins fall back to npx\n' "$dest" >&2
+}
+
 check_pkg() {
   local dist="$home/pkg/node_modules/open-codebase-index/dist"
-  has_piece plugin || has_piece rebuild || return 0
+  has_piece mcp || has_piece rebuild || return 0
   [ -e "$home/pkg/node_modules/open-codebase-index" ] || return 0
-  [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] ||
+  [ -f "$dist/cbi.js" ] && [ -f "$dist/cli.js" ] || {
+    retire_stale_mcp_shim
     die "the package in $home/pkg has no dist/cbi.js or dist/cli.js; rerun with --package <gd.7 or later spec>; nothing else was installed"
-  grep -qs -- --allow-shared-rebuild "$dist/cbi.js" && grep -rqs --include='*.js' 'checkouts.primary.path' "$dist" ||
+  }
+  grep -qs -- --allow-shared-rebuild "$dist/cbi.js" && grep -rqs --include='*.js' 'checkouts.primary.path' "$dist" || {
+    retire_stale_mcp_shim
     die "the package in $home/pkg predates the repository config (gd.7) or --allow-shared-rebuild (gd.6); rerun with --package <gd.7 or later spec>; nothing else was installed"
+  }
 }
 
 install_selected() {
   if [ "$preflight" = 1 ]; then
+    # Destinations first: a package check that fails may retire this installer's ocbi-mcp shim,
+    # which must not happen when another destination would stop the install anyway.
+    install_pieces
     if has_piece pkg; then install_pkg; else check_pkg; fi
-  else
-    has_piece pkg && install_pkg
-    [ "$dry_run" = 1 ] || check_pkg
+    return 0
   fi
-  has_piece plugin && install_plugin
+  has_piece pkg && install_pkg
+  [ "$dry_run" = 1 ] || check_pkg
+  install_pieces
+}
+
+install_pieces() {
+  has_piece mcp && install_mcp
   has_piece rebuild && install_rebuild
   has_piece notify && install_notify
   return 0
@@ -282,15 +338,13 @@ cat <<EOF
   $here/repository-config.example.json.
   Coming from projects.conf: follow the migration in docs/local-wrapper.md first.
 EOF
-if has_piece plugin; then
-  cat <<EOF
-
-* Claude Code: add the local marketplace and enable the plugin:
-    claude plugin marketplace add "$marketplace_dir"
-    claude plugin install codebase-index@ocbi-local
-EOF
-fi
 cat <<EOF
+
+* Claude Code: install the plugin from the repository marketplace (docs/installation.md). It
+  starts the first ocbi-mcp on PATH; with the mcp piece that is
+  $bin_dir/ocbi-mcp, so keep $bin_dir on the PATH the host starts with.
+    claude plugin marketplace add filip-gooddata/open-codebase-index
+    claude plugin install codebase-index@open-codebase-index
 
 * Codex (~/.codex/config.toml): tool_timeout_sec must exceed indexing.autoIndexWaitMs.
     [mcp_servers.codebase-index]

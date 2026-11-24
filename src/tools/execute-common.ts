@@ -27,6 +27,7 @@ import {
 } from "./operations.js";
 import { formatCostEstimate, formatDryRunEstimate } from "../utils/cost.js";
 import { formatRepositoryRouteStatus } from "../config/repository-route.js";
+import { formatPluginVersionSkew } from "../plugin-version.js";
 import { resolveCodebaseEditContext } from "./edit-context.js";
 import { resolveCodebaseContext } from "./context.js";
 import {
@@ -109,7 +110,12 @@ export async function executeIndexStatus(
     omitLegacy: options.omitLegacyRoute,
   });
   const statusText = formatStatus(status);
-  return { text: routeText ? `${statusText}\n\n${routeText}` : statusText, details: { ...status } };
+  const versionWarning = formatPluginVersionSkew(host);
+  const sections = [statusText, routeText, versionWarning ? `Warning: ${versionWarning}` : ""].filter(Boolean);
+  return {
+    text: sections.join("\n\n"),
+    details: versionWarning ? { ...status, versionWarning } : { ...status },
+  };
 }
 
 export async function executeIndexHealthCheck(

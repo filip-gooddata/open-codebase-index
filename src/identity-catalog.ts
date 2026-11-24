@@ -17,9 +17,19 @@ export interface NativeIdentity {
   binaryName: string;
 }
 
+/** Where the fork publishes release tarballs that the plugin manifests launch. */
+export interface ReleaseIdentity {
+  repository: string;
+  tagPrefix: string;
+  marketplaceName: string;
+  /** MCP bin the plugin launcher looks for on PATH; only releases that report plugin version skew declare it. */
+  pluginBinary: string;
+}
+
 export interface IdentityCatalog {
   product: ProductIdentityCollection;
   native: NativeIdentity;
+  release: ReleaseIdentity;
 }
 
 export const IDENTITY_CATALOG = identityCatalogJson as IdentityCatalog;

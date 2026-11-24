@@ -103,6 +103,12 @@ The first index creates embeddings. Later runs reuse unchanged content and proce
 
 See [Installation and host setup](docs/installation.md) for complete instructions.
 
+The Claude Code and Codex plugins install from this repository's marketplace and start the `ocbi-mcp` server command installed on your machine, falling back to the GitHub release tarball of the plugin's version through `npx` when none is installed. Install the server first, at the plugin's version (see [the plugin server install](docs/installation.md#server-for-the-claude-code-and-codex-plugins)):
+
+- Server: `npm install -g https://github.com/filip-gooddata/open-codebase-index/releases/download/v<version>/open-codebase-index-<version>.tgz`
+- Claude Code: `/plugin marketplace add filip-gooddata/open-codebase-index`, then `/plugin install codebase-index@open-codebase-index`
+- Codex: `codex plugin marketplace add filip-gooddata/open-codebase-index`, then `codex plugin add codebase-index@open-codebase-index`
+
 ## Recommended workflow
 
 1. **Check stored readiness when unknown** with `index_status` or `/status`; use `index_status({checkFreshness:true})` when source/HEAD freshness matters. Ordinary status does not scan source; index only when needed.

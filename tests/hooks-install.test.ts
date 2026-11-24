@@ -50,6 +50,20 @@ function createBareLayout(root: string): { bare: string; worktree: string } {
   return { bare: fs.realpathSync(bare), worktree: fs.realpathSync(worktree) };
 }
 
+/**
+ * A git dir that is its own common dir with core.bare=false and no working tree of its own: every
+ * checkout is a linked worktree, so `git rev-parse --show-toplevel` fails at its root.
+ */
+function createCommonDirLayout(root: string): { common: string; worktree: string } {
+  const seed = createRepository(path.join(root, "seed"));
+  const common = path.join(root, "repo");
+  fs.renameSync(path.join(seed, ".git"), common);
+  git(common, "config", "core.bare", "false");
+  const worktree = path.join(root, "checkouts", "feature");
+  git(common, "worktree", "add", "-q", "-b", "feature", worktree, "main");
+  return { common: fs.realpathSync(common), worktree: fs.realpathSync(worktree) };
+}
+
 function spec(overrides: Partial<HookCommandSpec> = {}): HookCommandSpec {
   return { nodePath: process.execPath, entryScript: CBI, host: "codex", ...overrides };
 }
@@ -115,6 +129,44 @@ describe.runIf(CONFIG_HOOKS)("config-based install", () => {
     expect(uninstallPostCheckoutHook(repo).changed).toBe(true);
     expect(uninstallPostCheckoutHook(repo).changed).toBe(false);
     expect(getPostCheckoutHookStatus(repo, CBI, true).installed).toBe(false);
+  });
+
+  it("installs and reports from a non-bare common dir that has no working tree of its own", async () => {
+    const { common, worktree } = createCommonDirLayout(tempDir);
+    expect(spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: common, env: gitEnv }).status).not.toBe(0);
+    const repo = resolveHookRepository(common);
+    expect(repo).toMatchObject({ commonDir: common, bare: false, workTree: null });
+    expect(resolveHookRepository(worktree)).toMatchObject({ commonDir: common, workTree: worktree });
+
+    // core.hooksPath makes status and install look for a working tree around the hooks dir.
+    git(common, "config", "core.hooksPath", "hooks-shared");
+    const cli = captureCli();
+    expect(await runHooksCli(["install", "--repo", common, "--host", "claude", "--method", "config"], tempDir, cli.deps)).toBe(0);
+    expect(fs.readFileSync(path.join(common, "config"), "utf-8")).toContain(`[hook "${HOOK_CONFIG_NAME}"]`);
+    expect(await runHooksCli(["status", "--repo", common, "--host", "claude"], tempDir, cli.deps)).toBe(0);
+    expect(cli.err.join("\n")).not.toContain("must be run in a work tree");
+    expect(getPostCheckoutHookStatus(resolveHookRepository(worktree), CBI, true).installed).toBe(true);
+
+    git(common, "config", "--unset", "core.hooksPath");
+    expect(await runHooksCli(["status", "--repo", common, "--host", "claude"], tempDir, cli.deps)).toBe(0);
+  });
+
+  it("keeps the working tree a git dir names through core.worktree", async () => {
+    const checkout = createRepository(path.join(tempDir, "checkout"));
+    const gitDir = path.join(tempDir, "external.git");
+    fs.renameSync(path.join(checkout, ".git"), gitDir);
+    git(gitDir, "config", "core.worktree", checkout);
+    git(gitDir, "config", "core.hooksPath", path.join(checkout, ".githooks"));
+    // git reports the git dir as outside the working tree but still names it.
+    expect(git(gitDir, "rev-parse", "--is-inside-work-tree").trim()).toBe("false");
+    const repo = resolveHookRepository(gitDir);
+    expect(repo).toMatchObject({ commonDir: fs.realpathSync(gitDir), bare: false, workTree: checkout });
+
+    const cli = captureCli();
+    expect(await runHooksCli(["install", "--repo", gitDir, "--host", "claude", "--method", "file"], tempDir, cli.deps)).toBe(0);
+    expect(fs.existsSync(path.join(checkout, ".githooks", "post-checkout"))).toBe(true);
+    expect(getPostCheckoutHookStatus(resolveHookRepository(gitDir), CBI, true).installed).toBe(true);
+    expect(await runHooksCli(["status", "--repo", gitDir, "--host", "claude"], tempDir, cli.deps)).toBe(0);
   });
 
   it("writes the bare repository's config and is seen from its worktrees", () => {

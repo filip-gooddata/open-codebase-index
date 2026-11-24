@@ -1,26 +1,29 @@
-.claude-plugin/marketplace.json
-  s_28b9ab6f248fde::t_4facfe13e9ba49 13
-.claude-plugin/plugin.json
-  s_28b9ab6f248fde::t_a0aa1ef6080d0d 3,37,43
-.codex-plugin/plugin.json
-  s_28b9ab6f248fde::t_5a9aea22cfed61 3
 .mcp.json
   s_28b9ab6f248fde::t_2839bb15c43315 7,15
-CHANGELOG.md
-  s_28b9ab6f248fde::t_e94f736f93730a 10-13
-commands/index.md
-  s_28b9ab6f248fde::t_181b367e946fbf 36
-commands/status.md
-  s_28b9ab6f248fde::t_bca46b777b9404 26
-package-lock.json
-  s_28b9ab6f248fde::t_5897ca85c48d06 3,9
 package.json
   s_28b9ab6f248fde::t_33e3939c25c8d2 3
+CHANGELOG.md
+  s_28b9ab6f248fde::t_e94f736f93730a 10-13
+  s_28b9ab6f248fde::t_dad5357051b05c 18
+.claude-plugin/plugin.json
+  s_28b9ab6f248fde::t_a0aa1ef6080d0d 3,37,43
+commands/status.md
+  s_28b9ab6f248fde::t_bca46b777b9404 26
+.claude-plugin/marketplace.json
+  s_28b9ab6f248fde::t_4facfe13e9ba49 13
+package-lock.json
+  s_28b9ab6f248fde::t_5897ca85c48d06 3,9
+commands/index.md
+  s_28b9ab6f248fde::t_181b367e946fbf 36
+docs/configuration.md
+  s_28b9ab6f248fde::t_af616c16504840 114
+.codex-plugin/plugin.json
+  s_28b9ab6f248fde::t_5a9aea22cfed61 3
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.7.5",
-  "base_commit_sha": "142ef6666f7d1c45707f3125ff0cd5e7a92df103",
+  "base_commit_sha": "33db05f49d5cd96b01427443540f33decff445b0",
   "prompts": {},
   "sessions": {
     "s_28b9ab6f248fde": {

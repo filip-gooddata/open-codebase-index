@@ -106,6 +106,8 @@ interface LockOwner {
   hostname: string;
   startedAt: string;
   released?: boolean;
+  /** The holder process's start, as processIdentity reads it; set by `localOwners` locks. */
+  process?: string;
 }
 
 function getErrorCode(error: unknown): string | undefined {
@@ -122,9 +124,9 @@ function parseLockOwner(content: string): LockOwner | null {
   try {
     const parsed: unknown = JSON.parse(content);
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { pid, hostname, startedAt, released } = parsed as Record<string, unknown>;
+    const { pid, hostname, startedAt, released, process: identity } = parsed as Record<string, unknown>;
     if (typeof pid !== "number" || typeof hostname !== "string" || typeof startedAt !== "string") return null;
-    return { pid, hostname, startedAt, released: released === true };
+    return { pid, hostname, startedAt, released: released === true, ...(typeof identity === "string" ? { process: identity } : {}) };
   } catch {
     return null;
   }
@@ -214,20 +216,35 @@ function inspectGeneration(lockPrefix: string, generation: number, localOwners =
 }
 
 /**
- * True when the live process with the owner's pid started after the owner took the lock, so it is
- * another process that reused the pid. Unknown start times count as the owner.
+ * When the process `pid` started, in a form that stays the same for that process and differs for
+ * a later one with the same pid, whatever the wall clock does: on Linux its start in clock ticks
+ * since boot, elsewhere the start time the kernel stored at fork as `ps` prints it. Null when the
+ * process is gone or its start cannot be read.
  */
-function isReusedPid(owner: LockOwner): boolean {
-  const takenAt = Date.parse(owner.startedAt);
-  if (!Number.isFinite(takenAt)) return false;
-  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(owner.pid)], {
+function processIdentity(pid: number): string | null {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    // Field 22, starttime; the fields after the command name start at field 3.
+    if (fields[19]) return `ticks:${fields[19]}`;
+  } catch {
+    // No procfs (macOS), or the process is gone.
+  }
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf-8",
     env: { ...process.env, LC_ALL: "C" },
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 5_000,
   });
-  const startedAt = result.status === 0 ? Date.parse(result.stdout.trim()) : Number.NaN;
-  return Number.isFinite(startedAt) && startedAt > takenAt;
+  const started = result.status === 0 ? result.stdout.trim() : "";
+  return started ? `lstart:${started}` : null;
+}
+
+/** True when the owner's pid now runs another process than the one that took the lock. */
+function isReusedPid(owner: LockOwner): boolean {
+  if (owner.process === undefined) return false;
+  const current = processIdentity(owner.pid);
+  return current !== null && current !== owner.process;
 }
 
 const ACQUIRE_ATTEMPTS = 8;
@@ -261,13 +278,15 @@ function writeOwnerFile(target: string, owner: LockOwner): string {
   return temp;
 }
 
-function newOwner(pid: number): LockOwner {
-  return { pid, hostname: os.hostname(), startedAt: new Date().toISOString() };
+function newOwner(pid: number, withIdentity: boolean): LockOwner {
+  const owner: LockOwner = { pid, hostname: os.hostname(), startedAt: new Date().toISOString() };
+  const identity = withIdentity ? processIdentity(pid) : null;
+  return identity === null ? owner : { ...owner, process: identity };
 }
 
 /** Atomically creates `target` naming `pid` as its owner; false when it exists. */
-function tryLinkOwnerFile(target: string, pid: number): boolean {
-  const temp = writeOwnerFile(target, newOwner(pid));
+function tryLinkOwnerFile(target: string, pid: number, withIdentity = false): boolean {
+  const temp = writeOwnerFile(target, newOwner(pid, withIdentity));
   try {
     fs.linkSync(temp, target);
     return true;
@@ -284,7 +303,8 @@ export interface AcquireRefreshLockOptions {
   beforeLink?: (generation: number) => void;
   /**
    * The lock lives on this machine only: a holder is judged by its pid whatever hostname it
-   * recorded (the hostname may have changed since), and a pid a later process reused is gone.
+   * recorded (the hostname may have changed since), and it records its process's start, so a pid
+   * a later process reused is gone. No wall-clock comparison is involved.
    */
   localOwners?: boolean;
 }
@@ -300,7 +320,7 @@ export function tryAcquireRefreshLock(lockPrefix: string, pid: number = process.
     if (held) return false;
     const next = highest + 1;
     options.beforeLink?.(next);
-    if (!tryLinkOwnerFile(lockGenerationPath(lockPrefix, next), pid)) continue;
+    if (!tryLinkOwnerFile(lockGenerationPath(lockPrefix, next), pid, options.localOwners)) continue;
     if (highestLockGeneration(lockPrefix) !== next) {
       // A generation above ours exists: we recreated one an earlier holder had already passed.
       fs.rmSync(lockGenerationPath(lockPrefix, next), { force: true });

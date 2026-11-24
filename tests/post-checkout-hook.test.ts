@@ -616,23 +616,25 @@ describe("post-checkout hook", () => {
       expect(fs.existsSync(path.join(paths.stateDir, "daily-check.lock.1"))).toBe(false);
     });
 
-    it("keeps a live daily claim however old, and recovers a dead or reused one under another hostname", async () => {
+    it("keeps a live daily claim whatever the clocks say, and recovers a dead or reused one under another hostname", async () => {
       const { repo, commonDir, paths } = setup("foreign-claim");
-      const generation = path.join(paths.stateDir, "daily-check.lock.1");
-      const writeOwner = (pid: number, startedAt: Date): void => {
-        fs.writeFileSync(generation, `${JSON.stringify({ pid, hostname: "previous-hostname", startedAt: startedAt.toISOString() })}\n`);
-      };
+      const claim = path.join(paths.stateDir, "daily-check.lock");
+      const generation = `${claim}.1`;
       let checks = 0;
       const checkCompatibility = (): CompatibilityVerdict => { checks += 1; return { compatible: true }; };
       const run = (now: number) => runWorker(repo, commonDir, { checkCompatibility, now: () => now }).passes;
 
-      // A live owner that took the claim after it started: held, even with the clock days ahead.
-      writeOwner(process.pid, new Date());
+      // A live holder, recorded under another hostname with a startedAt far in the future (a clock
+      // that stepped back since), with the checking worker's clock days ahead: still held.
+      expect(tryAcquireRefreshLock(claim, process.pid, { localOwners: true })).toBe(true);
+      const owner = JSON.parse(fs.readFileSync(generation, "utf-8")) as Record<string, unknown>;
+      expect(typeof owner.process).toBe("string");
+      fs.writeFileSync(generation, `${JSON.stringify({ ...owner, hostname: "previous-hostname", startedAt: "2999-01-01T00:00:00.000Z" })}\n`);
       await run(Date.now() + 3 * 24 * 60 * 60 * 1000);
       expect(checks).toBe(0);
 
-      // The same pid, but its process started after the claim was taken: a reused pid.
-      writeOwner(process.pid, new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
+      // The same pid with another process start recorded: the pid was reused.
+      fs.writeFileSync(generation, `${JSON.stringify({ ...owner, hostname: "previous-hostname", process: "lstart:some other process" })}\n`);
       await run(Date.now());
       expect(checks).toBe(1);
 
@@ -640,10 +642,10 @@ describe("post-checkout hook", () => {
       for (const name of fs.readdirSync(paths.stateDir)) {
         if (name.startsWith("daily-check.lock.")) fs.rmSync(path.join(paths.stateDir, name));
       }
-      writeOwner(deadPid(), new Date());
+      fs.writeFileSync(generation, `${JSON.stringify({ pid: deadPid(), hostname: "previous-hostname", startedAt: new Date().toISOString() })}\n`);
       await run(Date.now());
       expect(checks).toBe(2);
-      expect(isRefreshLockHeld(path.join(paths.stateDir, "daily-check.lock"))).toBe(false);
+      expect(isRefreshLockHeld(claim)).toBe(false);
     });
 
     it("does not offer a prune later that day while the store still needs a rebuild", async () => {

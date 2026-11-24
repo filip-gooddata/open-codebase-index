@@ -28,6 +28,11 @@ export interface HookRepository {
   repo: string;
   commonDir: string;
   bare: boolean;
+  /**
+   * Top level of the working tree `repo` is in, or null when it is in none: a bare repository, or a
+   * non-bare common dir whose checkouts are all linked worktrees.
+   */
+  workTree: string | null;
 }
 
 interface GitResult {
@@ -64,13 +69,18 @@ function realpathOrResolve(filePath: string): string {
   }
 }
 
-/** Resolves a checkout, linked worktree or bare repository to its git common dir. */
+/**
+ * Resolves a checkout, linked worktree, bare repository, or a git dir with no working tree of its
+ * own (core.bare=false, every checkout a linked worktree) to its git common dir.
+ */
 export function resolveHookRepository(repo: string): HookRepository {
   const absolute = path.resolve(repo);
   if (!fs.existsSync(absolute)) throw new Error(`Repository path does not exist: ${absolute}`);
   const commonDir = stripNewline(gitOk(absolute, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
   const bare = gitOk(absolute, ["rev-parse", "--is-bare-repository"]).trim() === "true";
-  return { repo: absolute, commonDir: realpathOrResolve(commonDir), bare };
+  const inWorkTree = !bare && gitOk(absolute, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
+  const workTree = inWorkTree ? realpathOrResolve(stripNewline(gitOk(absolute, ["rev-parse", "--show-toplevel"]))) : null;
+  return { repo: absolute, commonDir: realpathOrResolve(commonDir), bare, workTree };
 }
 
 /** Config-based hooks (`hook.<name>.event`) come with `git hook list`; older git lacks both. */
@@ -207,7 +217,7 @@ export function resolveHookFileLocation(repository: HookRepository): HookFileLoc
   const location: HookFileLocation = { dir, file: path.join(dir, "post-checkout"), hooksPath, error: null, warnings: [] };
   if (hooksPath === null) return location;
 
-  const topLevel = repository.bare ? null : realpathOrResolve(stripNewline(gitOk(repository.repo, ["rev-parse", "--show-toplevel"])));
+  const topLevel = repository.workTree;
   if (isInside(dir, repository.commonDir)) return location;
   if (!(topLevel !== null && isInside(dir, topLevel))) {
     location.error = `core.hooksPath is ${hooksPath} (${dir}), outside this repository, so other repositories may share it. Use a git with config-based hooks, or call \`ocbi hook post-checkout "$@"\` from that hook yourself.`;

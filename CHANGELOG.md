@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plugin version skew warning**: The plugins pass their version in `OCBI_PLUGIN_VERSION`; the server records it next to the host's global config (`codebase-index-plugin-launch.<host>.json`), and `index_status` and `ocbi status` print a `Warning: Version skew: ...` line with the install command when the installed package's version differs. Status JSON gains `versionWarning` in that case.
 - **Local wrapper `mcp` piece**: `install.sh` places `ocbi-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the chosen Node.js, so the plugins start the pinned package without `npx`; it is placed only in front of a package that reports plugin version skew.
 
+### Fixed
+
+- **`ocbi hooks` in a common dir without a working tree**: `ocbi hooks install|status --repo <path>` no longer fails with "must be run in a work tree" when `<path>` is a non-bare git dir whose checkouts are all linked worktrees and `core.hooksPath` is set; the hook is installed in its config without a checkout.
+
 ### Removed
 
 - **Local wrapper plugin**: `contrib/local-wrapper/claude-plugin` and the `plugin` piece of `install.sh` (with `--marketplace-dir`) are gone; install the repository's marketplace instead.

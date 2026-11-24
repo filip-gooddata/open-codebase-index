@@ -40,8 +40,8 @@ is none ([the plugin server](installation.md#server-for-the-claude-code-and-code
 
 | Piece | Why it is still here |
 |---|---|
-| `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job or systemd user unit that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. A daily check (`ocbi-check.sh`) notifies when the store needs a full rebuild or a prune; see [Scheduled check](#scheduled-check). |
-| `notify` | Desktop notifications for the rebuild, the daily check and, through `ocbi hooks install --stale-notify`, the post-checkout hook's daily stale-catalog check, on macOS and Linux. |
+| `rebuild` | `ocbi-rebuild [checkout]`: a full rebuild from the primary, then an incremental index of every other worktree, in a launchd job or systemd user unit that outlives the terminal, waiting out `INDEX_BUSY` and notifying at the start and end. The post-checkout hook tells you when a rebuild is needed; an optional timer (`ocbi-check.sh`) does the same on a clock; see [Scheduled check](#scheduled-check). |
+| `notify` | Desktop notifications for the rebuild, the optional scheduled check and, through `ocbi hooks install --stale-notify`, the post-checkout hook's daily compatibility and stale-catalog checks, on macOS and Linux. |
 | `mcp` | `ocbi-mcp` in the bin dir, running `$OCBI_HOME/pkg` with the Node.js `install.sh` found. The Claude Code and Codex plugins start the first `ocbi-mcp` on `PATH`, so this gives them the pinned package, with no `npx` download and no network. It is placed only in front of an installed package that reports plugin version skew (0.38.2-gd.9 or later); otherwise the installer says why it skipped it and leaves the bin dir alone. |
 | `pkg` | `npm install` of a pinned package spec into `$OCBI_HOME/pkg`. |
 
@@ -102,8 +102,12 @@ your paths:
   --host claude --stale-notify <OCBI_HOME>/ocbi-notify.sh
 ```
 
-`--stale-notify` hands the hook's daily stale-catalog count to the `notify` piece; leave it out to
-only log the count. Upgrading the package in `$OCBI_HOME/pkg` keeps the hook working, since its
+`--stale-notify` hands the hook's once-a-day checks to the `notify` piece: "Rebuild needed" with a
+Rebuild action (`ocbi-rebuild <checkout>`) when the store no longer matches the configured
+embedding provider or model, and "Worth a cleanup" with a Prune action when 15 or more catalogs of
+deleted branches and worktrees have piled up. Leave it out to only log both. The hook never
+rebuilds or prunes; the action waits for your click. For the Rebuild action, `ocbi-rebuild` must be
+on the `PATH` git runs the hook with; otherwise the notification names the manual command. Upgrading the package in `$OCBI_HOME/pkg` keeps the hook working, since its
 command names that unversioned path.
 
 ### Replacing the shell hook
@@ -219,9 +223,17 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
   [Human CLI](installation.md#human-cli); with the bundle's install, run it as
   `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js prune`. The post-checkout
   hook logs the count once a day and notifies past `OCBI_STALE_THRESHOLD` (15) when installed
-  with `--stale-notify`.
+  with `--stale-notify`. Stale catalogs never need a rebuild.
+- A full rebuild is needed only when the store's embeddings no longer match the configured
+  provider or model: after changing `embeddingProvider` or `embeddingModel`, or after a release
+  that changes the embedding format. `ocbi status` reports it as `compatibility`, and the
+  post-checkout hook checks it once a day.
 
 ## Scheduled check
+
+Optional. The post-checkout hook, installed with `--stale-notify`, already runs both checks below
+once a day after a checkout, which is where config and release changes show up. The timer is for
+machines that rarely check out a branch, or that want the check on a clock (systemd users, say).
 
 `ocbi-check.sh` runs once a day (10:00, or at the next wake or boot after a missed run) for each
 checkout listed in `$OCBI_HOME/check.conf`, one repository at a time:
@@ -232,11 +244,9 @@ checkout listed in `$OCBI_HOME/check.conf`, one repository at a time:
   notifies "Worth a cleanup" with a Prune action that runs `ocbi prune --apply` for that checkout
   and logs to `$OCBI_HOME/logs/prune.log`.
 
-The post-checkout hook's own stale check (`ocbi hooks install --stale-notify
-<OCBI_HOME>/ocbi-notify.sh`) sends the same "Worth a cleanup" notification after checkouts;
-`ocbi-notify.sh` turns the command at the end of its message into a Run action. To get it only
-once a day from one of them, set `OCBI_STALE_CHECK=0` for the daily check (it then checks only
-for needed rebuilds), or leave `--stale-notify` out of the hook.
+The post-checkout hook (`ocbi hooks install --stale-notify <OCBI_HOME>/ocbi-notify.sh`) sends
+the same two notifications after checkouts. With both in place you can get each notice twice a
+day; drop the timer (`ocbi-schedule uninstall`), or leave `--stale-notify` out of the hook.
 
 It never rebuilds or prunes by itself, and checks nothing while a rebuild runs. Its log is
 `$OCBI_HOME/logs/check.log`. Load the jobs and name the checkouts once:

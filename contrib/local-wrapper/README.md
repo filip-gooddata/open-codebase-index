@@ -16,7 +16,7 @@ directory once the package does its job natively.
 | Piece | Files | Installs to | What it does | Platforms |
 |---|---|---|---|---|
 | `mcp` | `mcp/ocbi-mcp` | bin dir | `ocbi-mcp` running `$OCBI_HOME/pkg` with the chosen Node.js; the Claude Code and Codex plugins start the first `ocbi-mcp` on `PATH`, so this serves them without `npx`. Placed only in front of a package that reports plugin version skew (gd.9 or later). | macOS, Linux |
-| `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-check.sh`, `rebuild/ocbi-rebuild`, `rebuild/ocbi-schedule`, `rebuild/*.plist.template`, `rebuild/systemd/` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` (macOS) or `~/.config/systemd/user` (Linux) | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job or systemd user unit. `ocbi-check.sh`: a daily check that notifies when a full rebuild (provider or model change) or a prune is worth doing, and never runs either by itself. `ocbi-schedule install [checkout...]`, `uninstall`, `status`: loads, removes and reports the jobs. | macOS, Linux |
+| `rebuild` | `rebuild/ocbi-rebuild.sh`, `rebuild/ocbi-check.sh`, `rebuild/ocbi-rebuild`, `rebuild/ocbi-schedule`, `rebuild/*.plist.template`, `rebuild/systemd/` | `$OCBI_HOME`, bin dir, `~/Library/LaunchAgents` (macOS) or `~/.config/systemd/user` (Linux) | `ocbi-rebuild [checkout]`: full rebuild of a repository's shared store from its primary checkout, in the background, through an on-demand launchd job or systemd user unit. `ocbi-check.sh`: an optional daily timer that notifies when a full rebuild (provider or model change) or a prune is worth doing, and never runs either by itself; the post-checkout hook installed with `--stale-notify` runs the same checks after checkouts, so the timer is mainly for machines that rarely check out a branch. `ocbi-schedule install [checkout...]`, `uninstall`, `status`: loads, removes and reports the jobs. | macOS, Linux |
 | `notify` | `notify/ocbi-notify.sh`, `notify/notifier/` (Swift source) | `$OCBI_HOME` | Desktop notifications for the checks and the rebuild, with an action button: on macOS when the notifier app is built, on Linux when the notification server supports actions and `notify-send` has `--action` (libnotify 0.7.10 or later); otherwise the command ends the text. Without a desktop the notification and its command are printed and logged. | macOS, Linux |
 | `pkg` | none | `$OCBI_HOME/pkg` | `npm install` of the package spec you pass with `--package`. | macOS, Linux |
 
@@ -67,7 +67,10 @@ node ~/.local/share/ocbi/pkg/node_modules/open-codebase-index/dist/cbi.js hooks 
   --repo ~/src/myproject --host claude --stale-notify ~/.local/share/ocbi/ocbi-notify.sh   # optional
 ```
 
-The hook refreshes a checkout's index in the background after each branch checkout; see
+The hook refreshes a checkout's index in the background after each branch checkout and, once a
+day, checks whether the store needs a full rebuild (only after an embedding provider or model
+change) or a prune. With `--stale-notify` it notifies with a Rebuild or Prune action; it never
+runs either itself. See
 [Git post-checkout hook](../../docs/configuration.md#git-post-checkout-hook).
 
 A bare clone also needs `checkouts.primary.path` in that file.

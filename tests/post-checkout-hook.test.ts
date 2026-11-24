@@ -16,7 +16,10 @@ import {
   runRefreshWorker,
   scrubGitRepositoryEnv,
   tryAcquireRefreshLock,
+  type CheckoutStatePaths,
+  type NotifyAction,
   type RefreshPassResult,
+  type RefreshWorkerDeps,
   type RefreshWorkerOptions,
 } from "../src/git/post-checkout-hook.js";
 import { runHookCli } from "../src/adapters/hooks-cli.js";
@@ -265,7 +268,7 @@ describe("post-checkout hook", () => {
         return new Promise((resolve) => releases.push(() => resolve({ exitCode: 0, busy: false })));
       };
       const spawnWorker = (options: RefreshWorkerOptions): number => {
-        worker = runRefreshWorker(options, { env: { OCBI_STALE_CHECK: "0" }, runPass });
+        worker = runRefreshWorker(options, { env: { OCBI_STALE_CHECK: "0", OCBI_COMPAT_CHECK: "0" }, runPass });
         return process.pid;
       };
       const hook = () => runPostCheckoutHook(["a", "b", "1"], repo, "codex", {}, { env: {}, spawnWorker });
@@ -331,7 +334,7 @@ describe("post-checkout hook", () => {
       fs.mkdirSync(paths.stateDir, { recursive: true });
       fs.writeFileSync(paths.again, "");
       expect(await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, {
-        env: { OCBI_STALE_CHECK: "0" },
+        env: { OCBI_STALE_CHECK: "0", OCBI_COMPAT_CHECK: "0" },
         runPass: () => {
           passes += 1;
           if (passes === 1) queued = runPostCheckoutHook(["a", "b", "1"], repo, "codex", {}, { env: {}, spawnWorker: () => { throw new Error("must not spawn"); } });
@@ -348,7 +351,7 @@ describe("post-checkout hook", () => {
       fs.mkdirSync(paths.stateDir, { recursive: true });
       fs.writeFileSync(paths.again, "");
       const passes = await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex" }, {
-        env: { OCBI_STALE_CHECK: "0" },
+        env: { OCBI_STALE_CHECK: "0", OCBI_COMPAT_CHECK: "0" },
         runPass: () => ({ exitCode: 1, busy: true }),
       });
       expect(passes).toBe(1);
@@ -366,15 +369,17 @@ describe("post-checkout hook", () => {
       fs.mkdirSync(paths.stateDir, { recursive: true });
       fs.writeFileSync(paths.again, "");
       const entryScript = path.join(tempDir, "pkg dir", "it's", "cbi.js");
-      const messages: string[] = [];
+      const actions: NotifyAction[] = [];
       await runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex", staleNotify: "notifier" }, {
         env: {},
         entryScript,
         runPass: () => ({ exitCode: 0, busy: false }),
         countPrunable: () => 15,
-        notify: (_command, _title, message) => { messages.push(message); },
+        checkCompatibility: () => ({ compatible: true }),
+        notify: (_command, _title, _message, action) => { if (action) actions.push(action); },
       });
-      const command = messages[0]?.split("Run: ")[1] ?? "";
+      expect(actions[0]?.label).toBe("Prune");
+      const command = actions[0]?.command ?? "";
       const words = execFileSync("sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { encoding: "utf-8" }).split("\n").slice(0, -1);
       expect(words).toEqual([process.execPath, entryScript, "prune", "--apply", "--host", "codex", "--project", repo]);
     });
@@ -393,20 +398,23 @@ describe("post-checkout hook", () => {
           env,
           runPass: () => ({ exitCode: 0, busy: false }),
           countPrunable: () => { counts += 1; return 20; },
-          notify: (command, title, message) => { notifications.push([command, title, message]); },
+          checkCompatibility: () => ({ compatible: true }),
+          notify: (command, title, message, action) => { notifications.push([command, title, message, action?.label ?? "", action?.command ?? ""]); },
           now: () => now,
         },
       ));
 
-      await run({ OCBI_STALE_CHECK: "0" }, Date.now());
+      await run({ OCBI_STALE_CHECK: "0", OCBI_COMPAT_CHECK: "0" }, Date.now());
       expect(counts).toBe(0);
       await run({}, Date.now());
       expect(counts).toBe(1);
       expect(notifications).toHaveLength(1);
       expect(notifications[0][0]).toBe("notifier");
       expect(notifications[0][1]).toBe("Worth a cleanup: stale");
-      expect(notifications[0][2]).toContain(`20 catalogs of deleted branches or worktrees. Run: ${process.execPath} `);
-      expect(notifications[0][2]).toContain(" prune --apply --host codex --project");
+      expect(notifications[0][2]).toBe("20 catalogs of deleted branches or worktrees.");
+      expect(notifications[0][3]).toBe("Prune");
+      expect(notifications[0][4]).toContain(`${process.execPath} `);
+      expect(notifications[0][4]).toContain(" prune --apply --host codex --project");
       await run({}, Date.now());
       expect(counts).toBe(1);
       await run({ OCBI_STALE_THRESHOLD: "50" }, Date.now() + 25 * 60 * 60 * 1000);
@@ -414,6 +422,132 @@ describe("post-checkout hook", () => {
       expect(notifications).toHaveLength(1);
       const log = fs.readFileSync(getCheckoutStatePaths(commonDir, repo).log, "utf-8");
       expect(log).toMatch(/^== stale check: 20 catalogs of deleted branches or worktrees; remove them with: \S+ \S+ prune --apply/m);
+    });
+  });
+
+  describe("compatibility check", () => {
+    interface Notification { command: string; title: string; message: string; action?: NotifyAction }
+
+    function setup(name: string): { repo: string; commonDir: string; paths: CheckoutStatePaths } {
+      const repo = createRepository(path.join(tempDir, name));
+      const commonDir = path.join(repo, ".git");
+      writeRepositoryConfig(commonDir);
+      const paths = getCheckoutStatePaths(commonDir, repo);
+      fs.mkdirSync(paths.stateDir, { recursive: true });
+      return { repo, commonDir, paths };
+    }
+
+    function runWorker(
+      repo: string,
+      commonDir: string,
+      deps: Partial<RefreshWorkerDeps> & { staleNotify?: string } = {},
+    ): { notifications: Notification[]; passes: Promise<number>; calls: { index: number; force: number } } {
+      const { again } = getCheckoutStatePaths(commonDir, repo);
+      fs.writeFileSync(again, "");
+      const notifications: Notification[] = [];
+      const calls = { index: 0, force: 0 };
+      const { staleNotify = "notifier", ...rest } = deps;
+      const passes = runRefreshWorker({ checkoutRoot: repo, commonDir, host: "codex", staleNotify: staleNotify || undefined }, {
+        env: {},
+        entryScript: path.join(tempDir, "pkg", "cbi.js"),
+        runPass: () => { calls.index += 1; return { exitCode: 0, busy: false }; },
+        countPrunable: () => 0,
+        findExecutable: () => null,
+        notify: (command, title, message, action) => { notifications.push({ command, title, message, action }); },
+        ...rest,
+      });
+      return { notifications, passes, calls };
+    }
+
+    const MISMATCH = 'Model mismatch: index was built with "model-a", but current model is "model-b". Embeddings are incompatible. Run index_codebase with force=true to rebuild.';
+
+    it("logs a compatible verdict and does not notify", async () => {
+      const { repo, commonDir, paths } = setup("compatible");
+      const { notifications, passes, calls } = runWorker(repo, commonDir, { checkCompatibility: () => ({ compatible: true }) });
+      expect(await passes).toBe(1);
+      expect(calls.index).toBe(1);
+      expect(notifications).toEqual([]);
+      expect(fs.readFileSync(paths.log, "utf-8")).toMatch(/^== compatibility check: compatible$/m);
+      expect(fs.readFileSync(path.join(paths.stateDir, "stale-check.stamp"), "utf-8")).toMatch(/ compatibility=compatible stale=0\n$/);
+    });
+
+    it("offers ocbi-rebuild for an incompatible store, skips the stale count and never rebuilds", async () => {
+      const { repo, commonDir, paths } = setup("incompat");
+      const rebuild = path.join(tempDir, "bin dir", "ocbi-rebuild");
+      let counted = 0;
+      const { notifications, passes, calls } = runWorker(repo, commonDir, {
+        checkCompatibility: () => ({ compatible: false, reason: MISMATCH }),
+        findExecutable: (name) => (name === "ocbi-rebuild" ? rebuild : null),
+        countPrunable: () => { counted += 1; return 99; },
+      });
+      expect(await passes).toBe(1);
+      expect(calls.index).toBe(1);
+      expect(counted).toBe(0);
+      expect(notifications).toHaveLength(1);
+      const [notification] = notifications;
+      expect(notification.command).toBe("notifier");
+      expect(notification.title).toBe("Rebuild needed: incompat");
+      expect(notification.message).toBe('Model mismatch: index was built with "model-a", but current model is "model-b". Embeddings are incompatible. A full rebuild re-embeds every file with the configured model.');
+      expect(notification.action?.label).toBe("Rebuild");
+      const words = execFileSync("sh", ["-c", `set -- ${notification.action?.command ?? ""}; printf '%s\\n' "$@"`], { encoding: "utf-8" }).split("\n").slice(0, -1);
+      expect(words).toEqual([rebuild, repo]);
+      const log = fs.readFileSync(paths.log, "utf-8");
+      expect(log).toMatch(/^== compatibility check: incompatible: Model mismatch: .*; rebuild with: /m);
+      expect(log).not.toMatch(/stale check/);
+    });
+
+    it("prints the manual rebuild command when ocbi-rebuild is not on PATH", async () => {
+      const { repo, commonDir } = setup("manual");
+      const { notifications, passes } = runWorker(repo, commonDir, {
+        checkCompatibility: () => ({ compatible: false, reason: "Dimension mismatch: 384D versus 768D." }),
+      });
+      await passes;
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].action).toBeUndefined();
+      const [, command] = notifications[0].message.split(" Rebuild with: ");
+      const words = execFileSync("sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { encoding: "utf-8" }).split("\n").slice(0, -1);
+      expect(words).toEqual([process.execPath, path.join(tempDir, "pkg", "cbi.js"), "index", "--force", "--host", "codex", "--project", repo]);
+    });
+
+    it("only logs without a notifier, and logs a notifier that fails", async () => {
+      const first = setup("no-notifier");
+      const withoutNotifier = runWorker(first.repo, first.commonDir, {
+        staleNotify: "",
+        checkCompatibility: () => ({ compatible: false, reason: MISMATCH }),
+      });
+      await withoutNotifier.passes;
+      expect(withoutNotifier.notifications).toEqual([]);
+      expect(fs.readFileSync(first.paths.log, "utf-8")).toMatch(/^== compatibility check: incompatible: /m);
+
+      const second = setup("missing-notifier");
+      await runWorker(second.repo, second.commonDir, {
+        staleNotify: path.join(tempDir, "no-such-notifier"),
+        checkCompatibility: () => ({ compatible: false, reason: MISMATCH }),
+        notify: undefined,
+      }).passes;
+      expect(fs.readFileSync(second.paths.log, "utf-8")).toMatch(/^== daily check: notifier failed: .*ENOENT/m);
+    });
+
+    it("retries after the next checkout when the verdict cannot be read, and skips a busy store", async () => {
+      const { repo, commonDir, paths } = setup("retry");
+      const stamp = path.join(paths.stateDir, "stale-check.stamp");
+      let checks = 0;
+      await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; throw new Error("store unreadable"); } }).passes;
+      expect(fs.existsSync(stamp)).toBe(false);
+      expect(fs.readFileSync(paths.log, "utf-8")).toMatch(/^== compatibility check: could not read the store's status: store unreadable$/m);
+
+      await runWorker(repo, commonDir, {
+        runPass: () => ({ exitCode: 1, busy: true }),
+        checkCompatibility: () => { checks += 1; return { compatible: true }; },
+      }).passes;
+      expect(checks).toBe(1);
+      expect(fs.existsSync(stamp)).toBe(false);
+
+      await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; return { compatible: true }; } }).passes;
+      expect(checks).toBe(2);
+      expect(fs.existsSync(stamp)).toBe(true);
+      await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; return { compatible: true }; } }).passes;
+      expect(checks).toBe(2);
     });
   });
 });

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The post-checkout hook's once-a-day pass now also checks whether the store's embeddings still match the configured provider and model, the `compatibility` verdict `ocbi status` reports, read in-process without spawning the CLI. A mismatch, after a provider or model change or a release that changes the embedding format, is the only reason for a full rebuild. With `--stale-notify` the hook sends "Rebuild needed: <repo>" with a Rebuild action that runs `ocbi-rebuild <checkout>` when it is on `PATH`, else the manual `ocbi index --force` command in the message. The hook never rebuilds or prunes. `OCBI_COMPAT_CHECK=0` turns the check off; `OCBI_STALE_CHECK=0` now turns off only the stale count.
+- The hook's notifier now runs as `<command> TITLE BODY [ACTION_LABEL ACTION_COMMAND]`, the contract of the local wrapper's `ocbi-notify.sh`; the stale-catalog notice carries a Prune action instead of a trailing `Run:` command. A notifier that takes only a title and a body (bare `notify-send`) needs a wrapper. A notifier that fails to start is logged.
+- The daily pass is skipped after a refresh that found the store busy (a running rebuild, say), and a check that could not run is retried after the next checkout instead of a day later.
+- The local wrapper's scheduled check (`ocbi-schedule`, `ocbi-check.sh`) is now documented as optional: the hook covers both checks after checkouts.
+
 ## [0.38.2-gd.10] - 2026-11-24
 
 Fork release on top of 0.38.2-gd.9. Not published to npm; the GitHub release ships native binaries for linux-x64-gnu (glibc 2.35 or newer) and darwin-arm64, built by GitHub Actions.

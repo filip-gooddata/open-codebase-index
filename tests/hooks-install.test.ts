@@ -84,6 +84,7 @@ beforeEach(() => {
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: "1",
     OCBI_STALE_CHECK: "0",
+    OCBI_COMPAT_CHECK: "0",
   } as NodeJS.ProcessEnv;
   vi.stubEnv("GIT_CONFIG_GLOBAL", gitConfig);
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");

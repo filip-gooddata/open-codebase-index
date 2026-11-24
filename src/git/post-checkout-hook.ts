@@ -465,6 +465,17 @@ export interface RefreshPassResult {
   busy: boolean;
 }
 
+export interface CompatibilityVerdict {
+  compatible: boolean;
+  reason?: string;
+}
+
+/** A notification button: its label and the shell command it runs. */
+export interface NotifyAction {
+  label: string;
+  command: string;
+}
+
 export interface RefreshWorkerDeps {
   env?: HookEnv;
   entryScript?: string;
@@ -472,7 +483,12 @@ export interface RefreshWorkerDeps {
   runPass?: (options: RefreshWorkerOptions, paths: CheckoutStatePaths) => Promise<RefreshPassResult> | RefreshPassResult;
   /** Counts the catalogs `ocbi prune` would remove; null when the count failed. */
   countPrunable?: (options: RefreshWorkerOptions) => number | null;
-  notify?: (command: string, title: string, message: string) => void;
+  /** The store's compatibility verdict, as `ocbi status` reports it; null when it has none. */
+  checkCompatibility?: (options: RefreshWorkerOptions) => Promise<CompatibilityVerdict | null> | CompatibilityVerdict | null;
+  /** Absolute path of an executable named `name` on PATH, or null. */
+  findExecutable?: (name: string) => string | null;
+  /** Runs the notifier as `command TITLE BODY [ACTION_LABEL ACTION_COMMAND]`. */
+  notify?: (command: string, title: string, message: string, action?: NotifyAction) => void;
   now?: () => number;
   pid?: number;
 }
@@ -531,9 +547,41 @@ function defaultCountPrunable(entryScript: string, env: HookEnv) {
   };
 }
 
+async function defaultCheckCompatibility(options: RefreshWorkerOptions): Promise<CompatibilityVerdict | null> {
+  // `ocbi status` reads the verdict this way; the import keeps the native runtime out of the hook.
+  const { getIndexerForProject, readIndexStatusSnapshot } = await import("../tools/operations.js");
+  try {
+    const { status } = await readIndexStatusSnapshot(options.checkoutRoot, options.host);
+    const { compatibility } = status;
+    return compatibility ? { compatible: compatibility.compatible, reason: compatibility.reason } : null;
+  } finally {
+    await getIndexerForProject(options.checkoutRoot, options.host).close();
+  }
+}
+
+function defaultFindExecutable(env: HookEnv) {
+  return (name: string): string | null => {
+    for (const dir of (env.PATH ?? "").split(path.delimiter)) {
+      if (!path.isAbsolute(dir)) continue;
+      const candidate = path.join(dir, name);
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return candidate;
+        }
+      } catch {
+        // Not here; keep looking.
+      }
+    }
+    return null;
+  };
+}
+
 function defaultNotify(env: HookEnv) {
-  return (command: string, title: string, message: string): void => {
-    spawnSync(command, [title, message], { env: env as NodeJS.ProcessEnv, stdio: "ignore", timeout: 30_000 });
+  return (command: string, title: string, message: string, action?: NotifyAction): void => {
+    const args = action ? [title, message, action.label, action.command] : [title, message];
+    const result = spawnSync(command, args, { env: env as NodeJS.ProcessEnv, stdio: "ignore", timeout: 30_000 });
+    if (result.error) throw result.error;
   };
 }
 
@@ -546,41 +594,114 @@ function repositoryName(commonDir: string): string {
   return base === ".git" ? path.basename(path.dirname(commonDir)) : base;
 }
 
+type DailyCheckDeps = Required<Pick<RefreshWorkerDeps, "countPrunable" | "checkCompatibility" | "findExecutable" | "notify" | "now">>;
+
+function runNotifier(options: RefreshWorkerOptions, paths: CheckoutStatePaths, deps: DailyCheckDeps, title: string, message: string, action?: NotifyAction): void {
+  if (!options.staleNotify) return;
+  try {
+    deps.notify(options.staleNotify, title, message, action);
+  } catch (error: unknown) {
+    appendHookLog(paths.log, `== daily check: notifier failed: ${getErrorMessage(error)}`);
+  }
+}
+
+/** The MCP-oriented advice at the end of a verdict's reason does not apply to a notification. */
+function compatibilityReason(verdict: CompatibilityVerdict): string {
+  const reason = (verdict.reason ?? "the store no longer matches the configured embedding provider or model").replace(/\s+/g, " ").trim();
+  return reason.replace(/\s*Run index_codebase with force=true\b.*$/, "").replace(/\.$/, "");
+}
+
 /**
- * At most once a day per repository, counts the catalogs `ocbi prune` would remove, logs the
- * count and, from OCBI_STALE_THRESHOLD (15) on, runs the configured notifier.
+ * Notifies when the store's embeddings no longer match the configured provider or model, the one
+ * case that needs a full rebuild. Returns the verdict, or null when there is none to report.
  */
+async function runCompatibilityCheck(
+  options: RefreshWorkerOptions,
+  paths: CheckoutStatePaths,
+  entryScript: string,
+  deps: DailyCheckDeps,
+): Promise<CompatibilityVerdict | null> {
+  let verdict: CompatibilityVerdict | null;
+  try {
+    verdict = await deps.checkCompatibility(options);
+  } catch (error: unknown) {
+    appendHookLog(paths.log, `== compatibility check: could not read the store's status: ${getErrorMessage(error)}`);
+    return null;
+  }
+  if (verdict === null) {
+    appendHookLog(paths.log, "== compatibility check: unknown (the store reports no verdict)");
+    return null;
+  }
+  if (verdict.compatible) {
+    appendHookLog(paths.log, "== compatibility check: compatible");
+    return verdict;
+  }
+  const reason = compatibilityReason(verdict);
+  const rebuild = deps.findExecutable("ocbi-rebuild");
+  const command = rebuild
+    ? [rebuild, options.checkoutRoot].map(shellQuote).join(" ")
+    : [process.execPath, entryScript, "index", "--force", "--host", options.host, "--project", options.checkoutRoot].map(shellQuote).join(" ");
+  appendHookLog(paths.log, `== compatibility check: incompatible: ${reason}; rebuild with: ${command}`);
+  const message = `${reason}. A full rebuild re-embeds every file with the configured model.`;
+  runNotifier(options, paths, deps, `Rebuild needed: ${repositoryName(options.commonDir)}`,
+    rebuild ? message : `${message} Rebuild with: ${command}`,
+    rebuild ? { label: "Rebuild", command } : undefined);
+  return verdict;
+}
+
+/** Counts the catalogs `ocbi prune` would remove and notifies from OCBI_STALE_THRESHOLD (15) on. */
 function runStaleCheck(
   options: RefreshWorkerOptions,
   paths: CheckoutStatePaths,
   env: HookEnv,
   entryScript: string,
-  deps: Required<Pick<RefreshWorkerDeps, "countPrunable" | "notify" | "now">>,
-): void {
-  if (env.OCBI_STALE_CHECK === "0") return;
+  deps: DailyCheckDeps,
+): number | null {
+  const count = deps.countPrunable(options);
+  if (count === null) {
+    appendHookLog(paths.log, "== stale check: could not count prunable catalogs");
+    return null;
+  }
+  const parsedThreshold = Number.parseInt(env.OCBI_STALE_THRESHOLD ?? "", 10);
+  const threshold = Number.isInteger(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_STALE_THRESHOLD;
+  // The worker's own node and script: the CLI may not be on PATH (a private install, say).
+  const command = [process.execPath, entryScript, "prune", "--apply", "--host", options.host, "--project", options.checkoutRoot].map(shellQuote).join(" ");
+  appendHookLog(paths.log, `== stale check: ${count} catalogs of deleted branches or worktrees${count > 0 ? `; remove them with: ${command}` : ""}`);
+  if (count >= threshold) {
+    runNotifier(options, paths, deps, `Worth a cleanup: ${repositoryName(options.commonDir)}`,
+      `${count} catalogs of deleted branches or worktrees.`, { label: "Prune", command });
+  }
+  return count;
+}
+
+/**
+ * At most once a day per repository: checks that the store still matches the configured embedding
+ * provider and model (OCBI_COMPAT_CHECK=0 skips it) and counts the catalogs of deleted branches and
+ * worktrees (OCBI_STALE_CHECK=0 skips it). It only logs and notifies; a rebuild or a prune waits
+ * for the user. A store that needs a rebuild is not counted, since the rebuild drops every catalog.
+ */
+async function runDailyCheck(
+  options: RefreshWorkerOptions,
+  paths: CheckoutStatePaths,
+  env: HookEnv,
+  entryScript: string,
+  deps: DailyCheckDeps,
+): Promise<void> {
+  const checkCompatibility = env.OCBI_COMPAT_CHECK !== "0";
+  const checkStale = env.OCBI_STALE_CHECK !== "0";
+  if (!checkCompatibility && !checkStale) return;
   const stamp = path.join(paths.stateDir, "stale-check.stamp");
   try {
     if (deps.now() - fs.statSync(stamp).mtimeMs < STALE_CHECK_INTERVAL_MS) return;
   } catch {
     // No stamp yet.
   }
-  const count = deps.countPrunable(options);
-  if (count === null) {
-    appendHookLog(paths.log, "== stale check: could not count prunable catalogs");
-    return;
-  }
-  fs.writeFileSync(stamp, `${new Date(deps.now()).toISOString()} ${count}\n`);
-  const parsedThreshold = Number.parseInt(env.OCBI_STALE_THRESHOLD ?? "", 10);
-  const threshold = Number.isInteger(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_STALE_THRESHOLD;
-  // The worker's own node and script: the CLI may not be on PATH (a private install, say).
-  const command = [process.execPath, entryScript, "prune", "--apply", "--host", options.host, "--project", options.checkoutRoot].map(shellQuote).join(" ");
-  appendHookLog(paths.log, `== stale check: ${count} catalogs of deleted branches or worktrees${count > 0 ? `; remove them with: ${command}` : ""}`);
-  if (count < threshold || !options.staleNotify) return;
-  try {
-    deps.notify(options.staleNotify, `Worth a cleanup: ${repositoryName(options.commonDir)}`, `${count} catalogs of deleted branches or worktrees. Run: ${command}`);
-  } catch (error: unknown) {
-    appendHookLog(paths.log, `== stale check: notifier failed: ${getErrorMessage(error)}`);
-  }
+  const verdict = checkCompatibility ? await runCompatibilityCheck(options, paths, entryScript, deps) : null;
+  const count = checkStale && verdict?.compatible !== false ? runStaleCheck(options, paths, env, entryScript, deps) : null;
+  // A check that could not run is retried after the next checkout rather than a day later.
+  if ((checkCompatibility && verdict === null) || (checkStale && verdict?.compatible !== false && count === null)) return;
+  const compatibility = verdict === null ? "skipped" : verdict.compatible ? "compatible" : "incompatible";
+  fs.writeFileSync(stamp, `${new Date(deps.now()).toISOString()} compatibility=${compatibility} stale=${count ?? "skipped"}\n`);
 }
 
 /**
@@ -603,6 +724,7 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
   }
 
   let passes = 0;
+  let lastPassBusy = false;
   for (;;) {
     if (consumeRefreshRequest(paths.again)) {
       appendHookLog(paths.log, `== ${timestamp()} ${options.checkoutRoot} ${describeHead(options.checkoutRoot, env)}`);
@@ -614,6 +736,7 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
         appendHookLog(paths.log, `== pass failed: ${getErrorMessage(error)}`);
       }
       passes += 1;
+      lastPassBusy = result.busy;
       appendHookLog(paths.log, result.busy
         ? `== busy: another index operation holds the store; skipped ${timestamp()}`
         : `== exit ${result.exitCode ?? "signal"} ${timestamp()}`);
@@ -624,9 +747,12 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
     break;
   }
 
-  if (passes > 0) {
-    runStaleCheck(options, paths, env, entryScript, {
+  // A busy store may be mid-rebuild, whose intermediate state is no reason to notify.
+  if (passes > 0 && !lastPassBusy) {
+    await runDailyCheck(options, paths, env, entryScript, {
       countPrunable: deps.countPrunable ?? defaultCountPrunable(entryScript, env),
+      checkCompatibility: deps.checkCompatibility ?? defaultCheckCompatibility,
+      findExecutable: deps.findExecutable ?? defaultFindExecutable(env),
       notify: deps.notify ?? defaultNotify(env),
       now: deps.now ?? Date.now,
     });

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Usage: ocbi-check.sh [CHECKOUT...]
-# The scheduled check: run daily by the launchd job or systemd timer that `ocbi-schedule install`
+# The optional scheduled check. The post-checkout hook installed with `ocbi hooks install
+# --stale-notify` runs the same two checks once a day after a checkout; this timer is for machines
+# that rarely check out a branch. Run daily by the launchd job or systemd timer that `ocbi-schedule install`
 # registers. For each checkout (the arguments, else the lines of $OCBI_HOME/check.conf; blank lines
 # and # comments are skipped) of a repository with a repository config, it notifies when
 #   - the store no longer matches the configured embedding provider or model (a full rebuild is

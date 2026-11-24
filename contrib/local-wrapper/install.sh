@@ -87,16 +87,13 @@ fi
 
 is_macos=0 is_linux=0
 case "${OCBI_UNAME:-$(uname -s)}" in Darwin) is_macos=1 ;; Linux) is_linux=1 ;; esac
-# The systemd user dir is used only on Linux; elsewhere a value under OCBI_HOME stands in for it in
-# the rendered scripts, so an unused XDG_CONFIG_HOME cannot stop the install.
-checked_paths=("$home" "$bin_dir" "$agents_dir" "$node")
-if [ "$is_linux" = 1 ]; then checked_paths+=("$systemd_dir"); fi
-for path in "${checked_paths[@]}"; do
-  case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
-  case "$path" in
-    *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
+check_path() {
+  case "$1" in /*) ;; *) die "$1 must be an absolute path" ;; esac
+  case "$1" in
+    *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$1 must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
   esac
-done
+}
+for path in "$home" "$bin_dir" "$agents_dir" "$node"; do check_path "$path"; done
 while [ "${home%/}" != "$home" ] && [ "$home" != / ]; do home="${home%/}"; done
 [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid --label $label"
 case "$label" in *.rebuild) check_label="${label%.rebuild}.check" ;; *) check_label="$label.check" ;; esac
@@ -112,8 +109,10 @@ for p in $(printf '%s' "$pieces" | tr ',' ' '); do
   esac
 done
 if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package SPEC"; fi
+# Only the Linux rebuild piece writes the systemd user dir; elsewhere a value under OCBI_HOME stands
+# in for it in the rendered scripts, so an unused XDG_CONFIG_HOME cannot stop the install.
+if [ "$is_linux" = 1 ] && has_piece rebuild; then check_path "$systemd_dir"; else systemd_dir="$home/systemd-user"; fi
 
-[ "$is_linux" = 1 ] || systemd_dir="$home/systemd-user"
 version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo_root/package.json" 2>/dev/null | head -n 1)"
 version="${version:-0.0.0}-local"
 changes=0

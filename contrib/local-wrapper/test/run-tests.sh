@@ -99,6 +99,8 @@ out="$(OCBI_UNAME=Darwin XDG_CONFIG_HOME="$T/x@cfg" bash "$here/install.sh" --dr
 expect_eq "install on macOS ignores an XDG_CONFIG_HOME the systemd units would refuse" 0 "$?"
 OCBI_UNAME=Linux XDG_CONFIG_HOME="$T/x@cfg" bash "$here/install.sh" --dry-run "${install_args[@]}" >/dev/null 2>&1
 expect_eq "install on Linux refuses a systemd dir with a character it cannot render" 2 "$?"
+OCBI_UNAME=Linux XDG_CONFIG_HOME="$T/x@cfg" bash "$here/install.sh" --dry-run --pieces mcp "${install_args[@]}" >/dev/null 2>&1
+expect_eq "install on Linux ignores the systemd dir without the rebuild piece" 0 "$?"
 out="$(bash "$here/install.sh" --dry-run --package ./x.tgz "${install_args[@]}" 2>&1)"
 expect_match "dry run prints the npm install of --package" "would run: npm install --prefix $H/pkg" "$out"
 

@@ -471,7 +471,7 @@ describe("post-checkout hook", () => {
       expect(fs.readFileSync(paths.log, "utf-8")).toMatch(/^== compatibility check: compatible$/m);
       expect(fs.readFileSync(path.join(paths.stateDir, "compat-check.stamp"), "utf-8")).toMatch(/ compatible\n$/);
       expect(fs.readFileSync(path.join(paths.stateDir, "stale-check.stamp"), "utf-8")).toMatch(/ 0\n$/);
-      expect(fs.existsSync(path.join(paths.stateDir, "daily-check.claim"))).toBe(false);
+      expect(isRefreshLockHeld(path.join(paths.stateDir, "daily-check.lock"))).toBe(false);
     });
 
     it("offers ocbi-rebuild for an incompatible store, skips the stale count and never rebuilds", async () => {
@@ -588,12 +588,46 @@ describe("post-checkout hook", () => {
       expect(await first.passes).toBe(1);
       expect(checks).toBe(1);
       expect([...first.notifications, ...second.notifications].map((n) => n.title)).toEqual(["Rebuild needed: claim"]);
-      expect(fs.existsSync(path.join(paths.stateDir, "daily-check.claim"))).toBe(false);
+      expect(isRefreshLockHeld(path.join(paths.stateDir, "daily-check.lock"))).toBe(false);
+    });
 
-      fs.rmSync(path.join(paths.stateDir, "compat-check.stamp"));
-      fs.writeFileSync(path.join(paths.stateDir, "daily-check.claim"), `${deadPid()}\n`);
-      await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; return { compatible: true }; } }).passes;
-      expect(checks).toBe(2);
+    it("hands a dead holder's daily claim to exactly one of two workers", async () => {
+      const { repo, commonDir, paths } = setup("dead-claim");
+      const linked = path.join(tempDir, "dead-claim-linked");
+      git(repo, "worktree", "add", "-q", "-b", "other", linked);
+      expect(tryAcquireRefreshLock(path.join(paths.stateDir, "daily-check.lock"), deadPid())).toBe(true);
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let checks = 0;
+      const checkCompatibility = async (): Promise<CompatibilityVerdict> => {
+        checks += 1;
+        await gate;
+        return { compatible: false, reason: MISMATCH };
+      };
+      const first = runWorker(repo, commonDir, { checkCompatibility });
+      const second = runWorker(linked, commonDir, { checkCompatibility });
+      await vi.waitFor(() => expect(checks).toBe(1));
+      release();
+      await Promise.all([first.passes, second.passes]);
+      expect(checks).toBe(1);
+      expect([...first.notifications, ...second.notifications].map((n) => n.title)).toEqual(["Rebuild needed: dead-claim"]);
+    });
+
+    it("does not offer a prune later that day while the store still needs a rebuild", async () => {
+      const { repo, commonDir } = setup("still-incompat");
+      const linked = path.join(tempDir, "still-incompat-linked");
+      git(repo, "worktree", "add", "-q", "-b", "other", linked);
+      let counted = 0;
+      const deps = {
+        checkCompatibility: (): CompatibilityVerdict => ({ compatible: false, reason: MISMATCH }),
+        countPrunable: () => { counted += 1; return 99; },
+      };
+      const first = runWorker(repo, commonDir, deps);
+      await first.passes;
+      const second = runWorker(linked, commonDir, deps);
+      await second.passes;
+      expect(counted).toBe(0);
+      expect([...first.notifications, ...second.notifications].map((n) => n.title)).toEqual(["Rebuild needed: still-incompat"]);
     });
 
     it("finds ocbi-rebuild through a relative PATH entry, resolved against the checkout", async () => {

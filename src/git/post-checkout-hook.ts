@@ -674,40 +674,13 @@ function runStaleCheck(
   return count;
 }
 
-const DAILY_CLAIM_STALE_MS = 15 * 60 * 1000;
-
-/**
- * Takes the repository's daily-check claim, so workers of two checkouts finishing together do not
- * both check and notify. A claim whose holder died, or that is older than 15 minutes, is taken over.
- * Returns the release function, or null when another worker holds the claim.
- */
-function claimDailyCheck(stateDir: string, pid: number, now: number): (() => void) | null {
-  const claim = path.join(stateDir, "daily-check.claim");
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      fs.writeFileSync(claim, `${pid}\n`, { flag: "wx" });
-      return () => {
-        try {
-          if (fs.readFileSync(claim, "utf-8").trim() === String(pid)) fs.rmSync(claim, { force: true });
-        } catch {
-          // Already gone or taken over.
-        }
-      };
-    } catch (error: unknown) {
-      if (getErrorCode(error) !== "EEXIST") throw error;
-    }
-    try {
-      const holder = Number.parseInt(fs.readFileSync(claim, "utf-8"), 10);
-      const expired = now - fs.statSync(claim).mtimeMs > DAILY_CLAIM_STALE_MS;
-      // An unreadable pid may be a claim whose holder has not written it yet.
-      const stale = expired || (Number.isInteger(holder) && !isProcessAlive(holder));
-      if (!stale) return null;
-      fs.rmSync(claim, { force: true });
-    } catch {
-      // The holder released it meanwhile; try again.
-    }
+/** The verdict a fresh compatibility stamp records, so a later checkout that day honors it. */
+function readStampVerdict(stamp: string): string | null {
+  try {
+    return fs.readFileSync(stamp, "utf-8").trim().split(" ")[1] ?? null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function isDue(stamp: string, now: number): boolean {
@@ -739,23 +712,27 @@ async function runDailyCheck(
   const compatDue = env.OCBI_COMPAT_CHECK !== "0" && isDue(compatStamp, deps.now());
   const staleDue = env.OCBI_STALE_CHECK !== "0" && isDue(staleStamp, deps.now());
   if (!compatDue && !staleDue) return;
-  const release = claimDailyCheck(paths.stateDir, pid, deps.now());
-  if (!release) return;
+  // One worker per repository: the generation lock hands a dead holder's claim to exactly one taker.
+  const claim = path.join(paths.stateDir, "daily-check.lock");
+  if (!tryAcquireRefreshLock(claim, pid)) return;
   try {
     // Another worker may have finished a check between the look above and the claim.
-    let verdict: CompatibilityVerdict | null = null;
+    let incompatible = false;
     if (compatDue && isDue(compatStamp, deps.now())) {
-      verdict = await runCompatibilityCheck(options, paths, entryScript, deps);
+      const verdict = await runCompatibilityCheck(options, paths, entryScript, deps);
       if (verdict !== null) {
         fs.writeFileSync(compatStamp, `${new Date(deps.now()).toISOString()} ${verdict.compatible ? "compatible" : "incompatible"}\n`);
       }
+      incompatible = verdict?.compatible === false;
+    } else if (env.OCBI_COMPAT_CHECK !== "0") {
+      incompatible = readStampVerdict(compatStamp) === "incompatible";
     }
-    if (staleDue && verdict?.compatible !== false && isDue(staleStamp, deps.now())) {
+    if (staleDue && !incompatible && isDue(staleStamp, deps.now())) {
       const count = runStaleCheck(options, paths, env, entryScript, deps);
       if (count !== null) fs.writeFileSync(staleStamp, `${new Date(deps.now()).toISOString()} ${count}\n`);
     }
   } finally {
-    release();
+    releaseRefreshLock(claim, pid);
   }
 }
 

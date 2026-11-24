@@ -559,11 +559,11 @@ async function defaultCheckCompatibility(options: RefreshWorkerOptions): Promise
   }
 }
 
-function defaultFindExecutable(env: HookEnv) {
+/** Looks `name` up on PATH as a shell in `cwd` would: relative and empty entries resolve against `cwd`. */
+function defaultFindExecutable(env: HookEnv, cwd: string) {
   return (name: string): string | null => {
     for (const dir of (env.PATH ?? "").split(path.delimiter)) {
-      if (!path.isAbsolute(dir)) continue;
-      const candidate = path.join(dir, name);
+      const candidate = path.resolve(cwd, dir, name);
       try {
         if (fs.statSync(candidate).isFile()) {
           fs.accessSync(candidate, fs.constants.X_OK);
@@ -674,34 +674,89 @@ function runStaleCheck(
   return count;
 }
 
+const DAILY_CLAIM_STALE_MS = 15 * 60 * 1000;
+
 /**
- * At most once a day per repository: checks that the store still matches the configured embedding
- * provider and model (OCBI_COMPAT_CHECK=0 skips it) and counts the catalogs of deleted branches and
- * worktrees (OCBI_STALE_CHECK=0 skips it). It only logs and notifies; a rebuild or a prune waits
- * for the user. A store that needs a rebuild is not counted, since the rebuild drops every catalog.
+ * Takes the repository's daily-check claim, so workers of two checkouts finishing together do not
+ * both check and notify. A claim whose holder died, or that is older than 15 minutes, is taken over.
+ * Returns the release function, or null when another worker holds the claim.
+ */
+function claimDailyCheck(stateDir: string, pid: number, now: number): (() => void) | null {
+  const claim = path.join(stateDir, "daily-check.claim");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      fs.writeFileSync(claim, `${pid}\n`, { flag: "wx" });
+      return () => {
+        try {
+          if (fs.readFileSync(claim, "utf-8").trim() === String(pid)) fs.rmSync(claim, { force: true });
+        } catch {
+          // Already gone or taken over.
+        }
+      };
+    } catch (error: unknown) {
+      if (getErrorCode(error) !== "EEXIST") throw error;
+    }
+    try {
+      const holder = Number.parseInt(fs.readFileSync(claim, "utf-8"), 10);
+      const expired = now - fs.statSync(claim).mtimeMs > DAILY_CLAIM_STALE_MS;
+      // An unreadable pid may be a claim whose holder has not written it yet.
+      const stale = expired || (Number.isInteger(holder) && !isProcessAlive(holder));
+      if (!stale) return null;
+      fs.rmSync(claim, { force: true });
+    } catch {
+      // The holder released it meanwhile; try again.
+    }
+  }
+  return null;
+}
+
+function isDue(stamp: string, now: number): boolean {
+  try {
+    return now - fs.statSync(stamp).mtimeMs >= STALE_CHECK_INTERVAL_MS;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * At most once a day per repository and check: checks that the store still matches the configured
+ * embedding provider and model (OCBI_COMPAT_CHECK=0 skips it) and counts the catalogs of deleted
+ * branches and worktrees (OCBI_STALE_CHECK=0 skips it). It only logs and notifies; a rebuild or a
+ * prune waits for the user. A store that needs a rebuild is not counted, since the rebuild drops
+ * every catalog. Each check keeps its own day; one that could not run is retried after the next
+ * checkout.
  */
 async function runDailyCheck(
   options: RefreshWorkerOptions,
   paths: CheckoutStatePaths,
   env: HookEnv,
   entryScript: string,
+  pid: number,
   deps: DailyCheckDeps,
 ): Promise<void> {
-  const checkCompatibility = env.OCBI_COMPAT_CHECK !== "0";
-  const checkStale = env.OCBI_STALE_CHECK !== "0";
-  if (!checkCompatibility && !checkStale) return;
-  const stamp = path.join(paths.stateDir, "stale-check.stamp");
+  const compatStamp = path.join(paths.stateDir, "compat-check.stamp");
+  const staleStamp = path.join(paths.stateDir, "stale-check.stamp");
+  const compatDue = env.OCBI_COMPAT_CHECK !== "0" && isDue(compatStamp, deps.now());
+  const staleDue = env.OCBI_STALE_CHECK !== "0" && isDue(staleStamp, deps.now());
+  if (!compatDue && !staleDue) return;
+  const release = claimDailyCheck(paths.stateDir, pid, deps.now());
+  if (!release) return;
   try {
-    if (deps.now() - fs.statSync(stamp).mtimeMs < STALE_CHECK_INTERVAL_MS) return;
-  } catch {
-    // No stamp yet.
+    // Another worker may have finished a check between the look above and the claim.
+    let verdict: CompatibilityVerdict | null = null;
+    if (compatDue && isDue(compatStamp, deps.now())) {
+      verdict = await runCompatibilityCheck(options, paths, entryScript, deps);
+      if (verdict !== null) {
+        fs.writeFileSync(compatStamp, `${new Date(deps.now()).toISOString()} ${verdict.compatible ? "compatible" : "incompatible"}\n`);
+      }
+    }
+    if (staleDue && verdict?.compatible !== false && isDue(staleStamp, deps.now())) {
+      const count = runStaleCheck(options, paths, env, entryScript, deps);
+      if (count !== null) fs.writeFileSync(staleStamp, `${new Date(deps.now()).toISOString()} ${count}\n`);
+    }
+  } finally {
+    release();
   }
-  const verdict = checkCompatibility ? await runCompatibilityCheck(options, paths, entryScript, deps) : null;
-  const count = checkStale && verdict?.compatible !== false ? runStaleCheck(options, paths, env, entryScript, deps) : null;
-  // A check that could not run is retried after the next checkout rather than a day later.
-  if ((checkCompatibility && verdict === null) || (checkStale && verdict?.compatible !== false && count === null)) return;
-  const compatibility = verdict === null ? "skipped" : verdict.compatible ? "compatible" : "incompatible";
-  fs.writeFileSync(stamp, `${new Date(deps.now()).toISOString()} compatibility=${compatibility} stale=${count ?? "skipped"}\n`);
 }
 
 /**
@@ -749,10 +804,10 @@ export async function runRefreshWorker(options: RefreshWorkerOptions, deps: Refr
 
   // A busy store may be mid-rebuild, whose intermediate state is no reason to notify.
   if (passes > 0 && !lastPassBusy) {
-    await runDailyCheck(options, paths, env, entryScript, {
+    await runDailyCheck(options, paths, env, entryScript, pid, {
       countPrunable: deps.countPrunable ?? defaultCountPrunable(entryScript, env),
       checkCompatibility: deps.checkCompatibility ?? defaultCheckCompatibility,
-      findExecutable: deps.findExecutable ?? defaultFindExecutable(env),
+      findExecutable: deps.findExecutable ?? defaultFindExecutable(env, options.checkoutRoot),
       notify: deps.notify ?? defaultNotify(env),
       now: deps.now ?? Date.now,
     });

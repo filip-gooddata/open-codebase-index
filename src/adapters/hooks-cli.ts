@@ -37,13 +37,15 @@ const HOOKS_USAGE = `Usage: ocbi hooks <install|uninstall|status> [--repo <path>
   --repo <path>  A checkout, linked worktree or bare repository (default: current directory)
 
 After a branch checkout the hook refreshes the checkout's index in the background. Once a day per
-repository it also checks whether the store still matches the configured embedding provider and
-model (a mismatch, after a provider or model change, is the only reason for a full rebuild) and
-counts the catalogs \`ocbi prune\` would remove. It only logs and notifies; it never rebuilds or
+repository it also reads the store's compatibility verdict, as \`ocbi status\` reports it, and
+counts the catalogs \`ocbi prune\` would remove. An incompatible store (embeddings from another
+provider, model or dimensions, or a store format a release changed) is the only reason for a full
+rebuild; stale catalogs need a prune, never a rebuild. It only logs and notifies; it never rebuilds or
 prunes. --stale-notify <command> runs <command> TITLE BODY [ACTION_LABEL ACTION_COMMAND] for a
 "Rebuild needed" (action: ocbi-rebuild <checkout>, when on PATH) or "Worth a cleanup" (action:
 ocbi prune --apply) notice. OCBI_PREWARM=0 skips the hook; OCBI_COMPAT_CHECK=0 and
-OCBI_STALE_CHECK=0 skip either check.`;
+OCBI_STALE_CHECK=0 skip either check. A scheduled check on a timer (the local wrapper's
+ocbi-schedule) is optional; the hook covers both checks.`;
 
 interface ParsedOptions {
   values: Map<string, string>;

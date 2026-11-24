@@ -68,8 +68,9 @@ node ~/.local/share/ocbi/pkg/node_modules/open-codebase-index/dist/cbi.js hooks 
 ```
 
 The hook refreshes a checkout's index in the background after each branch checkout and, once a
-day, checks whether the store needs a full rebuild (only after an embedding provider or model
-change) or a prune. With `--stale-notify` it notifies with a Rebuild or Prune action; it never
+day, checks whether the store needs a full rebuild (only when `ocbi status` reports it
+incompatible: another embedding provider or model, or a store format a release changed) or a
+prune. With `--stale-notify` it notifies with a Rebuild or Prune action; it never
 runs either itself. See
 [Git post-checkout hook](../../docs/configuration.md#git-post-checkout-hook).
 

@@ -103,8 +103,8 @@ your paths:
 ```
 
 `--stale-notify` hands the hook's once-a-day checks to the `notify` piece: "Rebuild needed" with a
-Rebuild action (`ocbi-rebuild <checkout>`) when the store no longer matches the configured
-embedding provider or model, and "Worth a cleanup" with a Prune action when 15 or more catalogs of
+Rebuild action (`ocbi-rebuild <checkout>`) when `ocbi status` reports the store incompatible (see
+below), and "Worth a cleanup" with a Prune action when 15 or more catalogs of
 deleted branches and worktrees have piled up. Leave it out to only log both. The hook never
 rebuilds or prunes; the action waits for your click. For the Rebuild action, `ocbi-rebuild` must be
 on the `PATH` git runs the hook with; otherwise the notification names the manual command. Upgrading the package in `$OCBI_HOME/pkg` keeps the hook working, since its
@@ -224,10 +224,11 @@ in step 2. Restarting every agent session after step 2 gets there. Then:
   `<node> $OCBI_HOME/pkg/node_modules/open-codebase-index/dist/cbi.js prune`. The post-checkout
   hook logs the count once a day and notifies past `OCBI_STALE_THRESHOLD` (15) when installed
   with `--stale-notify`. Stale catalogs never need a rebuild.
-- A full rebuild is needed only when the store's embeddings no longer match the configured
-  provider or model: after changing `embeddingProvider` or `embeddingModel`, or after a release
-  that changes the embedding format. `ocbi status` reports it as `compatibility`, and the
-  post-checkout hook checks it once a day.
+- A full rebuild is needed only when `ocbi status` reports the store's `compatibility` as
+  incompatible: its embeddings come from another provider, model or dimension count (after
+  changing `embeddingProvider` or `embeddingModel`), or a release changed a store format (the
+  embedding strategy, or legacy checkout-absolute path storage). The post-checkout hook checks it
+  once a day.
 
 ## Scheduled check
 

@@ -17,6 +17,7 @@ import {
   scrubGitRepositoryEnv,
   tryAcquireRefreshLock,
   type CheckoutStatePaths,
+  type CompatibilityVerdict,
   type NotifyAction,
   type RefreshPassResult,
   type RefreshWorkerDeps,
@@ -468,7 +469,9 @@ describe("post-checkout hook", () => {
       expect(calls.index).toBe(1);
       expect(notifications).toEqual([]);
       expect(fs.readFileSync(paths.log, "utf-8")).toMatch(/^== compatibility check: compatible$/m);
-      expect(fs.readFileSync(path.join(paths.stateDir, "stale-check.stamp"), "utf-8")).toMatch(/ compatibility=compatible stale=0\n$/);
+      expect(fs.readFileSync(path.join(paths.stateDir, "compat-check.stamp"), "utf-8")).toMatch(/ compatible\n$/);
+      expect(fs.readFileSync(path.join(paths.stateDir, "stale-check.stamp"), "utf-8")).toMatch(/ 0\n$/);
+      expect(fs.existsSync(path.join(paths.stateDir, "daily-check.claim"))).toBe(false);
     });
 
     it("offers ocbi-rebuild for an incompatible store, skips the stale count and never rebuilds", async () => {
@@ -530,7 +533,7 @@ describe("post-checkout hook", () => {
 
     it("retries after the next checkout when the verdict cannot be read, and skips a busy store", async () => {
       const { repo, commonDir, paths } = setup("retry");
-      const stamp = path.join(paths.stateDir, "stale-check.stamp");
+      const stamp = path.join(paths.stateDir, "compat-check.stamp");
       let checks = 0;
       await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; throw new Error("store unreadable"); } }).passes;
       expect(fs.existsSync(stamp)).toBe(false);
@@ -548,6 +551,63 @@ describe("post-checkout hook", () => {
       expect(fs.existsSync(stamp)).toBe(true);
       await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; return { compatible: true }; } }).passes;
       expect(checks).toBe(2);
+    });
+    it("keeps each check's day when the other fails, so a stale notice is not repeated", async () => {
+      const { repo, commonDir } = setup("partial");
+      let checks = 0;
+      const prunes: string[] = [];
+      for (let run = 0; run < 2; run += 1) {
+        const { notifications, passes } = runWorker(repo, commonDir, {
+          checkCompatibility: () => { checks += 1; throw new Error("store unreadable"); },
+          countPrunable: () => 20,
+        });
+        await passes;
+        prunes.push(...notifications.filter((n) => n.action?.label === "Prune").map((n) => n.title));
+      }
+      expect(checks).toBe(2);
+      expect(prunes).toEqual(["Worth a cleanup: partial"]);
+    });
+
+    it("lets one worker of a repository check while another holds the daily claim", async () => {
+      const { repo, commonDir, paths } = setup("claim");
+      const linked = path.join(tempDir, "claim-linked");
+      git(repo, "worktree", "add", "-q", "-b", "other", linked);
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let checks = 0;
+      const checkCompatibility = async (): Promise<CompatibilityVerdict> => {
+        checks += 1;
+        await gate;
+        return { compatible: false, reason: MISMATCH };
+      };
+      const first = runWorker(repo, commonDir, { checkCompatibility });
+      await vi.waitFor(() => expect(checks).toBe(1));
+      const second = runWorker(linked, commonDir, { checkCompatibility });
+      expect(await second.passes).toBe(1);
+      release();
+      expect(await first.passes).toBe(1);
+      expect(checks).toBe(1);
+      expect([...first.notifications, ...second.notifications].map((n) => n.title)).toEqual(["Rebuild needed: claim"]);
+      expect(fs.existsSync(path.join(paths.stateDir, "daily-check.claim"))).toBe(false);
+
+      fs.rmSync(path.join(paths.stateDir, "compat-check.stamp"));
+      fs.writeFileSync(path.join(paths.stateDir, "daily-check.claim"), `${deadPid()}\n`);
+      await runWorker(repo, commonDir, { checkCompatibility: () => { checks += 1; return { compatible: true }; } }).passes;
+      expect(checks).toBe(2);
+    });
+
+    it("finds ocbi-rebuild through a relative PATH entry, resolved against the checkout", async () => {
+      const { repo, commonDir } = setup("relative");
+      const rebuild = path.join(repo, "bin", "ocbi-rebuild");
+      fs.mkdirSync(path.dirname(rebuild));
+      fs.writeFileSync(rebuild, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const { notifications, passes } = runWorker(repo, commonDir, {
+        env: { PATH: `bin${path.delimiter}/nonexistent` },
+        findExecutable: undefined,
+        checkCompatibility: () => ({ compatible: false, reason: MISMATCH }),
+      });
+      await passes;
+      expect(notifications[0]?.action).toEqual({ label: "Rebuild", command: `${rebuild} ${repo}` });
     });
   });
 });

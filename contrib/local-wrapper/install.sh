@@ -85,7 +85,13 @@ else
   [ -x "$node" ] && [ "$(node_major "$node" || echo 0)" -ge 22 ] || die "--node $node is not a Node.js >= 22"
 fi
 
-for path in "$home" "$bin_dir" "$agents_dir" "$systemd_dir" "$node"; do
+is_macos=0 is_linux=0
+case "${OCBI_UNAME:-$(uname -s)}" in Darwin) is_macos=1 ;; Linux) is_linux=1 ;; esac
+# The systemd user dir is used only on Linux; elsewhere a value under OCBI_HOME stands in for it in
+# the rendered scripts, so an unused XDG_CONFIG_HOME cannot stop the install.
+checked_paths=("$home" "$bin_dir" "$agents_dir" "$node")
+if [ "$is_linux" = 1 ]; then checked_paths+=("$systemd_dir"); fi
+for path in "${checked_paths[@]}"; do
   case "$path" in /*) ;; *) die "$path must be an absolute path" ;; esac
   case "$path" in
     *[\"\\@\$\`\'\&\<\>%]* | *"$nl"*) die "$path must not contain any of: \" \\ @ \$ \` ' & < > % or a newline" ;;
@@ -107,8 +113,7 @@ for p in $(printf '%s' "$pieces" | tr ',' ' '); do
 done
 if has_piece pkg && [ -z "$package" ]; then die "the pkg piece needs --package SPEC"; fi
 
-is_macos=0 is_linux=0
-case "${OCBI_UNAME:-$(uname -s)}" in Darwin) is_macos=1 ;; Linux) is_linux=1 ;; esac
+[ "$is_linux" = 1 ] || systemd_dir="$home/systemd-user"
 version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo_root/package.json" 2>/dev/null | head -n 1)"
 version="${version:-0.0.0}-local"
 changes=0
